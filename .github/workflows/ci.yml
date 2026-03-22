@@ -13,5 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Placeholder - Build & Test
-        run: echo "Add your build and test commands here"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
