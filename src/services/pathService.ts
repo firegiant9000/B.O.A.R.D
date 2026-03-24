@@ -58,7 +58,7 @@ export async function clearBoardPaths(boardId: string): Promise<void> {
   const snapshot = await getDocs(pathsRef);
 
   // Firestore batch limit is 500
-  const chunks: typeof snapshot.docs[] = [];
+  const chunks: Array<typeof snapshot.docs> = [];
   for (let i = 0; i < snapshot.docs.length; i += 500) {
     chunks.push(snapshot.docs.slice(i, i + 500));
   }
@@ -113,7 +113,7 @@ export async function clearBoardNotes(boardId: string): Promise<void> {
   const notesRef = collection(db, "boards", boardId, "notes");
   const snapshot = await getDocs(notesRef);
 
-  const chunks: typeof snapshot.docs[] = [];
+  const chunks: Array<typeof snapshot.docs> = [];
   for (let i = 0; i < snapshot.docs.length; i += 500) {
     chunks.push(snapshot.docs.slice(i, i + 500));
   }

@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useRef, useMemo } from "react";
 import { View, StyleSheet, PanResponder, Dimensions } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { DrawPath } from "../types";
@@ -91,20 +91,30 @@ export default function DrawingCanvas({
 
   const { width, height } = Dimensions.get("window");
 
+  // Memoize simplified path strings to avoid recomputing on every render
+  const pathStrings = useMemo(
+    () =>
+      paths.map((p) => ({
+        id: p.id,
+        d: pointsToSvgPath(simplifyPoints(p.points)),
+        color: p.tool === "eraser" ? "#FFFFFF" : p.color,
+        strokeWidth: p.tool === "eraser" ? p.strokeWidth + 10 : p.strokeWidth,
+      })),
+    [paths]
+  );
+
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
       <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
         {/* Render saved paths */}
-        {paths.map((p) => {
-          const simplified = simplifyPoints(p.points);
-          const d = pointsToSvgPath(simplified);
-          if (!d) return null;
+        {pathStrings.map((p) => {
+          if (!p.d) return null;
           return (
             <Path
               key={p.id}
-              d={d}
-              stroke={p.tool === "eraser" ? "#FFFFFF" : p.color}
-              strokeWidth={p.tool === "eraser" ? p.strokeWidth + 10 : p.strokeWidth}
+              d={p.d}
+              stroke={p.color}
+              strokeWidth={p.strokeWidth}
               fill="none"
               strokeLinecap="round"
               strokeLinejoin="round"

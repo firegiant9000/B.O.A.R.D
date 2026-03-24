@@ -57,6 +57,16 @@ export default function BoardScreen() {
     loadBoard();
   }, [id]);
 
+  // Clear debounced save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [id]);
+
   const loadBoard = async () => {
     try {
       setLoading(true);
@@ -260,7 +270,6 @@ export default function BoardScreen() {
           onStrokeMove={handleStrokeMove}
           onStrokeEnd={handleStrokeEnd}
           onCanvasTap={handleCanvasTap}
-          disabled={activeTool === "text"}
         />
         <TextNoteOverlay
           notes={notes}
