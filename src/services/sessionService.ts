@@ -95,9 +95,40 @@ export async function getUserSessions(userId: string): Promise<Session[]> {
 export async function getUpcomingSessions(
   userId: string
 ): Promise<Session[]> {
-  const now = new Date();
-  const sessions = await getUserSessions(userId);
-  return sessions.filter((s) => s.scheduledAt >= now);
+  const now = Timestamp.fromDate(new Date());
+
+  const [createdQuery, participantQuery] = await Promise.all([
+    getDocs(
+      query(
+        sessionsRef,
+        where("createdById", "==", userId),
+        where("scheduledAt", ">=", now),
+        orderBy("scheduledAt", "asc")
+      )
+    ),
+    getDocs(
+      query(
+        sessionsRef,
+        where("participantIds", "array-contains", userId),
+        where("scheduledAt", ">=", now),
+        orderBy("scheduledAt", "asc")
+      )
+    ),
+  ]);
+
+  const sessionMap = new Map<string, Session>();
+  for (const d of createdQuery.docs) {
+    sessionMap.set(d.id, docToSession(d.id, d.data()));
+  }
+  for (const d of participantQuery.docs) {
+    if (!sessionMap.has(d.id)) {
+      sessionMap.set(d.id, docToSession(d.id, d.data()));
+    }
+  }
+
+  return Array.from(sessionMap.values()).sort(
+    (a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime()
+  );
 }
 
 export async function updateSession(

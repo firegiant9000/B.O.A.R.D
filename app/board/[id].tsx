@@ -75,6 +75,12 @@ export default function BoardScreen() {
         pathService.getBoardPaths(id!),
         pathService.getBoardNotes(id!),
       ]);
+      if (!boardData) {
+        Alert.alert("Board not found", "This board may have been deleted.", [
+          { text: "OK", onPress: () => router.back() },
+        ]);
+        return;
+      }
       setBoard(boardData);
       setPaths(pathsData);
       setNotes(notesData);
