@@ -240,7 +240,12 @@ export default function BoardScreen() {
         <Text style={styles.title} numberOfLines={1}>
           {board?.title ?? "Board"}
         </Text>
-        <View style={styles.headerSpacer} />
+        <TouchableOpacity
+          onPress={() => router.push(`/session/create?boardId=${id}`)}
+          style={styles.backBtn}
+        >
+          <Ionicons name="calendar-outline" size={24} color="#333" />
+        </TouchableOpacity>
       </View>
 
       {/* Canvas + Notes layer */}
@@ -313,9 +318,6 @@ const styles = StyleSheet.create({
     color: "#333",
     textAlign: "center",
     marginHorizontal: 12,
-  },
-  headerSpacer: {
-    width: 32,
   },
   canvasContainer: {
     flex: 1,
