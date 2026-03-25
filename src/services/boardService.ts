@@ -4,6 +4,7 @@ import {
   getDocs,
   getDoc,
   deleteDoc,
+  updateDoc,
   doc,
   query,
   where,
@@ -63,6 +64,16 @@ export async function getBoard(boardId: string): Promise<Board | null> {
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   };
+}
+
+export async function updateBoard(
+  boardId: string,
+  data: Partial<Pick<Board, "title">>
+): Promise<void> {
+  await updateDoc(doc(db, "boards", boardId), {
+    ...data,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function deleteBoard(boardId: string): Promise<void> {
