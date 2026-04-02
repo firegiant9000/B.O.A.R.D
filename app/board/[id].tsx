@@ -14,17 +14,21 @@ import { Ionicons } from "@expo/vector-icons";
 import DrawingCanvas from "../../src/components/DrawingCanvas";
 import Toolbar from "../../src/components/Toolbar";
 import TextNoteOverlay from "../../src/components/TextNoteOverlay";
+import BoardUserBar from "../../src/components/BoardUserBar";
+import StartSessionModal from "../../src/components/StartSessionModal";
 import { useAuth } from "../../src/hooks/useAuth";
 import * as boardService from "../../src/services/boardService";
 import * as pathService from "../../src/services/pathService";
-import { Board, DrawPath, TextNote } from "../../src/types";
+import * as presenceService from "../../src/services/presenceService";
+import * as friendService from "../../src/services/friendService";
+import { Board, BoardPresence, DrawPath, TextNote } from "../../src/types";
 
 type Tool = "pen" | "eraser" | "text";
 
 export default function BoardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
 
   // Board state
   const [board, setBoard] = useState<Board | null>(null);
@@ -48,14 +52,54 @@ export default function BoardScreen() {
     y: number;
   } | null>(null);
 
+  // Presence & friends state
+  const [presence, setPresence] = useState<BoardPresence[]>([]);
+  const [blockedIds, setBlockedIds] = useState<string[]>([]);
+
+  // Session modal
+  const [sessionModalVisible, setSessionModalVisible] = useState(false);
+
   // Auto-save debounce
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Derived — safe to compute early since board starts null (isAdmin = false until board loads)
+  const isAdmin = !!user && !!board && user.uid === board.adminId;
 
   // Load board data on mount
   useEffect(() => {
     if (!id) return;
     loadBoard();
   }, [id]);
+
+  // Presence: join on mount, subscribe to updates, leave on unmount
+  useEffect(() => {
+    if (!id || !user) return;
+
+    const displayName = userProfile?.displayName ?? user.email ?? "User";
+    const email = userProfile?.email ?? user.email ?? "";
+
+    presenceService.joinBoard(id, user.uid, displayName, email).catch(() => {});
+
+    const unsubscribe = presenceService.subscribeToBoardPresence(id, setPresence);
+
+    return () => {
+      unsubscribe();
+      presenceService.leaveBoard(id, user.uid).catch(() => {});
+    };
+  }, [id, user]);
+
+  // Load blocked IDs on mount
+  useEffect(() => {
+    if (!user) return;
+    friendService.getBlockedIds(user.uid).then(setBlockedIds).catch(() => {});
+  }, [user]);
+
+  // Clear debounce timer on unmount to prevent state updates on an unmounted component
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, []);
 
   const loadBoard = async () => {
     try {
@@ -65,10 +109,27 @@ export default function BoardScreen() {
         pathService.getBoardPaths(id!),
         pathService.getBoardNotes(id!),
       ]);
+
+      if (!boardData) {
+        Alert.alert("Not Found", "This board no longer exists.");
+        router.back();
+        return;
+      }
+
+      const uid = user?.uid ?? "";
+      const hasAccess =
+        boardData.ownerId === uid ||
+        boardData.collaboratorIds.includes(uid);
+      if (!hasAccess) {
+        Alert.alert("Access Denied", "You don't have permission to view this board.");
+        router.back();
+        return;
+      }
+
       setBoard(boardData);
       setPaths(pathsData);
       setNotes(notesData);
-    } catch (err) {
+    } catch {
       Alert.alert("Error", "Failed to load board");
     } finally {
       setLoading(false);
@@ -183,10 +244,14 @@ export default function BoardScreen() {
 
   const handleUndo = async () => {
     if (paths.length === 0) return;
-    const lastPath = paths[paths.length - 1];
+    // Admin undoes any last stroke; regular user undoes their own last stroke
+    const targetPath = isAdmin
+      ? paths[paths.length - 1]
+      : [...paths].reverse().find((p) => p.userId === user?.uid);
+    if (!targetPath) return;
     try {
-      await pathService.deletePath(id!, lastPath.id);
-      setPaths((prev) => prev.slice(0, -1));
+      await pathService.deletePath(id!, targetPath.id);
+      setPaths((prev) => prev.filter((p) => p.id !== targetPath.id));
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to undo");
@@ -216,6 +281,16 @@ export default function BoardScreen() {
     }
   };
 
+  // --- Blocked user handler ---
+
+  const handleBlockUser = (userId: string) => {
+    setBlockedIds((prev) => [...prev, userId]);
+  };
+
+  // Filter out blocked users' content
+  const visiblePaths = paths.filter((p) => !blockedIds.includes(p.userId));
+  const visibleNotes = notes.filter((n) => !blockedIds.includes(n.userId));
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -223,6 +298,12 @@ export default function BoardScreen() {
       </View>
     );
   }
+
+  const currentUserInfo = {
+    uid: user?.uid ?? "",
+    displayName: userProfile?.displayName ?? user?.email ?? "User",
+    email: userProfile?.email ?? user?.email ?? "",
+  };
 
   return (
     <KeyboardAvoidingView
@@ -237,16 +318,49 @@ export default function BoardScreen() {
         >
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
+
         <Text style={styles.title} numberOfLines={1}>
           {board?.title ?? "Board"}
         </Text>
-        <View style={styles.headerSpacer} />
+
+        <View style={styles.headerRight}>
+          <BoardUserBar
+            presence={presence}
+            boardTitle={board?.title ?? "Board"}
+            currentUser={currentUserInfo}
+            blockedIds={blockedIds}
+            onBlock={handleBlockUser}
+          />
+          {isAdmin && (
+            <>
+              <TouchableOpacity
+                style={styles.startSessionBtn}
+                onPress={() => setSessionModalVisible(true)}
+              >
+                <Ionicons name="play-circle-outline" size={16} color="#fff" />
+                <Text style={styles.startSessionText}>Session</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.adminBadge}
+                onPress={() =>
+                  Alert.alert(
+                    "Board Admin",
+                    "You are the admin of this board. You can delete any user's notes and clear the entire board.",
+                    [{ text: "OK" }]
+                  )
+                }
+              >
+                <Ionicons name="shield-checkmark" size={20} color="#2563eb" />
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </View>
 
       {/* Canvas + Notes layer */}
       <View style={styles.canvasContainer}>
         <DrawingCanvas
-          paths={paths}
+          paths={visiblePaths}
           currentPath={currentPoints}
           color={activeColor}
           strokeWidth={activeStrokeWidth}
@@ -258,8 +372,10 @@ export default function BoardScreen() {
           disabled={activeTool === "text"}
         />
         <TextNoteOverlay
-          notes={notes}
+          notes={visibleNotes}
           pendingNotePosition={pendingNotePosition}
+          currentUserId={user?.uid ?? ""}
+          isAdmin={isAdmin}
           onSubmitNote={handleSubmitNote}
           onCancelNote={handleCancelNote}
           onDeleteNote={handleDeleteNote}
@@ -271,6 +387,7 @@ export default function BoardScreen() {
         activeTool={activeTool}
         activeColor={activeColor}
         activeStrokeWidth={activeStrokeWidth}
+        isAdmin={isAdmin}
         onToolChange={setActiveTool}
         onColorChange={setActiveColor}
         onStrokeWidthChange={setActiveStrokeWidth}
@@ -278,6 +395,19 @@ export default function BoardScreen() {
         onClear={handleClear}
         onSave={handleSave}
       />
+
+      {isAdmin && (
+        <StartSessionModal
+          visible={sessionModalVisible}
+          boardId={id!}
+          boardTitle={board?.title ?? "Board"}
+          adminId={user?.uid ?? ""}
+          adminName={currentUserInfo.displayName}
+          presenceUsers={presence}
+          onClose={() => setSessionModalVisible(false)}
+          onSessionCreated={() => setSessionModalVisible(false)}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -305,6 +435,7 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     padding: 4,
+    marginRight: 4,
   },
   title: {
     flex: 1,
@@ -312,10 +443,31 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#333",
     textAlign: "center",
-    marginHorizontal: 12,
+    marginHorizontal: 8,
   },
-  headerSpacer: {
-    width: 32,
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 32,
+    justifyContent: "flex-end",
+  },
+  adminBadge: {
+    padding: 2,
+  },
+  startSessionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#2563eb",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  startSessionText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   canvasContainer: {
     flex: 1,

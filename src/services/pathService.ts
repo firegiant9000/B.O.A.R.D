@@ -31,19 +31,23 @@ export async function getBoardPaths(boardId: string): Promise<DrawPath[]> {
   const q = query(pathsRef, orderBy("createdAt", "asc"));
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      boardId: data.boardId,
-      userId: data.userId,
-      points: data.points,
-      color: data.color,
-      strokeWidth: data.strokeWidth,
-      tool: data.tool,
-      createdAt: data.createdAt?.toDate() ?? new Date(),
-    };
-  });
+  return snapshot.docs
+    .map((d) => {
+      const data = d.data();
+      // Skip documents missing required drawing fields
+      if (!data.points || !data.color || !data.tool) return null;
+      return {
+        id: d.id,
+        boardId: data.boardId ?? "",
+        userId: data.userId ?? "",
+        points: data.points,
+        color: data.color,
+        strokeWidth: data.strokeWidth ?? 5,
+        tool: data.tool as "pen" | "eraser",
+        createdAt: data.createdAt?.toDate() ?? new Date(),
+      };
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null);
 }
 
 export async function deletePath(
@@ -89,17 +93,20 @@ export async function getBoardNotes(boardId: string): Promise<TextNote[]> {
   const q = query(notesRef, orderBy("createdAt", "asc"));
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      boardId: data.boardId,
-      userId: data.userId,
-      content: data.content,
-      position: data.position,
-      createdAt: data.createdAt?.toDate() ?? new Date(),
-    };
-  });
+  return snapshot.docs
+    .map((d) => {
+      const data = d.data();
+      if (!data.content || !data.position) return null;
+      return {
+        id: d.id,
+        boardId: data.boardId ?? "",
+        userId: data.userId ?? "",
+        content: data.content,
+        position: data.position,
+        createdAt: data.createdAt?.toDate() ?? new Date(),
+      };
+    })
+    .filter((n): n is NonNullable<typeof n> => n !== null);
 }
 
 export async function deleteTextNote(

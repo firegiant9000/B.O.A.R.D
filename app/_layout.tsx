@@ -3,11 +3,19 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
+import { registerForPushNotifications } from "../src/services/notificationService";
 
 function RootNavigator() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  // Register for push notifications once the user is authenticated
+  useEffect(() => {
+    if (user) {
+      registerForPushNotifications(user.uid);
+    }
+  }, [user?.uid]);
 
   useEffect(() => {
     if (loading) return;
