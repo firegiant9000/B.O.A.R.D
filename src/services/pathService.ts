@@ -8,9 +8,10 @@ import {
   orderBy,
   serverTimestamp,
   writeBatch,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
-import { DrawPath, TextNote } from "../types";
+import { DrawPath, TextNote, TextElement } from "../types";
 
 // --- Draw Paths ---
 
@@ -121,6 +122,60 @@ export async function clearBoardNotes(boardId: string): Promise<void> {
   for (const chunk of chunks) {
     const batch = writeBatch(db);
     chunk.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+// --- Text Elements ---
+
+export async function saveTextElement(
+  boardId: string,
+  element: Omit<TextElement, "id" | "createdAt">
+): Promise<string> {
+  const ref = collection(db, "boards", boardId, "textElements");
+  const docRef = await addDoc(ref, { ...element, createdAt: serverTimestamp() });
+  return docRef.id;
+}
+
+export async function getBoardTextElements(boardId: string): Promise<TextElement[]> {
+  const ref = collection(db, "boards", boardId, "textElements");
+  const q = query(ref, orderBy("createdAt", "asc"));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => {
+    const data = d.data();
+    return {
+      id: d.id,
+      boardId: data.boardId,
+      userId: data.userId,
+      text: data.text,
+      position: data.position,
+      width: data.width,
+      height: data.height,
+      fontSize: data.fontSize,
+      color: data.color,
+      createdAt: data.createdAt?.toDate() ?? new Date(),
+    };
+  });
+}
+
+export async function updateTextElement(
+  boardId: string,
+  elementId: string,
+  updates: Partial<Pick<TextElement, "text" | "position" | "width" | "height" | "fontSize" | "color">>
+): Promise<void> {
+  await updateDoc(doc(db, "boards", boardId, "textElements", elementId), updates);
+}
+
+export async function deleteTextElement(boardId: string, elementId: string): Promise<void> {
+  await deleteDoc(doc(db, "boards", boardId, "textElements", elementId));
+}
+
+export async function clearBoardTextElements(boardId: string): Promise<void> {
+  const ref = collection(db, "boards", boardId, "textElements");
+  const snapshot = await getDocs(ref);
+  for (let i = 0; i < snapshot.docs.length; i += 500) {
+    const batch = writeBatch(db);
+    snapshot.docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
 }

@@ -10,6 +10,8 @@ export interface Board {
   title: string;
   ownerId: string;
   collaboratorIds: string[];
+  inviteCode: string;
+  members: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -43,5 +45,18 @@ export interface TextNote {
   userId: string;
   content: string;
   position: { x: number; y: number };
+  createdAt: Date;
+}
+
+export interface TextElement {
+  id: string;
+  boardId: string;
+  userId: string;
+  text: string;
+  position: { x: number; y: number };
+  width: number;
+  height: number;
+  fontSize: number;
+  color: string;
   createdAt: Date;
 }
