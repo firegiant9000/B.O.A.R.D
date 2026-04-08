@@ -70,6 +70,16 @@ export default function BoardScreen() {
     loadBoard();
   }, [id]);
 
+  // Clear debounced save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [id]);
+
   const loadBoard = async () => {
     try {
       setLoading(true);
@@ -79,6 +89,12 @@ export default function BoardScreen() {
         pathService.getBoardNotes(id!),
         pathService.getBoardTextElements(id!),
       ]);
+      if (!boardData) {
+        Alert.alert("Board not found", "This board may have been deleted.", [
+          { text: "OK", onPress: () => router.back() },
+        ]);
+        return;
+      }
       setBoard(boardData);
       setPaths(pathsData);
       setNotes(notesData);
@@ -402,6 +418,12 @@ export default function BoardScreen() {
           currentUserId={user?.uid}
         />
         <TouchableOpacity
+          onPress={() => router.push(`/session/create?boardId=${id}`)}
+          style={styles.backBtn}
+        >
+          <Ionicons name="calendar-outline" size={24} color="#333" />
+        </TouchableOpacity>
+        <TouchableOpacity
           onPress={handleShare}
           style={styles.shareBtn}
           hitSlop={8}
@@ -422,7 +444,6 @@ export default function BoardScreen() {
           onStrokeMove={handleStrokeMove}
           onStrokeEnd={handleStrokeEnd}
           onCanvasTap={handleCanvasTap}
-          disabled={activeTool === "text"}
         />
         <TextNoteOverlay
           notes={notes}

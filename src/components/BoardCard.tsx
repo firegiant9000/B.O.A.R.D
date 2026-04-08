@@ -6,9 +6,10 @@ interface BoardCardProps {
   board: Board;
   onPress: () => void;
   onDelete?: () => void;
+  sessionCount?: number;
 }
 
-export default function BoardCard({ board, onPress, onDelete }: BoardCardProps) {
+export default function BoardCard({ board, onPress, onDelete, sessionCount }: BoardCardProps) {
   return (
     <View style={styles.wrapper}>
       <TouchableOpacity
@@ -28,6 +29,14 @@ export default function BoardCard({ board, onPress, onDelete }: BoardCardProps) 
             {board.collaboratorIds.length > 0 &&
               ` · ${board.collaboratorIds.length} collaborator${board.collaboratorIds.length > 1 ? "s" : ""}`}
           </Text>
+          {sessionCount != null && sessionCount > 0 && (
+            <View style={styles.sessionBadge}>
+              <Ionicons name="calendar-outline" size={12} color="#4338ca" />
+              <Text style={styles.sessionBadgeText}>
+                {sessionCount} session{sessionCount > 1 ? "s" : ""}
+              </Text>
+            </View>
+          )}
         </View>
       </TouchableOpacity>
       {onDelete && (
@@ -93,5 +102,16 @@ const styles = StyleSheet.create({
       android: { elevation: 1 },
       default: {},
     }),
+  },
+  sessionBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 4,
+  },
+  sessionBadgeText: {
+    fontSize: 12,
+    color: "#4338ca",
+    fontWeight: "500",
   },
 });

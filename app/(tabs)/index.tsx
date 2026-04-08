@@ -20,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
+import * as sessionService from "../../src/services/sessionService";
 import { JoinBoardResult } from "../../src/services/boardService";
 import BoardCard from "../../src/components/BoardCard";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
@@ -29,6 +30,7 @@ export default function BoardsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const [boards, setBoards] = useState<Board[]>([]);
+  const [sessionCounts, setSessionCounts] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
@@ -40,8 +42,17 @@ export default function BoardsScreen() {
   const fetchBoards = useCallback(async () => {
     if (!user) return;
     try {
-      const data = await boardService.getMemberBoards(user.uid);
+      const [data, sessions] = await Promise.all([
+        boardService.getMemberBoards(user.uid),
+        sessionService.getUpcomingSessions(user.uid),
+      ]);
       setBoards(data);
+
+      const counts = new Map<string, number>();
+      for (const s of sessions) {
+        counts.set(s.boardId, (counts.get(s.boardId) ?? 0) + 1);
+      }
+      setSessionCounts(counts);
     } catch (error: any) {
       Alert.alert("Error", error.message ?? "Failed to load boards.");
     } finally {
@@ -145,6 +156,7 @@ export default function BoardsScreen() {
             board={item}
             onPress={() => router.push(`/board/${item.id}`)}
             onDelete={() => handleDeleteBoard(item)}
+            sessionCount={sessionCounts.get(item.id)}
           />
         )}
         contentContainerStyle={boards.length === 0 ? styles.centered : styles.list}
