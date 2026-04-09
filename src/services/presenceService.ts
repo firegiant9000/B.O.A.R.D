@@ -49,3 +49,36 @@ export function subscribeToBoardPresence(
     callback(presence);
   });
 }
+
+/**
+ * Simple heartbeat-style presence update (writes lastActive timestamp).
+ * Used by the useBoardPresence hook for periodic pings.
+ */
+export async function updatePresence(
+  boardId: string,
+  userId: string
+): Promise<void> {
+  await setDoc(
+    presenceRef(boardId, userId),
+    { lastSeen: serverTimestamp() },
+    { merge: true }
+  );
+}
+
+/**
+ * Real-time listener returning a simple uid → lastActive map.
+ * Used by the useBoardPresence hook for online/offline detection.
+ */
+export function subscribeToPresence(
+  boardId: string,
+  callback: (presenceMap: Record<string, Date>) => void
+): () => void {
+  return onSnapshot(collection(db, "boards", boardId, "presence"), (snap) => {
+    const map: Record<string, Date> = {};
+    snap.docs.forEach((d) => {
+      const ts = d.data().lastSeen;
+      if (ts) map[d.id] = ts.toDate();
+    });
+    callback(map);
+  });
+}

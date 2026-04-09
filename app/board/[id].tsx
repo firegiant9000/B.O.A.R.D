@@ -8,12 +8,16 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Share,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import DrawingCanvas from "../../src/components/DrawingCanvas";
 import Toolbar from "../../src/components/Toolbar";
 import TextNoteOverlay from "../../src/components/TextNoteOverlay";
+import TextElementView from "../../src/components/TextElementView";
+import MemberList from "../../src/components/MemberList";
+import JoinBoardModal from "../../src/components/JoinBoardModal";
 import BoardUserBar from "../../src/components/BoardUserBar";
 import StartSessionModal from "../../src/components/StartSessionModal";
 import { useAuth } from "../../src/hooks/useAuth";
@@ -21,7 +25,7 @@ import * as boardService from "../../src/services/boardService";
 import * as pathService from "../../src/services/pathService";
 import * as presenceService from "../../src/services/presenceService";
 import * as friendService from "../../src/services/friendService";
-import { Board, BoardPresence, DrawPath, TextNote } from "../../src/types";
+import { Board, BoardPresence, DrawPath, TextNote, TextElement } from "../../src/types";
 
 type Tool = "pen" | "eraser" | "text";
 
@@ -41,6 +45,11 @@ export default function BoardScreen() {
     { x: number; y: number }[] | null
   >(null);
 
+  // Text element state
+  const [textElements, setTextElements] = useState<TextElement[]>([]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
   // Tool state
   const [activeTool, setActiveTool] = useState<Tool>("pen");
   const [activeColor, setActiveColor] = useState("#000000");
@@ -56,13 +65,17 @@ export default function BoardScreen() {
   const [presence, setPresence] = useState<BoardPresence[]>([]);
   const [blockedIds, setBlockedIds] = useState<string[]>([]);
 
+  // Deep-link join modal
+  const [joinModalVisible, setJoinModalVisible] = useState(false);
+  const [deepLinkCode, setDeepLinkCode] = useState<string | undefined>();
+
   // Session modal
   const [sessionModalVisible, setSessionModalVisible] = useState(false);
 
   // Auto-save debounce
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Derived — safe to compute early since board starts null (isAdmin = false until board loads)
+  // Derived
   const isAdmin = !!user && !!board && user.uid === board.adminId;
 
   // Load board data on mount
@@ -94,7 +107,7 @@ export default function BoardScreen() {
     friendService.getBlockedIds(user.uid).then(setBlockedIds).catch(() => {});
   }, [user]);
 
-  // Clear debounce timer on unmount to prevent state updates on an unmounted component
+  // Clear debounce timer on unmount
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -104,10 +117,11 @@ export default function BoardScreen() {
   const loadBoard = async () => {
     try {
       setLoading(true);
-      const [boardData, pathsData, notesData] = await Promise.all([
+      const [boardData, pathsData, notesData, textElementsData] = await Promise.all([
         boardService.getBoard(id!),
         pathService.getBoardPaths(id!),
         pathService.getBoardNotes(id!),
+        pathService.getBoardTextElements(id!),
       ]);
 
       if (!boardData) {
@@ -116,19 +130,16 @@ export default function BoardScreen() {
         return;
       }
 
-      const uid = user?.uid ?? "";
-      const hasAccess =
-        boardData.ownerId === uid ||
-        boardData.collaboratorIds.includes(uid);
-      if (!hasAccess) {
-        Alert.alert("Access Denied", "You don't have permission to view this board.");
-        router.back();
-        return;
-      }
-
       setBoard(boardData);
       setPaths(pathsData);
       setNotes(notesData);
+      setTextElements(textElementsData);
+
+      // Deep-link gate: if the viewer isn't a member yet, prompt them to join
+      if (user && !boardData.members.includes(user.uid)) {
+        setDeepLinkCode(boardData.inviteCode);
+        setJoinModalVisible(true);
+      }
     } catch {
       Alert.alert("Error", "Failed to load board");
     } finally {
@@ -147,6 +158,44 @@ export default function BoardScreen() {
       }
     }, 2000);
   }, [id]);
+
+  // --- Share action ---
+
+  const handleShare = async () => {
+    const deepLink = `boardapp://board/${id}`;
+    const inviteCode = board?.inviteCode ?? "";
+
+    if (Platform.OS === "web") {
+      Alert.alert(
+        "Share Board",
+        `Invite code: ${inviteCode}\n\nOr share this link:\n${deepLink}`
+      );
+      return;
+    }
+
+    try {
+      await Share.share({
+        message: `Join my board "${board?.title ?? "Board"}" on B.O.A.R.D!\nInvite code: ${inviteCode}\n\n${deepLink}`,
+        url: deepLink,
+      });
+    } catch {
+      // User dismissed the share sheet
+    }
+  };
+
+  // --- Deep-link join callback ---
+
+  const handleDeepLinkJoined = () => {
+    setJoinModalVisible(false);
+    setDeepLinkCode(undefined);
+    loadBoard();
+  };
+
+  const handleDeepLinkCancel = () => {
+    setJoinModalVisible(false);
+    setDeepLinkCode(undefined);
+    router.back();
+  };
 
   // --- Drawing handlers ---
 
@@ -192,11 +241,79 @@ export default function BoardScreen() {
     setCurrentPoints(null);
   };
 
-  // --- Canvas tap (for text tool) ---
+  // --- Canvas tap ---
 
   const handleCanvasTap = (point: { x: number; y: number }) => {
     if (activeTool === "text") {
-      setPendingNotePosition(point);
+      if (selectedTextId || editingTextId) {
+        setSelectedTextId(null);
+        setEditingTextId(null);
+      } else {
+        handleCreateTextElement(point);
+      }
+    }
+  };
+
+  // --- Text element handlers ---
+
+  const handleCreateTextElement = async (point: { x: number; y: number }) => {
+    const newEl: Omit<TextElement, "id" | "createdAt"> = {
+      boardId: id!,
+      userId: user?.uid ?? "",
+      text: "",
+      position: { x: Math.max(4, point.x - 75), y: Math.max(4, point.y - 20) },
+      width: 160,
+      height: 52,
+      fontSize: 20,
+      color: activeColor,
+    };
+    try {
+      const elId = await pathService.saveTextElement(id!, newEl);
+      const saved: TextElement = { ...newEl, id: elId, createdAt: new Date() };
+      setTextElements((prev) => [...prev, saved]);
+      setSelectedTextId(elId);
+      setEditingTextId(elId);
+      scheduleSave();
+    } catch {
+      Alert.alert("Error", "Failed to create text element");
+    }
+  };
+
+  const handleTextSelect = (elementId: string) => {
+    setSelectedTextId(elementId);
+    setEditingTextId(elementId);
+  };
+
+  const handleTextBlur = async (elementId: string, text: string) => {
+    setEditingTextId(null);
+    setSelectedTextId(null);
+    try {
+      await pathService.updateTextElement(id!, elementId, { text });
+      setTextElements((prev) =>
+        prev.map((el) => (el.id === elementId ? { ...el, text } : el))
+      );
+      scheduleSave();
+    } catch {
+      // Silent — text is already in local state
+    }
+  };
+
+  const handleTextResize = async (
+    elementId: string,
+    width: number,
+    height: number,
+    fontSize: number
+  ) => {
+    try {
+      await pathService.updateTextElement(id!, elementId, { width, height, fontSize });
+      setTextElements((prev) =>
+        prev.map((el) =>
+          el.id === elementId ? { ...el, width, height, fontSize } : el
+        )
+      );
+      scheduleSave();
+    } catch {
+      // Silent
     }
   };
 
@@ -244,7 +361,6 @@ export default function BoardScreen() {
 
   const handleUndo = async () => {
     if (paths.length === 0) return;
-    // Admin undoes any last stroke; regular user undoes their own last stroke
     const targetPath = isAdmin
       ? paths[paths.length - 1]
       : [...paths].reverse().find((p) => p.userId === user?.uid);
@@ -263,12 +379,26 @@ export default function BoardScreen() {
       await Promise.all([
         pathService.clearBoardPaths(id!),
         pathService.clearBoardNotes(id!),
+        pathService.clearBoardTextElements(id!),
       ]);
       setPaths([]);
       setNotes([]);
+      setTextElements([]);
+      setSelectedTextId(null);
+      setEditingTextId(null);
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to clear board");
+    }
+  };
+
+  const handleColorChange = (color: string) => {
+    setActiveColor(color);
+    if (selectedTextId) {
+      pathService.updateTextElement(id!, selectedTextId, { color }).catch(() => {});
+      setTextElements((prev) =>
+        prev.map((el) => (el.id === selectedTextId ? { ...el, color } : el))
+      );
     }
   };
 
@@ -290,6 +420,7 @@ export default function BoardScreen() {
   // Filter out blocked users' content
   const visiblePaths = paths.filter((p) => !blockedIds.includes(p.userId));
   const visibleNotes = notes.filter((n) => !blockedIds.includes(n.userId));
+  const visibleTextElements = textElements.filter((el) => !blockedIds.includes(el.userId));
 
   if (loading) {
     return (
@@ -310,6 +441,13 @@ export default function BoardScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <JoinBoardModal
+        visible={joinModalVisible}
+        initialCode={deepLinkCode}
+        onClose={handleDeepLinkCancel}
+        onJoined={handleDeepLinkJoined}
+      />
+
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -324,6 +462,11 @@ export default function BoardScreen() {
         </Text>
 
         <View style={styles.headerRight}>
+          <MemberList
+            boardId={id!}
+            memberUids={board?.members ?? []}
+            currentUserId={user?.uid}
+          />
           <BoardUserBar
             presence={presence}
             boardTitle={board?.title ?? "Board"}
@@ -331,6 +474,13 @@ export default function BoardScreen() {
             blockedIds={blockedIds}
             onBlock={handleBlockUser}
           />
+          <TouchableOpacity
+            onPress={handleShare}
+            style={styles.iconBtn}
+            hitSlop={8}
+          >
+            <Ionicons name="share-outline" size={22} color="#2563eb" />
+          </TouchableOpacity>
           {isAdmin && (
             <>
               <TouchableOpacity
@@ -341,7 +491,7 @@ export default function BoardScreen() {
                 <Text style={styles.startSessionText}>Session</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.adminBadge}
+                style={styles.iconBtn}
                 onPress={() =>
                   Alert.alert(
                     "Board Admin",
@@ -357,7 +507,7 @@ export default function BoardScreen() {
         </View>
       </View>
 
-      {/* Canvas + Notes layer */}
+      {/* Canvas + Notes + Text Elements */}
       <View style={styles.canvasContainer}>
         <DrawingCanvas
           paths={visiblePaths}
@@ -380,6 +530,20 @@ export default function BoardScreen() {
           onCancelNote={handleCancelNote}
           onDeleteNote={handleDeleteNote}
         />
+        {/* Text elements overlay */}
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          {visibleTextElements.map((el) => (
+            <TextElementView
+              key={el.id}
+              element={el}
+              isSelected={selectedTextId === el.id}
+              isEditing={editingTextId === el.id}
+              onSelect={handleTextSelect}
+              onBlur={handleTextBlur}
+              onResize={handleTextResize}
+            />
+          ))}
+        </View>
       </View>
 
       {/* Toolbar */}
@@ -389,7 +553,7 @@ export default function BoardScreen() {
         activeStrokeWidth={activeStrokeWidth}
         isAdmin={isAdmin}
         onToolChange={setActiveTool}
-        onColorChange={setActiveColor}
+        onColorChange={handleColorChange}
         onStrokeWidthChange={setActiveStrokeWidth}
         onUndo={handleUndo}
         onClear={handleClear}
@@ -442,7 +606,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
     color: "#333",
-    textAlign: "center",
     marginHorizontal: 8,
   },
   headerRight: {
@@ -452,8 +615,8 @@ const styles = StyleSheet.create({
     minWidth: 32,
     justifyContent: "flex-end",
   },
-  adminBadge: {
-    padding: 2,
+  iconBtn: {
+    padding: 4,
   },
   startSessionBtn: {
     flexDirection: "row",

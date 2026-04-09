@@ -26,6 +26,7 @@ function mapSession(id: string, data: any): Session {
     createdByName: data.createdByName ?? "",
     participantIds: data.participantIds ?? [],
     status: data.status ?? "scheduled",
+    summary: data.summary,
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
 }
@@ -33,10 +34,11 @@ function mapSession(id: string, data: any): Session {
 export async function createSession(
   data: Omit<Session, "id" | "createdAt">
 ): Promise<string> {
-  const ref = await addDoc(collection(db, "sessions"), {
-    ...data,
-    createdAt: serverTimestamp(),
-  });
+  // Omit undefined fields — Firestore rejects them
+  const { summary, ...rest } = data;
+  const payload: Record<string, any> = { ...rest, createdAt: serverTimestamp() };
+  if (summary !== undefined) payload.summary = summary;
+  const ref = await addDoc(collection(db, "sessions"), payload);
   return ref.id;
 }
 
@@ -87,6 +89,13 @@ export async function updateSessionStatus(
   status: Session["status"]
 ): Promise<void> {
   await updateDoc(doc(db, "sessions", sessionId), { status });
+}
+
+export async function updateSessionSummary(
+  sessionId: string,
+  summary: string
+): Promise<void> {
+  await updateDoc(doc(db, "sessions", sessionId), { summary });
 }
 
 /** Returns the push tokens of all participants who have one stored. */

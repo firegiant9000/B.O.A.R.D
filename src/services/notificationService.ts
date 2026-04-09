@@ -78,7 +78,8 @@ export async function sendSessionPushNotifications(
       },
       body: JSON.stringify(messages),
     });
-  } catch {
+  } catch (error) {
     // Non-fatal — session is still created even if the push fails
+    console.warn("Push notification delivery failed:", error);
   }
 }

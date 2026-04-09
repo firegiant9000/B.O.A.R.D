@@ -15,6 +15,7 @@ import { useAuth } from "../../src/hooks/useAuth";
 import { Session } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
+import * as aiService from "../../src/services/aiService";
 
 type FilterTab = "upcoming" | "active" | "past";
 
@@ -65,6 +66,7 @@ export default function ScheduleScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<FilterTab>("active");
+  const [generatingId, setGeneratingId] = useState<string | null>(null);
 
   const fetchSessions = useCallback(async () => {
     if (!user) return;
@@ -127,6 +129,35 @@ export default function ScheduleScreen() {
     }
   };
 
+  const handleGenerateSummary = async (session: Session) => {
+    if (!aiService.getOpenAIKey()) {
+      Alert.alert(
+        "API Key Required",
+        "To generate AI summaries, add your OpenAI API key in the Profile tab under Settings.",
+      );
+      return;
+    }
+
+    setGeneratingId(session.id);
+    try {
+      const summary = await aiService.generateSessionSummary(session.boardId, {
+        sessionTitle: session.title,
+        boardTitle: session.boardTitle,
+        durationMinutes: session.durationMinutes,
+        participantCount: session.participantIds.length + 1,
+      });
+      await sessionService.updateSessionSummary(session.id, summary);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === session.id ? { ...s, summary } : s))
+      );
+      Alert.alert("Summary Generated", summary);
+    } catch (error: any) {
+      Alert.alert("Summary Failed", error.message ?? "Failed to generate summary.");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
   const filtered = sessions.filter((s) => classifySession(s) === activeTab);
 
   const counts: Record<FilterTab, number> = {
@@ -176,23 +207,74 @@ export default function ScheduleScreen() {
           {isCreator(item) ? "You started this session" : `Started by ${item.createdByName}`}
         </Text>
 
+        {/* AI Summary (for ended sessions) */}
+        {tab === "past" && item.summary && (
+          <View style={styles.summaryBox}>
+            <View style={styles.summaryHeader}>
+              <Ionicons name="sparkles" size={14} color="#7c3aed" />
+              <Text style={styles.summaryLabel}>AI Summary</Text>
+            </View>
+            <Text style={styles.summaryText}>{item.summary}</Text>
+          </View>
+        )}
+
         {/* Admin actions */}
-        {isCreator(item) && tab !== "past" && (
+        {isCreator(item) && (
           <View style={styles.cardActions}>
-            <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={() => handleResendNotification(item)}
-            >
-              <Ionicons name="notifications-outline" size={14} color="#2563eb" />
-              <Text style={styles.actionBtnText}>Resend Notification</Text>
-            </TouchableOpacity>
-            {tab === "active" && (
+            {tab !== "past" && (
+              <>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => handleResendNotification(item)}
+                >
+                  <Ionicons name="notifications-outline" size={14} color="#2563eb" />
+                  <Text style={styles.actionBtnText}>Resend Notification</Text>
+                </TouchableOpacity>
+                {tab === "active" && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.actionBtnDanger]}
+                    onPress={() => handleMarkEnded(item.id)}
+                  >
+                    <Ionicons name="stop-circle-outline" size={14} color="#ef4444" />
+                    <Text style={[styles.actionBtnText, { color: "#ef4444" }]}>End Session</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+            {tab === "past" && !item.summary && (
               <TouchableOpacity
-                style={[styles.actionBtn, styles.actionBtnDanger]}
-                onPress={() => handleMarkEnded(item.id)}
+                style={[styles.actionBtn, styles.actionBtnAI]}
+                onPress={() => handleGenerateSummary(item)}
+                disabled={generatingId === item.id}
               >
-                <Ionicons name="stop-circle-outline" size={14} color="#ef4444" />
-                <Text style={[styles.actionBtnText, { color: "#ef4444" }]}>End Session</Text>
+                {generatingId === item.id ? (
+                  <ActivityIndicator size="small" color="#7c3aed" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={14} color="#7c3aed" />
+                    <Text style={[styles.actionBtnText, { color: "#7c3aed" }]}>
+                      Generate AI Summary
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+            {tab === "past" && item.summary && (
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnAI]}
+                onPress={() => handleGenerateSummary(item)}
+                disabled={generatingId === item.id}
+              >
+                {generatingId === item.id ? (
+                  <ActivityIndicator size="small" color="#7c3aed" />
+                ) : (
+                  <>
+                    <Ionicons name="refresh-outline" size={14} color="#7c3aed" />
+                    <Text style={[styles.actionBtnText, { color: "#7c3aed" }]}>
+                      Regenerate
+                    </Text>
+                  </>
+                )}
               </TouchableOpacity>
             )}
           </View>
@@ -424,6 +506,10 @@ const styles = StyleSheet.create({
     borderColor: "#fecaca",
     backgroundColor: "#fff1f2",
   },
+  actionBtnAI: {
+    borderColor: "#ddd6fe",
+    backgroundColor: "#f5f3ff",
+  },
   actionBtnText: {
     fontSize: 13,
     fontWeight: "600",
@@ -442,6 +528,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#2563eb",
+  },
+  // ── Summary ──
+  summaryBox: {
+    backgroundColor: "#f5f3ff",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#ddd6fe",
+  },
+  summaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginBottom: 6,
+  },
+  summaryLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#7c3aed",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  summaryText: {
+    fontSize: 14,
+    color: "#374151",
+    lineHeight: 20,
   },
   // ── Empty state ──
   emptyState: {

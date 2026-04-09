@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { FriendRequest } from "../../src/types";
 import * as friendService from "../../src/services/friendService";
+import * as aiService from "../../src/services/aiService";
 
 export default function ProfileScreen() {
   const { userProfile, user, signOut } = useAuth();
@@ -27,6 +28,10 @@ export default function ProfileScreen() {
   const [addEmail, setAddEmail] = useState("");
   const [addingFriend, setAddingFriend] = useState(false);
   const [showAddInput, setShowAddInput] = useState(false);
+
+  // AI settings
+  const [aiKey, setAiKey] = useState(aiService.getOpenAIKey() ?? "");
+  const [aiKeySaved, setAiKeySaved] = useState(!!aiService.getOpenAIKey());
 
   const fetchFriends = useCallback(async () => {
     if (!user) return;
@@ -252,6 +257,53 @@ export default function ProfileScreen() {
             );
           })
         )}
+      </View>
+
+      {/* ── AI Settings section ── */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>AI Settings</Text>
+          <View style={[styles.aiBadge, aiKeySaved ? styles.aiBadgeActive : styles.aiBadgeInactive]}>
+            <Ionicons
+              name={aiKeySaved ? "checkmark-circle" : "alert-circle-outline"}
+              size={14}
+              color={aiKeySaved ? "#16a34a" : "#9ca3af"}
+            />
+            <Text style={[styles.aiBadgeText, aiKeySaved ? styles.aiBadgeTextActive : styles.aiBadgeTextInactive]}>
+              {aiKeySaved ? "Configured" : "Not set"}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.aiHint}>
+          Enter your OpenAI API key to enable AI-generated session summaries.
+        </Text>
+        <View style={styles.addFriendRow}>
+          <TextInput
+            style={styles.emailInput}
+            placeholder="sk-..."
+            value={aiKey}
+            onChangeText={(text) => {
+              setAiKey(text);
+              setAiKeySaved(false);
+            }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+          />
+          <TouchableOpacity
+            style={[styles.sendBtn, !aiKey.trim() && styles.sendBtnDisabled]}
+            onPress={() => {
+              const trimmed = aiKey.trim();
+              if (!trimmed) return;
+              aiService.setOpenAIKey(trimmed);
+              setAiKeySaved(true);
+              Alert.alert("Saved", "OpenAI API key has been configured for this session.");
+            }}
+            disabled={!aiKey.trim()}
+          >
+            <Ionicons name="checkmark" size={18} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Sign out */}
@@ -491,6 +543,37 @@ const styles = StyleSheet.create({
   friendSince: {
     fontSize: 12,
     color: "#6b7280",
+  },
+  // ── AI Settings ──
+  aiBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  aiBadgeActive: {
+    backgroundColor: "#dcfce7",
+  },
+  aiBadgeInactive: {
+    backgroundColor: "#f3f4f6",
+  },
+  aiBadgeText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  aiBadgeTextActive: {
+    color: "#16a34a",
+  },
+  aiBadgeTextInactive: {
+    color: "#9ca3af",
+  },
+  aiHint: {
+    fontSize: 13,
+    color: "#6b7280",
+    marginBottom: 12,
+    lineHeight: 18,
   },
   // ── Sign out ──
   signOutButton: {
