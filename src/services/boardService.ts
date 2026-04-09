@@ -18,6 +18,39 @@ import { Board } from "../types";
 
 const boardsRef = collection(db, "boards");
 
+function mapBoard(id: string, data: Record<string, any>): Board {
+  return {
+    id,
+    title: data.title ?? "Untitled",
+    ownerId: data.ownerId ?? "",
+    adminId: data.adminId ?? data.ownerId ?? "",
+    collaboratorIds: data.collaboratorIds ?? [],
+    inviteCode: data.inviteCode ?? "",
+    members: data.members ?? [],
+    createdAt: data.createdAt?.toDate() ?? new Date(),
+    updatedAt: data.updatedAt?.toDate() ?? new Date(),
+  };
+}
+
+function generateInviteCode(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let suffix = "";
+  for (let i = 0; i < 6; i++) {
+    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `BORD-${suffix}`;
+}
+
+/** Deletes all documents in a subcollection in 500-doc batches. */
+async function deleteSubcollection(boardId: string, subcollection: string): Promise<void> {
+  const snap = await getDocs(collection(db, "boards", boardId, subcollection));
+  for (let i = 0; i < snap.docs.length; i += 500) {
+    const batch = writeBatch(db);
+    snap.docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
 export async function createBoard(
   title: string,
   ownerId: string
@@ -26,6 +59,7 @@ export async function createBoard(
   const docRef = await addDoc(boardsRef, {
     title,
     ownerId,
+    adminId: ownerId,
     collaboratorIds: [],
     inviteCode,
     members: [ownerId],
@@ -38,44 +72,26 @@ export async function createBoard(
 export async function getUserBoards(userId: string): Promise<Board[]> {
   const q = query(boardsRef, where("ownerId", "==", userId));
   const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => mapBoard(d.id, d.data()));
+}
 
+export async function getMemberBoards(userId: string): Promise<Board[]> {
+  const q = query(boardsRef, where("members", "array-contains", userId));
+  const snapshot = await getDocs(q);
   return snapshot.docs
-    .map((doc) => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        title: data.title,
-        ownerId: data.ownerId,
-        collaboratorIds: data.collaboratorIds ?? [],
-        inviteCode: data.inviteCode ?? "",
-        members: data.members ?? [],
-        createdAt: data.createdAt?.toDate() ?? new Date(),
-        updatedAt: data.updatedAt?.toDate() ?? new Date(),
-      };
-    })
+    .map((d) => mapBoard(d.id, d.data()))
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 export async function getBoard(boardId: string): Promise<Board | null> {
   const docSnap = await getDoc(doc(db, "boards", boardId));
   if (!docSnap.exists()) return null;
-
-  const data = docSnap.data();
-  return {
-    id: docSnap.id,
-    title: data.title,
-    ownerId: data.ownerId,
-    collaboratorIds: data.collaboratorIds ?? [],
-    inviteCode: data.inviteCode ?? "",
-    members: data.members ?? [],
-    createdAt: data.createdAt?.toDate() ?? new Date(),
-    updatedAt: data.updatedAt?.toDate() ?? new Date(),
-  };
+  return mapBoard(docSnap.id, docSnap.data());
 }
 
 export async function updateBoard(
   boardId: string,
-  data: Partial<Pick<Board, "title">>
+  data: Partial<Pick<Board, "title" | "adminId">>
 ): Promise<void> {
   await updateDoc(doc(db, "boards", boardId), {
     ...data,
@@ -83,20 +99,21 @@ export async function updateBoard(
   });
 }
 
-/** Deletes a board and all its subcollection documents (paths, notes, presence). */
+export async function assignBoardAdmin(
+  boardId: string,
+  newAdminId: string
+): Promise<void> {
+  await updateDoc(doc(db, "boards", boardId), { adminId: newAdminId });
+}
+
+/** Deletes a board and all its subcollection documents (paths, notes, presence, textElements). */
 export async function deleteBoard(boardId: string): Promise<void> {
-  const subcollections = ["paths", "notes", "presence", "textElements"];
-
-  for (const sub of subcollections) {
-    const snapshot = await getDocs(collection(db, "boards", boardId, sub));
-    // Firestore batch limit is 500 ops
-    for (let i = 0; i < snapshot.docs.length; i += 500) {
-      const batch = writeBatch(db);
-      snapshot.docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
-      await batch.commit();
-    }
-  }
-
+  await Promise.all([
+    deleteSubcollection(boardId, "paths"),
+    deleteSubcollection(boardId, "notes"),
+    deleteSubcollection(boardId, "presence"),
+    deleteSubcollection(boardId, "textElements"),
+  ]);
   await deleteDoc(doc(db, "boards", boardId));
 }
 
@@ -108,15 +125,6 @@ export async function leaveBoard(boardId: string): Promise<void> {
     members: arrayRemove(currentUser.uid),
     updatedAt: serverTimestamp(),
   });
-}
-
-function generateInviteCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let suffix = "";
-  for (let i = 0; i < 6; i++) {
-    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `BORD-${suffix}`;
 }
 
 export type JoinBoardResult = { boardId: string; alreadyMember: boolean };
@@ -148,25 +156,4 @@ export async function joinBoardByCode(inputCode: string): Promise<JoinBoardResul
   });
 
   return { boardId: boardDoc.id, alreadyMember: false };
-}
-
-export async function getMemberBoards(userId: string): Promise<Board[]> {
-  const q = query(boardsRef, where("members", "array-contains", userId));
-  const snapshot = await getDocs(q);
-
-  return snapshot.docs
-    .map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        title: data.title,
-        ownerId: data.ownerId,
-        collaboratorIds: data.collaboratorIds ?? [],
-        inviteCode: data.inviteCode ?? "",
-        members: data.members ?? [],
-        createdAt: data.createdAt?.toDate() ?? new Date(),
-        updatedAt: data.updatedAt?.toDate() ?? new Date(),
-      };
-    })
-    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }

@@ -18,17 +18,21 @@ import TextNoteOverlay from "../../src/components/TextNoteOverlay";
 import TextElementView from "../../src/components/TextElementView";
 import MemberList from "../../src/components/MemberList";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
+import BoardUserBar from "../../src/components/BoardUserBar";
+import StartSessionModal from "../../src/components/StartSessionModal";
 import { useAuth } from "../../src/hooks/useAuth";
 import * as boardService from "../../src/services/boardService";
 import * as pathService from "../../src/services/pathService";
-import { Board, DrawPath, TextNote, TextElement } from "../../src/types";
+import * as presenceService from "../../src/services/presenceService";
+import * as friendService from "../../src/services/friendService";
+import { Board, BoardPresence, DrawPath, TextNote, TextElement } from "../../src/types";
 
 type Tool = "pen" | "eraser" | "text";
 
 export default function BoardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
 
   // Board state
   const [board, setBoard] = useState<Board | null>(null);
@@ -57,12 +61,22 @@ export default function BoardScreen() {
     y: number;
   } | null>(null);
 
+  // Presence & friends state
+  const [presence, setPresence] = useState<BoardPresence[]>([]);
+  const [blockedIds, setBlockedIds] = useState<string[]>([]);
+
   // Deep-link join modal
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [deepLinkCode, setDeepLinkCode] = useState<string | undefined>();
 
+  // Session modal
+  const [sessionModalVisible, setSessionModalVisible] = useState(false);
+
   // Auto-save debounce
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Derived
+  const isAdmin = !!user && !!board && user.uid === board.adminId;
 
   // Load board data on mount
   useEffect(() => {
@@ -70,15 +84,35 @@ export default function BoardScreen() {
     loadBoard();
   }, [id]);
 
-  // Clear debounced save timer on unmount
+  // Presence: join on mount, subscribe to updates, leave on unmount
+  useEffect(() => {
+    if (!id || !user) return;
+
+    const displayName = userProfile?.displayName ?? user.email ?? "User";
+    const email = userProfile?.email ?? user.email ?? "";
+
+    presenceService.joinBoard(id, user.uid, displayName, email).catch(() => {});
+
+    const unsubscribe = presenceService.subscribeToBoardPresence(id, setPresence);
+
+    return () => {
+      unsubscribe();
+      presenceService.leaveBoard(id, user.uid).catch(() => {});
+    };
+  }, [id, user]);
+
+  // Load blocked IDs on mount
+  useEffect(() => {
+    if (!user) return;
+    friendService.getBlockedIds(user.uid).then(setBlockedIds).catch(() => {});
+  }, [user]);
+
+  // Clear debounce timer on unmount
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [id]);
+  }, []);
 
   const loadBoard = async () => {
     try {
@@ -89,23 +123,24 @@ export default function BoardScreen() {
         pathService.getBoardNotes(id!),
         pathService.getBoardTextElements(id!),
       ]);
+
       if (!boardData) {
-        Alert.alert("Board not found", "This board may have been deleted.", [
-          { text: "OK", onPress: () => router.back() },
-        ]);
+        Alert.alert("Not Found", "This board no longer exists.");
+        router.back();
         return;
       }
+
       setBoard(boardData);
       setPaths(pathsData);
       setNotes(notesData);
       setTextElements(textElementsData);
 
       // Deep-link gate: if the viewer isn't a member yet, prompt them to join
-      if (boardData && user && !boardData.members.includes(user.uid)) {
+      if (user && !boardData.members.includes(user.uid)) {
         setDeepLinkCode(boardData.inviteCode);
         setJoinModalVisible(true);
       }
-    } catch (err) {
+    } catch {
       Alert.alert("Error", "Failed to load board");
     } finally {
       setLoading(false);
@@ -146,7 +181,7 @@ export default function BoardScreen() {
         url: deepLink,
       });
     } catch {
-      // User dismissed the share sheet — no action needed
+      // User dismissed the share sheet
     }
   };
 
@@ -330,10 +365,13 @@ export default function BoardScreen() {
 
   const handleUndo = async () => {
     if (paths.length === 0) return;
-    const lastPath = paths[paths.length - 1];
+    const targetPath = isAdmin
+      ? paths[paths.length - 1]
+      : [...paths].reverse().find((p) => p.userId === user?.uid);
+    if (!targetPath) return;
     try {
-      await pathService.deletePath(id!, lastPath.id);
-      setPaths((prev) => prev.slice(0, -1));
+      await pathService.deletePath(id!, targetPath.id);
+      setPaths((prev) => prev.filter((p) => p.id !== targetPath.id));
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to undo");
@@ -358,17 +396,13 @@ export default function BoardScreen() {
     }
   };
 
-  const handleColorChange = async (color: string) => {
+  const handleColorChange = (color: string) => {
     setActiveColor(color);
     if (selectedTextId) {
-      try {
-        await pathService.updateTextElement(id!, selectedTextId, { color });
-        setTextElements((prev) =>
-          prev.map((el) => (el.id === selectedTextId ? { ...el, color } : el))
-        );
-      } catch {
-        // Silent
-      }
+      pathService.updateTextElement(id!, selectedTextId, { color }).catch(() => {});
+      setTextElements((prev) =>
+        prev.map((el) => (el.id === selectedTextId ? { ...el, color } : el))
+      );
     }
   };
 
@@ -381,6 +415,17 @@ export default function BoardScreen() {
     }
   };
 
+  // --- Blocked user handler ---
+
+  const handleBlockUser = (userId: string) => {
+    setBlockedIds((prev) => [...prev, userId]);
+  };
+
+  // Filter out blocked users' content
+  const visiblePaths = paths.filter((p) => !blockedIds.includes(p.userId));
+  const visibleNotes = notes.filter((n) => !blockedIds.includes(n.userId));
+  const visibleTextElements = textElements.filter((el) => !blockedIds.includes(el.userId));
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -388,6 +433,12 @@ export default function BoardScreen() {
       </View>
     );
   }
+
+  const currentUserInfo = {
+    uid: user?.uid ?? "",
+    displayName: userProfile?.displayName ?? user?.email ?? "User",
+    email: userProfile?.email ?? user?.email ?? "",
+  };
 
   return (
     <KeyboardAvoidingView
@@ -409,33 +460,61 @@ export default function BoardScreen() {
         >
           <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
+
         <Text style={styles.title} numberOfLines={1}>
           {board?.title ?? "Board"}
         </Text>
-        <MemberList
-          boardId={id!}
-          memberUids={board?.members ?? []}
-          currentUserId={user?.uid}
-        />
-        <TouchableOpacity
-          onPress={() => router.push(`/session/create?boardId=${id}`)}
-          style={styles.backBtn}
-        >
-          <Ionicons name="calendar-outline" size={24} color="#333" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={handleShare}
-          style={styles.shareBtn}
-          hitSlop={8}
-        >
-          <Ionicons name="share-outline" size={22} color="#2563eb" />
-        </TouchableOpacity>
+
+        <View style={styles.headerRight}>
+          <MemberList
+            boardId={id!}
+            memberUids={board?.members ?? []}
+            currentUserId={user?.uid}
+          />
+          <BoardUserBar
+            presence={presence}
+            boardTitle={board?.title ?? "Board"}
+            currentUser={currentUserInfo}
+            blockedIds={blockedIds}
+            onBlock={handleBlockUser}
+          />
+          <TouchableOpacity
+            onPress={handleShare}
+            style={styles.iconBtn}
+            hitSlop={8}
+          >
+            <Ionicons name="share-outline" size={22} color="#2563eb" />
+          </TouchableOpacity>
+          {isAdmin && (
+            <>
+              <TouchableOpacity
+                style={styles.startSessionBtn}
+                onPress={() => setSessionModalVisible(true)}
+              >
+                <Ionicons name="play-circle-outline" size={16} color="#fff" />
+                <Text style={styles.startSessionText}>Session</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.iconBtn}
+                onPress={() =>
+                  Alert.alert(
+                    "Board Admin",
+                    "You are the admin of this board. You can delete any user's notes and clear the entire board.",
+                    [{ text: "OK" }]
+                  )
+                }
+              >
+                <Ionicons name="shield-checkmark" size={20} color="#2563eb" />
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </View>
 
-      {/* Canvas + Notes layer */}
+      {/* Canvas + Notes + Text Elements */}
       <View style={styles.canvasContainer}>
         <DrawingCanvas
-          paths={paths}
+          paths={visiblePaths}
           currentPath={currentPoints}
           color={activeColor}
           strokeWidth={activeStrokeWidth}
@@ -446,15 +525,17 @@ export default function BoardScreen() {
           onCanvasTap={handleCanvasTap}
         />
         <TextNoteOverlay
-          notes={notes}
+          notes={visibleNotes}
           pendingNotePosition={pendingNotePosition}
+          currentUserId={user?.uid ?? ""}
+          isAdmin={isAdmin}
           onSubmitNote={handleSubmitNote}
           onCancelNote={handleCancelNote}
           onDeleteNote={handleDeleteNote}
         />
-        {/* Text elements overlay — box-none so blank areas pass touches to canvas */}
+        {/* Text elements overlay */}
         <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-          {textElements.map((el) => (
+          {visibleTextElements.map((el) => (
             <TextElementView
               key={el.id}
               element={el}
@@ -473,6 +554,7 @@ export default function BoardScreen() {
         activeTool={activeTool}
         activeColor={activeColor}
         activeStrokeWidth={activeStrokeWidth}
+        isAdmin={isAdmin}
         onToolChange={setActiveTool}
         onColorChange={handleColorChange}
         onStrokeWidthChange={setActiveStrokeWidth}
@@ -480,6 +562,19 @@ export default function BoardScreen() {
         onClear={handleClear}
         onSave={handleSave}
       />
+
+      {isAdmin && (
+        <StartSessionModal
+          visible={sessionModalVisible}
+          boardId={id!}
+          boardTitle={board?.title ?? "Board"}
+          adminId={user?.uid ?? ""}
+          adminName={currentUserInfo.displayName}
+          presenceUsers={presence}
+          onClose={() => setSessionModalVisible(false)}
+          onSessionCreated={() => setSessionModalVisible(false)}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -507,18 +602,38 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     padding: 4,
-  },
-  shareBtn: {
-    padding: 4,
-    marginLeft: 8,
+    marginRight: 4,
   },
   title: {
     flex: 1,
     fontSize: 18,
     fontWeight: "600",
     color: "#333",
-    textAlign: "left",
-    marginHorizontal: 12,
+    marginHorizontal: 8,
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 32,
+    justifyContent: "flex-end",
+  },
+  iconBtn: {
+    padding: 4,
+  },
+  startSessionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#2563eb",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  startSessionText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   canvasContainer: {
     flex: 1,

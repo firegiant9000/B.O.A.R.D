@@ -38,6 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             email: data.email,
             displayName: data.displayName,
             createdAt: data.createdAt?.toDate() ?? new Date(),
+            pushToken: data.pushToken,
           });
         }
       } else {

@@ -30,7 +30,7 @@ const DURATION_OPTIONS = [
 
 export default function CreateSessionScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const params = useLocalSearchParams<{
     boardId?: string;
     sessionId?: string;
@@ -120,10 +120,13 @@ export default function CreateSessionScreen() {
           title: title.trim(),
           description: description.trim(),
           boardId: selectedBoard.id,
+          boardTitle: selectedBoard.title,
           scheduledAt: date,
           durationMinutes: finalDuration,
           createdById: user.uid,
+          createdByName: userProfile?.displayName ?? user.displayName ?? "",
           participantIds: [],
+          status: "scheduled",
         });
       }
       router.back();

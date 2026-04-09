@@ -14,6 +14,8 @@ interface TextNoteOverlayProps {
   notes: TextNote[];
   /** If set, shows a text input at this position for creating a new note */
   pendingNotePosition: { x: number; y: number } | null;
+  currentUserId: string;
+  isAdmin: boolean;
   onSubmitNote: (content: string) => void;
   onCancelNote: () => void;
   onDeleteNote: (noteId: string) => void;
@@ -22,6 +24,8 @@ interface TextNoteOverlayProps {
 export default function TextNoteOverlay({
   notes,
   pendingNotePosition,
+  currentUserId,
+  isAdmin,
   onSubmitNote,
   onCancelNote,
   onDeleteNote,
@@ -56,24 +60,30 @@ export default function TextNoteOverlay({
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       {/* Render existing notes */}
-      {notes.map((note) => (
-        <View
-          key={note.id}
-          style={[
-            styles.note,
-            { left: note.position.x - 60, top: note.position.y - 20 },
-          ]}
-        >
-          <Text style={styles.noteText}>{note.content}</Text>
-          <TouchableOpacity
-            style={styles.deleteBtn}
-            onPress={() => onDeleteNote(note.id)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      {notes.map((note) => {
+        const canDelete = isAdmin || note.userId === currentUserId;
+        return (
+          <View
+            key={note.id}
+            style={[
+              styles.note,
+              { left: note.position.x - 60, top: note.position.y - 20 },
+              isAdmin && note.userId !== currentUserId && styles.noteOtherUser,
+            ]}
           >
-            <Ionicons name="close-circle" size={16} color="#FF3B30" />
-          </TouchableOpacity>
-        </View>
-      ))}
+            <Text style={styles.noteText}>{note.content}</Text>
+            {canDelete && (
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                onPress={() => onDeleteNote(note.id)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close-circle" size={16} color="#FF3B30" />
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+      })}
 
       {/* Pending new note input */}
       {pendingNotePosition && (
@@ -95,6 +105,7 @@ export default function TextNoteOverlay({
             onSubmitEditing={handleSubmit}
             onBlur={handleSubmit}
             returnKeyType="done"
+            maxLength={200}
             autoFocus
           />
         </View>
@@ -119,6 +130,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 4,
+  },
+  noteOtherUser: {
+    borderWidth: 1,
+    borderColor: "#FF9500",
+    borderStyle: "dashed",
   },
   noteText: {
     fontSize: 14,

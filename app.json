@@ -29,6 +29,16 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2563eb",
+          "sounds": [],
+          "androidMode": "default",
+          "androidCollapsedTitle": "Board Sessions"
+        }
+      ],
       "@react-native-community/datetimepicker"
     ]
   }

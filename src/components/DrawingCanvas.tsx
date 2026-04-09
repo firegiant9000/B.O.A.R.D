@@ -126,7 +126,7 @@ export default function DrawingCanvas({
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
       <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
-        {/* Render saved paths */}
+        {/* Render saved paths — eraser strokes paint over with the background color */}
         {pathStrings.map((p) => {
           if (!p.d) return null;
           return (
@@ -141,11 +141,11 @@ export default function DrawingCanvas({
             />
           );
         })}
-        {/* Render current in-progress path */}
+        {/* Render current in-progress path — eraser shows a light indicator */}
         {currentPath && currentPath.length > 0 && (
           <Path
             d={pointsToSvgPath(currentPath)}
-            stroke={tool === "eraser" ? "#FFFFFF" : color}
+            stroke={tool === "eraser" ? "#E5E7EB" : color}
             strokeWidth={tool === "eraser" ? strokeWidth + 10 : strokeWidth}
             fill="none"
             strokeLinecap="round"

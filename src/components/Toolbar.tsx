@@ -14,6 +14,7 @@ interface ToolbarProps {
   activeTool: Tool;
   activeColor: string;
   activeStrokeWidth: number;
+  isAdmin: boolean;
   onToolChange: (tool: Tool) => void;
   onColorChange: (color: string) => void;
   onStrokeWidthChange: (width: number) => void;
@@ -43,6 +44,7 @@ export default function Toolbar({
   activeTool,
   activeColor,
   activeStrokeWidth,
+  isAdmin,
   onToolChange,
   onColorChange,
   onStrokeWidthChange,
@@ -53,10 +55,10 @@ export default function Toolbar({
   const handleClear = () => {
     Alert.alert(
       "Clear Board",
-      "Are you sure you want to clear all drawings and notes?",
+      "This will permanently delete all drawings and notes on this board.",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Clear", style: "destructive", onPress: onClear },
+        { text: "Clear All", style: "destructive", onPress: onClear },
       ]
     );
   };
@@ -138,7 +140,9 @@ export default function Toolbar({
         {/* Actions */}
         <View style={styles.group}>
           <ToolButton icon="arrow-undo" active={false} onPress={onUndo} />
-          <ToolButton icon="trash-outline" active={false} onPress={handleClear} />
+          {isAdmin && (
+            <ToolButton icon="trash-outline" active={false} onPress={handleClear} />
+          )}
           <ToolButton icon="save-outline" active={false} onPress={onSave} />
         </View>
       </ScrollView>
