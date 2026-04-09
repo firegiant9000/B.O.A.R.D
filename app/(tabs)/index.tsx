@@ -20,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
+import * as sessionService from "../../src/services/sessionService";
 import { JoinBoardResult } from "../../src/services/boardService";
 import BoardCard from "../../src/components/BoardCard";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
@@ -29,6 +30,7 @@ export default function BoardsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const [boards, setBoards] = useState<Board[]>([]);
+  const [sessionCounts, setSessionCounts] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
@@ -40,8 +42,17 @@ export default function BoardsScreen() {
   const fetchBoards = useCallback(async () => {
     if (!user) return;
     try {
-      const data = await boardService.getMemberBoards(user.uid);
+      const [data, sessions] = await Promise.all([
+        boardService.getMemberBoards(user.uid),
+        sessionService.getUpcomingSessions(user.uid),
+      ]);
       setBoards(data);
+
+      const counts = new Map<string, number>();
+      for (const s of sessions) {
+        counts.set(s.boardId, (counts.get(s.boardId) ?? 0) + 1);
+      }
+      setSessionCounts(counts);
     } catch (error: any) {
       Alert.alert("Error", error.message ?? "Failed to load boards.");
     } finally {
@@ -145,6 +156,7 @@ export default function BoardsScreen() {
             board={item}
             onPress={() => router.push(`/board/${item.id}`)}
             onDelete={() => handleDeleteBoard(item)}
+            sessionCount={sessionCounts.get(item.id)}
           />
         )}
         contentContainerStyle={boards.length === 0 ? styles.centered : styles.list}
@@ -184,21 +196,28 @@ export default function BoardsScreen() {
           />
           <View style={styles.deleteModalWrapper}>
             <View style={styles.deleteModal}>
+              {/* Icon */}
               <View style={styles.deleteIconWrap}>
                 <Ionicons name="trash-outline" size={24} color="#ef4444" />
               </View>
+
+              {/* Title */}
               <Text style={styles.deleteTitle}>
                 {deleteTarget.ownerId === user?.uid ? "Delete Board?" : "Leave Board?"}
               </Text>
+
+              {/* Body */}
               <Text style={styles.deleteBody}>
                 {deleteTarget.ownerId === user?.uid ? (
                   deleteTarget.members.length > 1
-                    ? `"${deleteTarget.title}" will be permanently deleted. All ${deleteTarget.members.length} members will immediately lose access. This cannot be undone.`
+                    ? `"${deleteTarget.title}" will be permanently deleted. All ${deleteTarget.members.length} members — including ${deleteTarget.members.length - 1} collaborator${deleteTarget.members.length - 1 !== 1 ? "s" : ""} — will immediately lose access. This cannot be undone.`
                     : `"${deleteTarget.title}" will be permanently deleted. This cannot be undone.`
                 ) : (
                   `You will be removed from "${deleteTarget.title}" and will no longer have access to its content.`
                 )}
               </Text>
+
+              {/* Actions */}
               <View style={styles.deleteActions}>
                 <TouchableOpacity
                   style={styles.deleteCancelBtn}
@@ -228,7 +247,7 @@ export default function BoardsScreen() {
         </Modal>
       )}
 
-      {/* Create Board Modal */}
+      {/* Create Board Modal — works on iOS, Android, and web */}
       <Modal
         visible={createModalVisible}
         transparent
@@ -423,6 +442,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#fff",
   },
+  // ── Delete / Leave confirmation modal ─────────────────────────────────────
   deleteModalWrapper: {
     flex: 1,
     justifyContent: "center",

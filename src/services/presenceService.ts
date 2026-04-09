@@ -25,6 +25,7 @@ export async function joinBoard(
     displayName,
     email,
     lastSeen: serverTimestamp(),
+    lastActive: serverTimestamp(),
   });
 }
 
@@ -51,8 +52,8 @@ export function subscribeToBoardPresence(
 }
 
 /**
- * Simple heartbeat-style presence update (writes lastActive timestamp).
- * Used by the useBoardPresence hook for periodic pings.
+ * Writes (or updates) a presence document for the given user under the board's
+ * presence subcollection. Uses merge so we never overwrite unrelated fields.
  */
 export async function updatePresence(
   boardId: string,
@@ -60,23 +61,25 @@ export async function updatePresence(
 ): Promise<void> {
   await setDoc(
     presenceRef(boardId, userId),
-    { lastSeen: serverTimestamp() },
+    { lastActive: serverTimestamp() },
     { merge: true }
   );
 }
 
 /**
- * Real-time listener returning a simple uid → lastActive map.
- * Used by the useBoardPresence hook for online/offline detection.
+ * Opens a real-time listener on the board's presence subcollection.
+ * Returns an unsubscribe function. The callback receives a map of
+ * uid → lastActive Date each time any member's presence changes.
  */
 export function subscribeToPresence(
   boardId: string,
   callback: (presenceMap: Record<string, Date>) => void
 ): () => void {
-  return onSnapshot(collection(db, "boards", boardId, "presence"), (snap) => {
+  const ref = collection(db, "boards", boardId, "presence");
+  return onSnapshot(ref, (snapshot) => {
     const map: Record<string, Date> = {};
-    snap.docs.forEach((d) => {
-      const ts = d.data().lastSeen;
+    snapshot.docs.forEach((d) => {
+      const ts = d.data().lastActive;
       if (ts) map[d.id] = ts.toDate();
     });
     callback(map);

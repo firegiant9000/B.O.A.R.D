@@ -8,7 +8,6 @@ import {
   doc,
   query,
   where,
-  orderBy,
   serverTimestamp,
   arrayUnion,
   arrayRemove,
@@ -71,11 +70,7 @@ export async function createBoard(
 }
 
 export async function getUserBoards(userId: string): Promise<Board[]> {
-  const q = query(
-    boardsRef,
-    where("ownerId", "==", userId),
-    orderBy("updatedAt", "desc")
-  );
+  const q = query(boardsRef, where("ownerId", "==", userId));
   const snapshot = await getDocs(q);
   return snapshot.docs.map((d) => mapBoard(d.id, d.data()));
 }
@@ -111,6 +106,7 @@ export async function assignBoardAdmin(
   await updateDoc(doc(db, "boards", boardId), { adminId: newAdminId });
 }
 
+/** Deletes a board and all its subcollection documents (paths, notes, presence, textElements). */
 export async function deleteBoard(boardId: string): Promise<void> {
   await Promise.all([
     deleteSubcollection(boardId, "paths"),

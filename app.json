@@ -3,7 +3,7 @@
     "name": "BOARD",
     "slug": "board-app",
     "version": "1.0.0",
-    "scheme": "board",
+    "scheme": "boardapp",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -38,7 +38,8 @@
           "androidMode": "default",
           "androidCollapsedTitle": "Board Sessions"
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ]
   }
 }

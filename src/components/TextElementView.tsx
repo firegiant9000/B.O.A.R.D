@@ -35,6 +35,7 @@ export default function TextElementView({
   const [dims, setDims] = useState({ width: element.width, height: element.height });
   const inputRef = useRef<TextInput>(null);
 
+  // Stable mutable refs for closures in PanResponder (created once)
   const dimsRef = useRef(dims);
   const onResizeRef = useRef(onResize);
   const onBlurRef = useRef(onBlur);
@@ -47,14 +48,17 @@ export default function TextElementView({
   useEffect(() => { elementIdRef.current = element.id; });
   useEffect(() => { localTextRef.current = localText; });
 
+  // Sync text from Firestore updates
   useEffect(() => { setLocalText(element.text); }, [element.text]);
 
+  // Sync dimensions from Firestore updates
   useEffect(() => {
     const next = { width: element.width, height: element.height };
     setDims(next);
     dimsRef.current = next;
   }, [element.width, element.height]);
 
+  // Focus the input whenever editing mode activates
   useEffect(() => {
     if (isEditing) {
       const t = setTimeout(() => inputRef.current?.focus(), 80);
@@ -62,6 +66,8 @@ export default function TextElementView({
     }
   }, [isEditing]);
 
+  // Factory — plain objects in closure (not React refs) are fine here since
+  // the PanResponder is only created once via useRef below.
   const makeCornerPanResponder = (corner: "tl" | "tr" | "bl" | "br") => {
     const start = { w: 0, h: 0, px: 0, py: 0 };
     const live = { w: 0, h: 0 };
@@ -85,7 +91,7 @@ export default function TextElementView({
         if (corner === "br") { w += dx; h += dy; }
         else if (corner === "bl") { w -= dx; h += dy; }
         else if (corner === "tr") { w += dx; h -= dy; }
-        else { w -= dx; h -= dy; }
+        else { w -= dx; h -= dy; } // tl
         w = Math.max(MIN_WIDTH, w);
         h = Math.max(MIN_HEIGHT, h);
         live.w = w;
@@ -100,6 +106,7 @@ export default function TextElementView({
     });
   };
 
+  // Create each corner's PanResponder exactly once
   const tlPan = useRef(makeCornerPanResponder("tl")).current;
   const trPan = useRef(makeCornerPanResponder("tr")).current;
   const blPan = useRef(makeCornerPanResponder("bl")).current;
@@ -148,7 +155,9 @@ export default function TextElementView({
 
       {isSelected && (
         <>
+          {/* Dashed selection border — pointerEvents="none" so it doesn't block text taps */}
           <View style={styles.selectionBorder} pointerEvents="none" />
+          {/* Corner resize handles */}
           <View {...tlPan.panHandlers} style={[styles.handle, styles.handleTL]} />
           <View {...trPan.panHandlers} style={[styles.handle, styles.handleTR]} />
           <View {...blPan.panHandlers} style={[styles.handle, styles.handleBL]} />

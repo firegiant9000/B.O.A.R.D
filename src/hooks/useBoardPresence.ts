@@ -35,9 +35,11 @@ export function useBoardPresence(
   const [members, setMembers] = useState<MemberWithPresence[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Refs hold latest data so callbacks never go stale between renders
   const presenceMapRef = useRef<Record<string, Date>>({});
   const profilesRef = useRef<Record<string, { displayName: string; initials: string }>>({});
 
+  // Stable rebuild — only reads refs so no deps needed
   const rebuildMembers = useCallback(() => {
     const now = Date.now();
     const built = Object.entries(profilesRef.current).map(([uid, profile]) => {
@@ -45,6 +47,7 @@ export function useBoardPresence(
       const isOnline = !!lastActive && now - lastActive.getTime() < ONLINE_THRESHOLD_MS;
       return { uid, ...profile, isOnline };
     });
+    // Online members first, then alphabetical within each group
     built.sort((a, b) => {
       if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
       return a.displayName.localeCompare(b.displayName);
@@ -52,6 +55,7 @@ export function useBoardPresence(
     setMembers(built);
   }, []);
 
+  // ── 1. Fetch display-name profiles (once per memberUids change) ────────────
   const memberKey = memberUids.join(",");
   useEffect(() => {
     if (memberUids.length === 0) {
@@ -83,6 +87,7 @@ export function useBoardPresence(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memberKey, rebuildMembers]);
 
+  // ── 2. Real-time presence listener ────────────────────────────────────────
   useEffect(() => {
     if (!boardId) return;
     const unsubscribe = subscribeToPresence(boardId, (map) => {
@@ -92,8 +97,10 @@ export function useBoardPresence(
     return unsubscribe;
   }, [boardId, rebuildMembers]);
 
+  // ── 3. Heartbeat — keep current user marked as active ─────────────────────
   useEffect(() => {
     if (!boardId || !currentUserId) return;
+    // Ping immediately on mount, then every HEARTBEAT_INTERVAL_MS
     updatePresence(boardId, currentUserId);
     const interval = setInterval(() => {
       updatePresence(boardId, currentUserId);

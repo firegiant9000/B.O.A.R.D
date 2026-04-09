@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useRef, useMemo, useEffect } from "react";
 import { View, StyleSheet, PanResponder, Dimensions } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { DrawPath } from "../types";
@@ -63,48 +63,78 @@ export default function DrawingCanvas({
   const isMoveRef = useRef(false);
   const startRef = useRef<{ x: number; y: number } | null>(null);
 
+  // Refs so the PanResponder (created once) always calls the latest callbacks
+  const disabledRef = useRef(disabled);
+  const onStrokeStartRef = useRef(onStrokeStart);
+  const onStrokeMoveRef = useRef(onStrokeMove);
+  const onStrokeEndRef = useRef(onStrokeEnd);
+  const onCanvasTapRef = useRef(onCanvasTap);
+  useEffect(() => {
+    disabledRef.current = disabled;
+    onStrokeStartRef.current = onStrokeStart;
+    onStrokeMoveRef.current = onStrokeMove;
+    onStrokeEndRef.current = onStrokeEnd;
+    onCanvasTapRef.current = onCanvasTap;
+  });
+
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled,
-      onMoveShouldSetPanResponder: () => !disabled,
+      // Always claim the initial touch so taps reach onCanvasTap even in text mode
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => !disabledRef.current,
       onPanResponderGrant: (evt) => {
         const { locationX, locationY } = evt.nativeEvent;
         isMoveRef.current = false;
         startRef.current = { x: locationX, y: locationY };
-        onStrokeStart();
-        onStrokeMove({ x: locationX, y: locationY });
+        if (!disabledRef.current) {
+          onStrokeStartRef.current();
+          onStrokeMoveRef.current({ x: locationX, y: locationY });
+        }
       },
       onPanResponderMove: (evt) => {
+        if (disabledRef.current) return;
         isMoveRef.current = true;
         const { locationX, locationY } = evt.nativeEvent;
-        onStrokeMove({ x: locationX, y: locationY });
+        onStrokeMoveRef.current({ x: locationX, y: locationY });
       },
-      onPanResponderRelease: (evt) => {
+      onPanResponderRelease: () => {
         if (!isMoveRef.current && startRef.current) {
           // It was a tap, not a drag
-          onCanvasTap(startRef.current);
+          onCanvasTapRef.current(startRef.current);
         }
-        onStrokeEnd();
+        if (!disabledRef.current) {
+          onStrokeEndRef.current();
+        }
       },
     })
   ).current;
 
   const { width, height } = Dimensions.get("window");
 
+  // Memoize simplified path strings to avoid recomputing on every render
+  const pathStrings = useMemo(
+    () =>
+      paths.map((p) => ({
+        id: p.id,
+        d: pointsToSvgPath(simplifyPoints(p.points)),
+        color: p.tool === "eraser" ? "#FFFFFF" : p.color,
+        strokeWidth: p.tool === "eraser" ? p.strokeWidth + 10 : p.strokeWidth,
+      })),
+    [paths]
+  );
+
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
       <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
         {/* Render saved paths — eraser strokes paint over with the background color */}
-        {paths.map((p) => {
-          const simplified = simplifyPoints(p.points);
-          const d = pointsToSvgPath(simplified);
-          if (!d) return null;
+        {pathStrings.map((p) => {
+          if (!p.d) return null;
           return (
             <Path
               key={p.id}
-              d={d}
-              stroke={p.tool === "eraser" ? "#FFFFFF" : p.color}
-              strokeWidth={p.tool === "eraser" ? p.strokeWidth + 10 : p.strokeWidth}
+              d={p.d}
+              stroke={p.color}
+              strokeWidth={p.strokeWidth}
               fill="none"
               strokeLinecap="round"
               strokeLinejoin="round"

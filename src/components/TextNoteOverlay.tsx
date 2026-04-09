@@ -33,15 +33,20 @@ export default function TextNoteOverlay({
   const [text, setText] = useState("");
   const inputRef = useRef<TextInput>(null);
 
+  const submittedRef = useRef(false);
+
   useEffect(() => {
     if (pendingNotePosition) {
       setText("");
-      const timer = setTimeout(() => inputRef.current?.focus(), 100);
-      return () => clearTimeout(timer);
+      submittedRef.current = false;
+      const timeoutId = setTimeout(() => inputRef.current?.focus(), 100);
+      return () => clearTimeout(timeoutId);
     }
   }, [pendingNotePosition]);
 
   const handleSubmit = () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
     const trimmed = text.trim();
     if (trimmed) {
       onSubmitNote(trimmed);

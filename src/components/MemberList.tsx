@@ -9,7 +9,7 @@ interface MemberListProps {
 }
 
 const AVATAR_SIZE = 32;
-const OVERLAP = 10;
+const OVERLAP = 10;     // how many px each avatar slides under the previous
 const MAX_VISIBLE = 4;
 
 export default function MemberList({
@@ -19,6 +19,7 @@ export default function MemberList({
 }: MemberListProps) {
   const { members, loading } = useBoardPresence(boardId, memberUids, currentUserId);
 
+  // Shimmer animation — runs only while loading
   const shimmerAnim = useRef(new Animated.Value(0)).current;
   const shimmerLoop = useRef<Animated.CompositeAnimation | null>(null);
 
@@ -50,7 +51,9 @@ export default function MemberList({
     outputRange: [0.25, 0.6],
   });
 
+  // ── Shimmer placeholder ────────────────────────────────────────────────────
   if (loading) {
+    // Show as many ghost circles as there are members, capped at MAX_VISIBLE
     const ghostCount = Math.min(Math.max(memberUids.length, 1), MAX_VISIBLE);
     return (
       <View style={styles.row}>
@@ -69,6 +72,7 @@ export default function MemberList({
     );
   }
 
+  // ── Live member avatars ────────────────────────────────────────────────────
   const visible = members.slice(0, MAX_VISIBLE);
   const overflow = members.length - MAX_VISIBLE;
 
@@ -80,6 +84,7 @@ export default function MemberList({
           style={[
             styles.avatarWrap,
             index > 0 && { marginLeft: -OVERLAP },
+            // Higher z-index for earlier (online-first sorted) members
             { zIndex: MAX_VISIBLE - index },
           ]}
         >
@@ -114,6 +119,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   avatarWrap: {
+    // Position the online dot relative to this wrapper
     position: "relative",
   },
   avatar: {

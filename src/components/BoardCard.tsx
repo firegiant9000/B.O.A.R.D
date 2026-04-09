@@ -6,11 +6,10 @@ interface BoardCardProps {
   board: Board;
   onPress: () => void;
   onDelete?: () => void;
+  sessionCount?: number;
 }
 
-export default function BoardCard({ board, onPress, onDelete }: BoardCardProps) {
-  const memberCount = board.members.length;
-
+export default function BoardCard({ board, onPress, onDelete, sessionCount }: BoardCardProps) {
   return (
     <View style={styles.wrapper}>
       <TouchableOpacity
@@ -27,9 +26,17 @@ export default function BoardCard({ board, onPress, onDelete }: BoardCardProps) 
           </Text>
           <Text style={styles.meta}>
             {board.updatedAt.toLocaleDateString()}
-            {memberCount > 1 &&
-              ` \u00b7 ${memberCount} member${memberCount > 2 ? "s" : ""}`}
+            {board.collaboratorIds.length > 0 &&
+              ` · ${board.collaboratorIds.length} collaborator${board.collaboratorIds.length > 1 ? "s" : ""}`}
           </Text>
+          {sessionCount != null && sessionCount > 0 && (
+            <View style={styles.sessionBadge}>
+              <Ionicons name="calendar-outline" size={12} color="#4338ca" />
+              <Text style={styles.sessionBadgeText}>
+                {sessionCount} session{sessionCount > 1 ? "s" : ""}
+              </Text>
+            </View>
+          )}
         </View>
       </TouchableOpacity>
       {onDelete && (
@@ -89,10 +96,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderRadius: 10,
     backgroundColor: "#fff1f2",
+    // Subtle shadow so it reads as a separate tap target
     ...Platform.select({
       ios: { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 2 },
       android: { elevation: 1 },
       default: {},
     }),
+  },
+  sessionBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 4,
+  },
+  sessionBadgeText: {
+    fontSize: 12,
+    color: "#4338ca",
+    fontWeight: "500",
   },
 });

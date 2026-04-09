@@ -55,7 +55,7 @@ export default function BoardScreen() {
   const [activeColor, setActiveColor] = useState("#000000");
   const [activeStrokeWidth, setActiveStrokeWidth] = useState(5);
 
-  // Text note state
+  // Text note state (legacy sticky notes — kept for backwards compat)
   const [pendingNotePosition, setPendingNotePosition] = useState<{
     x: number;
     y: number;
@@ -165,6 +165,8 @@ export default function BoardScreen() {
     const deepLink = `boardapp://board/${id}`;
     const inviteCode = board?.inviteCode ?? "";
 
+    // Web: navigator.share requires HTTPS which isn't available in dev.
+    // Show the invite code in an alert so users can copy it manually.
     if (Platform.OS === "web") {
       Alert.alert(
         "Share Board",
@@ -188,6 +190,7 @@ export default function BoardScreen() {
   const handleDeepLinkJoined = () => {
     setJoinModalVisible(false);
     setDeepLinkCode(undefined);
+    // Reload so the members array and content reflect the new membership
     loadBoard();
   };
 
@@ -246,6 +249,7 @@ export default function BoardScreen() {
   const handleCanvasTap = (point: { x: number; y: number }) => {
     if (activeTool === "text") {
       if (selectedTextId || editingTextId) {
+        // First tap on blank canvas deselects the active element
         setSelectedTextId(null);
         setEditingTextId(null);
       } else {
@@ -519,7 +523,6 @@ export default function BoardScreen() {
           onStrokeMove={handleStrokeMove}
           onStrokeEnd={handleStrokeEnd}
           onCanvasTap={handleCanvasTap}
-          disabled={activeTool === "text"}
         />
         <TextNoteOverlay
           notes={visibleNotes}

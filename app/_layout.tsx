@@ -38,6 +38,8 @@ function RootNavigator() {
       <Stack.Screen name="(auth)" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="board/[id]" options={{ presentation: "modal" }} />
+      <Stack.Screen name="session/create" options={{ presentation: "modal" }} />
+      <Stack.Screen name="session/[id]" options={{ presentation: "modal" }} />
     </Stack>
   );
 }
