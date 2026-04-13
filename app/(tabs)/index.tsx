@@ -14,6 +14,14 @@ import {
   Platform,
   Pressable,
 } from "react-native";
+
+const showAlert = (title: string, message: string) => {
+  if (Platform.OS === "web") {
+    window.alert(`${title}\n${message}`);
+  } else {
+    Alert.alert(title, message);
+  }
+};
 import { useRouter } from "expo-router";
 import { useNavigation } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
@@ -54,7 +62,7 @@ export default function BoardsScreen() {
       }
       setSessionCounts(counts);
     } catch (error: any) {
-      Alert.alert("Error", error.message ?? "Failed to load boards.");
+      showAlert("Error", error.message ?? "Failed to load boards.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -87,10 +95,15 @@ export default function BoardsScreen() {
   const handleJoined = ({ boardId, alreadyMember }: JoinBoardResult) => {
     setJoinModalVisible(false);
     if (alreadyMember) {
-      Alert.alert("Already a member", "You're already on this board.", [
-        { text: "Open Board", onPress: () => router.push(`/board/${boardId}`) },
-        { text: "OK", style: "cancel" },
-      ]);
+      if (Platform.OS === "web") {
+        window.alert("Already a member\nYou're already on this board.");
+        router.push(`/board/${boardId}`);
+      } else {
+        Alert.alert("Already a member", "You're already on this board.", [
+          { text: "Open Board", onPress: () => router.push(`/board/${boardId}`) },
+          { text: "OK", style: "cancel" },
+        ]);
+      }
     } else {
       fetchBoards();
       router.push(`/board/${boardId}`);
@@ -105,7 +118,7 @@ export default function BoardsScreen() {
       setCreateModalVisible(false);
       fetchBoards();
     } catch (error: any) {
-      Alert.alert("Error", error.message ?? "Failed to create board.");
+      showAlert("Error", error.message ?? "Failed to create board.");
     }
   };
 
@@ -126,7 +139,7 @@ export default function BoardsScreen() {
       setBoards((prev) => prev.filter((b) => b.id !== deleteTarget.id));
       setDeleteTarget(null);
     } catch (error: any) {
-      Alert.alert("Error", error.message ?? "Something went wrong.");
+      showAlert("Error", error.message ?? "Something went wrong.");
     } finally {
       setDeleteLoading(false);
     }
