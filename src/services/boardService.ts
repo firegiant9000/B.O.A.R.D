@@ -129,6 +129,39 @@ export async function leaveBoard(boardId: string): Promise<void> {
 
 export type JoinBoardResult = { boardId: string; alreadyMember: boolean };
 
+/** Adds a user directly to a board by UID (no lookup needed). */
+export async function addMemberById(boardId: string, uid: string): Promise<void> {
+  await updateDoc(doc(db, "boards", boardId), {
+    members: arrayUnion(uid),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export type AddByEmailResult = "added" | "not_found" | "already_member";
+
+/** Looks up a user by email and adds them to the board. Returns the outcome. */
+export async function addMemberByEmail(
+  boardId: string,
+  email: string
+): Promise<{ result: AddByEmailResult; uid?: string }> {
+  const q = query(collection(db, "users"), where("email", "==", email.toLowerCase().trim()));
+  const snap = await getDocs(q);
+  if (snap.empty) return { result: "not_found" };
+
+  const uid = snap.docs[0].id;
+  const boardSnap = await getDoc(doc(db, "boards", boardId));
+  if (!boardSnap.exists()) throw new Error("Board not found");
+
+  const members: string[] = boardSnap.data().members ?? [];
+  if (members.includes(uid)) return { result: "already_member", uid };
+
+  await updateDoc(doc(db, "boards", boardId), {
+    members: arrayUnion(uid),
+    updatedAt: serverTimestamp(),
+  });
+  return { result: "added", uid };
+}
+
 export async function joinBoardByCode(inputCode: string): Promise<JoinBoardResult> {
   const currentUser = auth.currentUser;
   if (!currentUser) {
