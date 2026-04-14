@@ -9,6 +9,7 @@ import {
   serverTimestamp,
   writeBatch,
   updateDoc,
+  onSnapshot,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { DrawPath, TextNote, TextElement } from "../types";
@@ -185,4 +186,81 @@ export async function clearBoardTextElements(boardId: string): Promise<void> {
     snapshot.docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
+}
+
+// --- Real-time subscriptions ---
+
+export function subscribeToBoardPaths(
+  boardId: string,
+  onChange: (paths: DrawPath[]) => void
+): () => void {
+  const q = query(collection(db, "boards", boardId, "paths"), orderBy("createdAt", "asc"));
+  return onSnapshot(q, (snapshot) => {
+    const paths = snapshot.docs
+      .map((d) => {
+        const data = d.data();
+        if (!data.points || !data.color || !data.tool) return null;
+        return {
+          id: d.id,
+          boardId: data.boardId ?? "",
+          userId: data.userId ?? "",
+          points: data.points,
+          color: data.color,
+          strokeWidth: data.strokeWidth ?? 5,
+          tool: data.tool as "pen" | "eraser",
+          createdAt: data.createdAt?.toDate() ?? new Date(),
+        };
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+    onChange(paths);
+  });
+}
+
+export function subscribeToBoardNotes(
+  boardId: string,
+  onChange: (notes: TextNote[]) => void
+): () => void {
+  const q = query(collection(db, "boards", boardId, "notes"), orderBy("createdAt", "asc"));
+  return onSnapshot(q, (snapshot) => {
+    const notes = snapshot.docs
+      .map((d) => {
+        const data = d.data();
+        if (!data.content || !data.position) return null;
+        return {
+          id: d.id,
+          boardId: data.boardId ?? "",
+          userId: data.userId ?? "",
+          content: data.content,
+          position: data.position,
+          createdAt: data.createdAt?.toDate() ?? new Date(),
+        };
+      })
+      .filter((n): n is NonNullable<typeof n> => n !== null);
+    onChange(notes);
+  });
+}
+
+export function subscribeToBoardTextElements(
+  boardId: string,
+  onChange: (elements: TextElement[]) => void
+): () => void {
+  const q = query(collection(db, "boards", boardId, "textElements"), orderBy("createdAt", "asc"));
+  return onSnapshot(q, (snapshot) => {
+    const elements = snapshot.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        boardId: data.boardId ?? "",
+        userId: data.userId ?? "",
+        text: data.text ?? "",
+        position: data.position,
+        width: data.width,
+        height: data.height,
+        fontSize: data.fontSize,
+        color: data.color,
+        createdAt: data.createdAt?.toDate() ?? new Date(),
+      };
+    });
+    onChange(elements);
+  });
 }

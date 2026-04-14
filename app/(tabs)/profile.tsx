@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Platform,
   ScrollView,
   TextInput,
   ActivityIndicator,
@@ -59,21 +60,25 @@ export default function ProfileScreen() {
     fetchFriends();
   };
 
-  const handleSignOut = async () => {
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign Out",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await signOut();
-          } catch (error: any) {
-            Alert.alert("Error", error.message ?? "Failed to sign out.");
-          }
-        },
-      },
-    ]);
+  const doSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error: any) {
+      Alert.alert("Error", error.message ?? "Failed to sign out.");
+    }
+  };
+
+  const handleSignOut = () => {
+    if (Platform.OS === "web") {
+      if (window.confirm("Are you sure you want to sign out?")) {
+        doSignOut();
+      }
+    } else {
+      Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign Out", style: "destructive", onPress: doSignOut },
+      ]);
+    }
   };
 
   const handleAddFriend = async () => {

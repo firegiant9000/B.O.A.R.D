@@ -8,7 +8,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Share,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,6 +17,7 @@ import TextNoteOverlay from "../../src/components/TextNoteOverlay";
 import TextElementView from "../../src/components/TextElementView";
 import MemberList from "../../src/components/MemberList";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
+import ShareBoardModal from "../../src/components/ShareBoardModal";
 import BoardUserBar from "../../src/components/BoardUserBar";
 import StartSessionModal from "../../src/components/StartSessionModal";
 import { useAuth } from "../../src/hooks/useAuth";
@@ -72,11 +72,31 @@ export default function BoardScreen() {
   // Session modal
   const [sessionModalVisible, setSessionModalVisible] = useState(false);
 
+  // Share modal
+  const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
+
   // Auto-save debounce
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Ref so the text-element snapshot callback always sees the current editing ID
+  const editingTextIdRef = useRef<string | null>(null);
+
   // Derived
   const isAdmin = !!user && !!board && user.uid === board.adminId;
+
+  // Safe navigation: fall back to Boards tab when there is no history to pop
+  const goBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(tabs)");
+    }
+  };
+
+  // Keep editingTextIdRef in sync for use inside snapshot callbacks
+  useEffect(() => {
+    editingTextIdRef.current = editingTextId;
+  }, [editingTextId]);
 
   // Load board data on mount
   useEffect(() => {
@@ -107,6 +127,32 @@ export default function BoardScreen() {
     friendService.getBlockedIds(user.uid).then(setBlockedIds).catch(() => {});
   }, [user]);
 
+  // Real-time subscriptions for board content
+  useEffect(() => {
+    if (!id) return;
+    return pathService.subscribeToBoardPaths(id, setPaths);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    return pathService.subscribeToBoardNotes(id, setNotes);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    return pathService.subscribeToBoardTextElements(id, (incoming) => {
+      // Don't overwrite a text element the local user is actively typing in
+      setTextElements((prev) => {
+        if (!editingTextIdRef.current) return incoming;
+        return incoming.map((el) =>
+          el.id === editingTextIdRef.current
+            ? (prev.find((p) => p.id === editingTextIdRef.current) ?? el)
+            : el
+        );
+      });
+    });
+  }, [id]);
+
   // Clear debounce timer on unmount
   useEffect(() => {
     return () => {
@@ -117,23 +163,15 @@ export default function BoardScreen() {
   const loadBoard = async () => {
     try {
       setLoading(true);
-      const [boardData, pathsData, notesData, textElementsData] = await Promise.all([
-        boardService.getBoard(id!),
-        pathService.getBoardPaths(id!),
-        pathService.getBoardNotes(id!),
-        pathService.getBoardTextElements(id!),
-      ]);
+      const boardData = await boardService.getBoard(id!);
 
       if (!boardData) {
         Alert.alert("Not Found", "This board no longer exists.");
-        router.back();
+        goBack();
         return;
       }
 
       setBoard(boardData);
-      setPaths(pathsData);
-      setNotes(notesData);
-      setTextElements(textElementsData);
 
       // Deep-link gate: if the viewer isn't a member yet, prompt them to join
       if (user && !boardData.members.includes(user.uid)) {
@@ -161,27 +199,15 @@ export default function BoardScreen() {
 
   // --- Share action ---
 
-  const handleShare = async () => {
-    const deepLink = `boardapp://board/${id}`;
-    const inviteCode = board?.inviteCode ?? "";
+  const handleShare = () => {
+    setShareBoardModalVisible(true);
+  };
 
-    // Web: navigator.share requires HTTPS which isn't available in dev.
-    // Show the invite code in an alert so users can copy it manually.
-    if (Platform.OS === "web") {
-      Alert.alert(
-        "Share Board",
-        `Invite code: ${inviteCode}\n\nOr share this link:\n${deepLink}`
+  const handleMemberAdded = (uid: string) => {
+    if (uid && board) {
+      setBoard((prev) =>
+        prev ? { ...prev, members: [...new Set([...prev.members, uid])] } : prev
       );
-      return;
-    }
-
-    try {
-      await Share.share({
-        message: `Join my board "${board?.title ?? "Board"}" on B.O.A.R.D!\nInvite code: ${inviteCode}\n\n${deepLink}`,
-        url: deepLink,
-      });
-    } catch {
-      // User dismissed the share sheet
     }
   };
 
@@ -197,7 +223,7 @@ export default function BoardScreen() {
   const handleDeepLinkCancel = () => {
     setJoinModalVisible(false);
     setDeepLinkCode(undefined);
-    router.back();
+    goBack();
   };
 
   // --- Drawing handlers ---
@@ -229,13 +255,7 @@ export default function BoardScreen() {
     };
 
     try {
-      const pathId = await pathService.savePath(id!, newPath);
-      const savedPath: DrawPath = {
-        ...newPath,
-        id: pathId,
-        createdAt: new Date(),
-      };
-      setPaths((prev) => [...prev, savedPath]);
+      await pathService.savePath(id!, newPath);
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to save stroke");
@@ -273,8 +293,6 @@ export default function BoardScreen() {
     };
     try {
       const elId = await pathService.saveTextElement(id!, newEl);
-      const saved: TextElement = { ...newEl, id: elId, createdAt: new Date() };
-      setTextElements((prev) => [...prev, saved]);
       setSelectedTextId(elId);
       setEditingTextId(elId);
       scheduleSave();
@@ -334,11 +352,7 @@ export default function BoardScreen() {
     };
 
     try {
-      const noteId = await pathService.saveTextNote(id!, newNote);
-      setNotes((prev) => [
-        ...prev,
-        { ...newNote, id: noteId, createdAt: new Date() },
-      ]);
+      await pathService.saveTextNote(id!, newNote);
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to save note");
@@ -452,10 +466,20 @@ export default function BoardScreen() {
         onJoined={handleDeepLinkJoined}
       />
 
+      <ShareBoardModal
+        visible={shareBoardModalVisible}
+        boardId={id!}
+        inviteCode={board?.inviteCode ?? ""}
+        members={board?.members ?? []}
+        currentUserId={user?.uid ?? ""}
+        onClose={() => setShareBoardModalVisible(false)}
+        onMemberAdded={handleMemberAdded}
+      />
+
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={goBack}
           style={styles.backBtn}
         >
           <Ionicons name="arrow-back" size={24} color="#333" />
