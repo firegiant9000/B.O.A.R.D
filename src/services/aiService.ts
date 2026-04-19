@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { doc, getDoc, setDoc, deleteField, updateDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteField } from "firebase/firestore";
 import { db, auth } from "../config/firebase";
 import * as pathService from "./pathService";
 
@@ -45,7 +45,7 @@ export async function clearOpenAIKey(): Promise<void> {
   AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
   const uid = auth.currentUser?.uid;
   if (uid) {
-    await updateDoc(privateKeyDoc(uid), { openaiKey: deleteField() });
+    await setDoc(privateKeyDoc(uid), { openaiKey: deleteField() }, { merge: true });
   }
 }
 

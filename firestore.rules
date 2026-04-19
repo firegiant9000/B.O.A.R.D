@@ -45,7 +45,9 @@ service cloud.firestore {
                       request.auth.uid in resource.data.members
                     );
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
-      allow update: if isBoardMember(boardId);
+      allow update: if isBoardAdmin(boardId) ||
+                      (isBoardMember(boardId) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']));
       allow delete: if isBoardAdmin(boardId);
 
       // paths, notes, textElements — any board member can read/write/delete
@@ -72,13 +74,11 @@ service cloud.firestore {
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
-                      request.auth.uid in resource.data.participantIds ||
-                      resource.data.joinCode != null
+                      request.auth.uid in resource.data.participantIds
                     );
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.createdById;
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
-                      request.auth.uid in resource.data.participantIds ||
                       (
                         resource.data.joinCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantIds']) &&

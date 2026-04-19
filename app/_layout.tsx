@@ -11,10 +11,11 @@ function RootNavigator() {
   const segments = useSegments();
   const router = useRouter();
 
-  // Register for push notifications once the user is authenticated
+  // Register for push notifications and load remote API key once authenticated
   useEffect(() => {
     if (user) {
       registerForPushNotifications(user.uid);
+      loadOpenAIKey();
     }
   }, [user?.uid]);
 
@@ -46,10 +47,6 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
-  useEffect(() => {
-    loadOpenAIKey();
-  }, []);
-
   return (
     <AuthProvider>
       <RootNavigator />

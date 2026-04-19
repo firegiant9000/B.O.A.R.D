@@ -144,7 +144,7 @@ export default function Toolbar({
         {/* Actions */}
         <View style={styles.group}>
           <ToolButton icon="arrow-undo" active={false} onPress={onUndo} />
-          <ToolButton icon="arrow-redo" active={false} onPress={onRedo ?? (() => {})} disabled={!canRedo} />
+          <ToolButton icon="arrow-redo" active={false} onPress={onRedo ?? (() => {})} disabled={canRedo === false} />
           {isAdmin && (
             <ToolButton icon="trash-outline" active={false} onPress={handleClear} />
           )}
