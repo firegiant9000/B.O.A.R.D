@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Clipboard,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -14,6 +15,7 @@ import { useAuth } from "../../src/hooks/useAuth";
 import { Session, Board } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as boardService from "../../src/services/boardService";
+import { getUsersByIds } from "../../src/services/friendService";
 
 export default function SessionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,6 +24,7 @@ export default function SessionDetailScreen() {
 
   const [session, setSession] = useState<Session | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
+  const [participants, setParticipants] = useState<{ uid: string; displayName: string; email: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -34,8 +37,12 @@ export default function SessionDetailScreen() {
       const s = await sessionService.getSession(id!);
       setSession(s);
       if (s) {
-        const b = await boardService.getBoard(s.boardId);
+        const [b, participantProfiles] = await Promise.all([
+          boardService.getBoard(s.boardId),
+          getUsersByIds(s.participantIds),
+        ]);
         setBoard(b);
+        setParticipants(participantProfiles);
       }
     } catch {
       Alert.alert("Error", "Failed to load session");
@@ -156,6 +163,29 @@ export default function SessionDetailScreen() {
           </View>
         </View>
 
+        {/* Join Code — shown to creator so they can share it */}
+        {session.createdById === user?.uid && session.joinCode && (
+          <View style={styles.joinCodeSection}>
+            <Text style={styles.sectionLabel}>Invite Code</Text>
+            <View style={styles.joinCodeRow}>
+              <Text style={styles.joinCodeText}>{session.joinCode}</Text>
+              <TouchableOpacity
+                style={styles.copyBtn}
+                onPress={() => {
+                  Clipboard.setString(session.joinCode!);
+                  Alert.alert("Copied", "Invite code copied to clipboard.");
+                }}
+              >
+                <Ionicons name="copy-outline" size={18} color="#2563eb" />
+                <Text style={styles.copyBtnText}>Copy</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.joinCodeHint}>
+              Share this code so others can join the session.
+            </Text>
+          </View>
+        )}
+
         {/* Description */}
         {session.description ? (
           <View style={styles.descriptionSection}>
@@ -163,6 +193,28 @@ export default function SessionDetailScreen() {
             <Text style={styles.descriptionText}>{session.description}</Text>
           </View>
         ) : null}
+
+        {/* Participants */}
+        {participants.length > 0 && (
+          <View style={styles.participantsSection}>
+            <Text style={styles.sectionLabel}>
+              Participants ({participants.length})
+            </Text>
+            {participants.map((p) => (
+              <View key={p.uid} style={styles.participantRow}>
+                <View style={styles.participantAvatar}>
+                  <Text style={styles.participantAvatarText}>
+                    {p.displayName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+                <View>
+                  <Text style={styles.participantName}>{p.displayName}</Text>
+                  <Text style={styles.participantEmail}>{p.email}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Actions */}
         <View style={styles.actions}>
@@ -287,6 +339,39 @@ const styles = StyleSheet.create({
     color: "#374151",
     lineHeight: 24,
   },
+  participantsSection: {
+    marginBottom: 24,
+  },
+  participantRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    gap: 12,
+  },
+  participantAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#2563eb",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  participantAvatarText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  participantName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  participantEmail: {
+    fontSize: 12,
+    color: "#9ca3af",
+  },
   actions: {
     gap: 12,
     marginTop: 8,
@@ -325,5 +410,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#2563eb",
     fontWeight: "600",
+  },
+  joinCodeSection: {
+    marginBottom: 24,
+  },
+  joinCodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  joinCodeText: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#111",
+    letterSpacing: 2,
+    fontVariant: ["tabular-nums"],
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
+  },
+  copyBtnText: {
+    color: "#2563eb",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  joinCodeHint: {
+    fontSize: 12,
+    color: "#9ca3af",
+    marginTop: 6,
   },
 });
