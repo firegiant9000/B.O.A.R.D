@@ -1,0 +1,112 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBoardMember(boardId) {
+      return isSignedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/boards/$(boardId)).data.members;
+    }
+
+    function isBoardAdmin(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId)).data;
+      return isSignedIn() && (
+        request.auth.uid == board.ownerId ||
+        request.auth.uid == board.adminId
+      );
+    }
+
+    // ── users ─────────────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
+      allow create: if isOwner(uid);
+      allow update: if isOwner(uid);
+      allow delete: if false;               // accounts are not deleted client-side
+
+      // private subcollection — only the owner can read/write (used for API keys)
+      match /private/{doc} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // ── boards ────────────────────────────────────────────────────────────────
+    match /boards/{boardId} {
+      allow read:   if isSignedIn() && (
+                      request.auth.uid == resource.data.ownerId ||
+                      request.auth.uid in resource.data.members
+                    );
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
+      allow update: if isBoardMember(boardId);
+      allow delete: if isBoardAdmin(boardId);
+
+      // paths, notes, textElements — any board member can read/write/delete
+      match /paths/{pathId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
+      match /notes/{noteId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
+      match /textElements/{elementId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
+      // presence — each user manages only their own presence doc
+      match /presence/{userId} {
+        allow read:   if isBoardMember(boardId);
+        allow write:  if isBoardMember(boardId) && isOwner(userId);
+      }
+    }
+
+    // ── sessions ──────────────────────────────────────────────────────────────
+    match /sessions/{sessionId} {
+      allow read:   if isSignedIn() && (
+                      request.auth.uid == resource.data.createdById ||
+                      request.auth.uid in resource.data.participantIds ||
+                      resource.data.joinCode != null
+                    );
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.createdById;
+      allow update: if isSignedIn() && (
+                      request.auth.uid == resource.data.createdById ||
+                      request.auth.uid in resource.data.participantIds ||
+                      (
+                        resource.data.joinCode != null &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantIds']) &&
+                        request.resource.data.participantIds.hasAll(resource.data.participantIds) &&
+                        request.resource.data.participantIds.size() == resource.data.participantIds.size() + 1 &&
+                        request.resource.data.participantIds.hasAny([request.auth.uid])
+                      )
+                    );
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.createdById;
+    }
+
+    // ── friendRequests ────────────────────────────────────────────────────────
+    match /friendRequests/{reqId} {
+      allow read:   if isSignedIn() && (
+                      request.auth.uid == resource.data.fromId ||
+                      request.auth.uid == resource.data.toId
+                    );
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.fromId;
+      // only the recipient updates status (accept/reject); sender can retract
+      allow update: if isSignedIn() && (
+                      request.auth.uid == resource.data.toId ||
+                      request.auth.uid == resource.data.fromId
+                    );
+      allow delete: if isSignedIn() && (
+                      request.auth.uid == resource.data.fromId ||
+                      request.auth.uid == resource.data.toId
+                    );
+    }
+
+  }
+}
