@@ -8,6 +8,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Animated,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -75,6 +76,21 @@ export default function BoardScreen() {
   // Share modal
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
 
+  // Redo stack — stores path data to re-save on redo
+  const [redoStack, setRedoStack] = useState<Omit<DrawPath, "id" | "createdAt">[]>([]);
+
+  // Canvas ready — true after the first Firestore snapshot arrives
+  const [canvasReady, setCanvasReady] = useState(false);
+
+  // Dismissible error banner
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Canvas layout size for clamping text element creation position
+  const [canvasSize, setCanvasSize] = useState({ width: 300, height: 500 });
+
+  // Save toast animation
+  const saveOpacity = useRef(new Animated.Value(0)).current;
+
   // Auto-save debounce
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -130,7 +146,10 @@ export default function BoardScreen() {
   // Real-time subscriptions for board content
   useEffect(() => {
     if (!id) return;
-    return pathService.subscribeToBoardPaths(id, setPaths);
+    return pathService.subscribeToBoardPaths(id, (incoming) => {
+      setPaths(incoming);
+      setCanvasReady(true);
+    });
   }, [id]);
 
   useEffect(() => {
@@ -256,6 +275,7 @@ export default function BoardScreen() {
 
     try {
       await pathService.savePath(id!, newPath);
+      setRedoStack([]);
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to save stroke");
@@ -281,13 +301,18 @@ export default function BoardScreen() {
   // --- Text element handlers ---
 
   const handleCreateTextElement = async (point: { x: number; y: number }) => {
+    const DEFAULT_EL_WIDTH = 160;
+    const DEFAULT_EL_HEIGHT = 52;
     const newEl: Omit<TextElement, "id" | "createdAt"> = {
       boardId: id!,
       userId: user?.uid ?? "",
       text: "",
-      position: { x: Math.max(4, point.x - 75), y: Math.max(4, point.y - 20) },
-      width: 160,
-      height: 52,
+      position: {
+        x: Math.max(4, Math.min(point.x - 75, canvasSize.width - DEFAULT_EL_WIDTH - 4)),
+        y: Math.max(4, Math.min(point.y - 20, canvasSize.height - DEFAULT_EL_HEIGHT - 4)),
+      },
+      width: DEFAULT_EL_WIDTH,
+      height: DEFAULT_EL_HEIGHT,
       fontSize: 20,
       color: activeColor,
     };
@@ -297,7 +322,7 @@ export default function BoardScreen() {
       setEditingTextId(elId);
       scheduleSave();
     } catch {
-      Alert.alert("Error", "Failed to create text element");
+      setErrorMessage("Failed to create text element.");
     }
   };
 
@@ -316,7 +341,7 @@ export default function BoardScreen() {
       );
       scheduleSave();
     } catch {
-      // Silent — text is already in local state
+      setErrorMessage("Text save failed — changes may not persist.");
     }
   };
 
@@ -335,7 +360,7 @@ export default function BoardScreen() {
       );
       scheduleSave();
     } catch {
-      // Silent
+      setErrorMessage("Resize save failed.");
     }
   };
 
@@ -386,9 +411,23 @@ export default function BoardScreen() {
     try {
       await pathService.deletePath(id!, targetPath.id);
       setPaths((prev) => prev.filter((p) => p.id !== targetPath.id));
+      const { id: _id, createdAt: _createdAt, ...redoEntry } = targetPath;
+      setRedoStack((prev) => [...prev, redoEntry]);
       scheduleSave();
     } catch {
-      Alert.alert("Error", "Failed to undo");
+      setErrorMessage("Undo failed.");
+    }
+  };
+
+  const handleRedo = async () => {
+    if (redoStack.length === 0) return;
+    const redoEntry = redoStack[redoStack.length - 1];
+    try {
+      await pathService.savePath(id!, redoEntry);
+      setRedoStack((prev) => prev.slice(0, -1));
+      scheduleSave();
+    } catch {
+      setErrorMessage("Redo failed.");
     }
   };
 
@@ -404,6 +443,7 @@ export default function BoardScreen() {
       setTextElements([]);
       setSelectedTextId(null);
       setEditingTextId(null);
+      setRedoStack([]);
       scheduleSave();
     } catch {
       Alert.alert("Error", "Failed to clear board");
@@ -413,19 +453,41 @@ export default function BoardScreen() {
   const handleColorChange = (color: string) => {
     setActiveColor(color);
     if (selectedTextId) {
-      pathService.updateTextElement(id!, selectedTextId, { color }).catch(() => {});
+      pathService.updateTextElement(id!, selectedTextId, { color }).catch(() => setErrorMessage("Color update failed."));
       setTextElements((prev) =>
         prev.map((el) => (el.id === selectedTextId ? { ...el, color } : el))
       );
     }
   };
 
+  const showSaveToast = () => {
+    saveOpacity.setValue(1);
+    Animated.timing(saveOpacity, {
+      toValue: 0,
+      duration: 1500,
+      delay: 800,
+      useNativeDriver: true,
+    }).start();
+  };
+
   const handleSave = async () => {
     try {
       await boardService.updateBoard(id!, {});
-      Alert.alert("Saved", "Board saved successfully");
+      showSaveToast();
     } catch {
-      Alert.alert("Error", "Failed to save board");
+      setErrorMessage("Failed to save board.");
+    }
+  };
+
+  const handleTextDelete = async (elementId: string) => {
+    try {
+      await pathService.deleteTextElement(id!, elementId);
+      setTextElements((prev) => prev.filter((el) => el.id !== elementId));
+      setSelectedTextId(null);
+      setEditingTextId(null);
+      scheduleSave();
+    } catch {
+      setErrorMessage("Failed to delete text element.");
     }
   };
 
@@ -433,6 +495,10 @@ export default function BoardScreen() {
 
   const handleBlockUser = (userId: string) => {
     setBlockedIds((prev) => [...prev, userId]);
+  };
+
+  const handleAdminChanged = (newAdminId: string) => {
+    setBoard((prev) => (prev ? { ...prev, adminId: newAdminId } : prev));
   };
 
   // Filter out blocked users' content
@@ -501,6 +567,10 @@ export default function BoardScreen() {
             currentUser={currentUserInfo}
             blockedIds={blockedIds}
             onBlock={handleBlockUser}
+            ownerId={board?.ownerId}
+            adminId={board?.adminId}
+            boardId={id}
+            onAdminChanged={handleAdminChanged}
           />
           <TouchableOpacity
             onPress={handleShare}
@@ -535,8 +605,34 @@ export default function BoardScreen() {
         </View>
       </View>
 
+      {/* Save toast */}
+      <Animated.View style={[styles.saveToast, { opacity: saveOpacity }]} pointerEvents="none">
+        <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+        <Text style={styles.saveToastText}>Saved</Text>
+      </Animated.View>
+
+      {/* Error banner */}
+      {errorMessage && (
+        <View style={styles.errorBanner}>
+          <Ionicons name="alert-circle-outline" size={15} color="#b91c1c" />
+          <Text style={styles.errorBannerText}>{errorMessage}</Text>
+          <TouchableOpacity onPress={() => setErrorMessage(null)}>
+            <Ionicons name="close" size={15} color="#b91c1c" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Canvas + Notes + Text Elements */}
-      <View style={styles.canvasContainer}>
+      <View
+        style={styles.canvasContainer}
+        onLayout={(e) => setCanvasSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+      >
+        {!canvasReady && (
+          <View style={styles.canvasLoadingOverlay} pointerEvents="none">
+            <ActivityIndicator size="large" color="#2563eb" />
+            <Text style={styles.canvasLoadingText}>Loading canvas…</Text>
+          </View>
+        )}
         <DrawingCanvas
           paths={visiblePaths}
           currentPath={currentPoints}
@@ -568,6 +664,7 @@ export default function BoardScreen() {
               onSelect={handleTextSelect}
               onBlur={handleTextBlur}
               onResize={handleTextResize}
+              onDelete={el.userId === user?.uid || isAdmin ? handleTextDelete : undefined}
             />
           ))}
         </View>
@@ -583,6 +680,8 @@ export default function BoardScreen() {
         onColorChange={handleColorChange}
         onStrokeWidthChange={setActiveStrokeWidth}
         onUndo={handleUndo}
+        onRedo={handleRedo}
+        canRedo={redoStack.length > 0}
         onClear={handleClear}
         onSave={handleSave}
       />
@@ -661,5 +760,53 @@ const styles = StyleSheet.create({
   },
   canvasContainer: {
     flex: 1,
+  },
+  canvasLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.85)",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 10,
+    zIndex: 10,
+  },
+  canvasLoadingText: {
+    fontSize: 14,
+    color: "#6b7280",
+    fontWeight: "500",
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fef2f2",
+    borderBottomWidth: 1,
+    borderBottomColor: "#fecaca",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  errorBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#b91c1c",
+  },
+  saveToast: {
+    position: "absolute",
+    top: 110,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#f0fdf4",
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    zIndex: 100,
+  },
+  saveToastText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#16a34a",
   },
 });

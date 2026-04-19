@@ -19,6 +19,8 @@ interface ToolbarProps {
   onColorChange: (color: string) => void;
   onStrokeWidthChange: (width: number) => void;
   onUndo: () => void;
+  onRedo?: () => void;
+  canRedo?: boolean;
   onClear: () => void;
   onSave: () => void;
 }
@@ -49,6 +51,8 @@ export default function Toolbar({
   onColorChange,
   onStrokeWidthChange,
   onUndo,
+  onRedo,
+  canRedo,
   onClear,
   onSave,
 }: ToolbarProps) {
@@ -140,6 +144,7 @@ export default function Toolbar({
         {/* Actions */}
         <View style={styles.group}>
           <ToolButton icon="arrow-undo" active={false} onPress={onUndo} />
+          <ToolButton icon="arrow-redo" active={false} onPress={onRedo ?? (() => {})} disabled={!canRedo} />
           {isAdmin && (
             <ToolButton icon="trash-outline" active={false} onPress={handleClear} />
           )}
@@ -154,17 +159,20 @@ function ToolButton({
   icon,
   active,
   onPress,
+  disabled,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   active: boolean;
   onPress: () => void;
+  disabled?: boolean;
 }) {
   return (
     <TouchableOpacity
-      style={[styles.toolBtn, active && styles.toolBtnActive]}
+      style={[styles.toolBtn, active && styles.toolBtnActive, disabled && styles.toolBtnDisabled]}
       onPress={onPress}
+      disabled={disabled}
     >
-      <Ionicons name={icon} size={20} color={active ? "#fff" : "#333"} />
+      <Ionicons name={icon} size={20} color={active ? "#fff" : disabled ? "#c7c7cc" : "#333"} />
     </TouchableOpacity>
   );
 }
@@ -209,6 +217,9 @@ const styles = StyleSheet.create({
   },
   toolBtnActive: {
     backgroundColor: "#2563eb",
+  },
+  toolBtnDisabled: {
+    opacity: 0.4,
   },
   colorDot: {
     width: 24,
