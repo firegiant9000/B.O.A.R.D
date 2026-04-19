@@ -22,6 +22,7 @@ export default function ProfileScreen() {
 
   const [pendingRequests, setPendingRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<FriendRequest[]>([]);
+  const [blockedUsers, setBlockedUsers] = useState<{ uid: string; displayName: string; email: string }[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -31,20 +32,26 @@ export default function ProfileScreen() {
   const [showAddInput, setShowAddInput] = useState(false);
 
   // AI settings
-  const [aiKey, setAiKey] = useState(aiService.getOpenAIKey() ?? "");
-  const [aiKeySaved, setAiKeySaved] = useState(!!aiService.getOpenAIKey());
+  const [aiKey, setAiKey] = useState("");
+  const [aiKeySaved, setAiKeySaved] = useState(false);
+
+  // Dismissible error banner
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fetchFriends = useCallback(async () => {
     if (!user) return;
     try {
-      const [pending, accepted] = await Promise.all([
+      const [pending, accepted, blockedIds] = await Promise.all([
         friendService.getPendingRequests(user.uid),
         friendService.getFriends(user.uid),
+        friendService.getBlockedIds(user.uid),
       ]);
       setPendingRequests(pending);
       setFriends(accepted);
+      const blocked = await friendService.getUsersByIds(blockedIds);
+      setBlockedUsers(blocked);
     } catch {
-      // Silent fail — friends are non-critical
+      setErrorMessage("Failed to load friends. Pull down to refresh.");
     } finally {
       setLoadingFriends(false);
       setRefreshing(false);
@@ -54,6 +61,16 @@ export default function ProfileScreen() {
   useEffect(() => {
     fetchFriends();
   }, [fetchFriends]);
+
+  useEffect(() => {
+    aiService.loadOpenAIKey().then(() => {
+      const key = aiService.getOpenAIKey();
+      if (key) {
+        setAiKey(key);
+        setAiKeySaved(true);
+      }
+    });
+  }, []);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -125,6 +142,17 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleUnblockUser = async (uid: string, name: string) => {
+    if (!user) return;
+    try {
+      await friendService.unblockUser(user.uid, uid);
+      setBlockedUsers((prev) => prev.filter((u) => u.uid !== uid));
+      Alert.alert("Unblocked", `${name} has been unblocked.`);
+    } catch {
+      Alert.alert("Error", "Failed to unblock user.");
+    }
+  };
+
   function getFriendName(req: FriendRequest): string {
     return req.fromId === user?.uid ? req.toDisplayName : req.fromDisplayName;
   }
@@ -141,6 +169,17 @@ export default function ProfileScreen() {
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
     >
+      {/* Error banner */}
+      {errorMessage && (
+        <View style={styles.errorBanner}>
+          <Ionicons name="alert-circle-outline" size={15} color="#b91c1c" />
+          <Text style={styles.errorBannerText}>{errorMessage}</Text>
+          <TouchableOpacity onPress={() => setErrorMessage(null)}>
+            <Ionicons name="close" size={15} color="#b91c1c" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Avatar & identity */}
       <View style={styles.avatar}>
         <Text style={styles.avatarText}>
@@ -297,12 +336,12 @@ export default function ProfileScreen() {
           />
           <TouchableOpacity
             style={[styles.sendBtn, !aiKey.trim() && styles.sendBtnDisabled]}
-            onPress={() => {
+            onPress={async () => {
               const trimmed = aiKey.trim();
               if (!trimmed) return;
-              aiService.setOpenAIKey(trimmed);
+              await aiService.setOpenAIKey(trimmed);
               setAiKeySaved(true);
-              Alert.alert("Saved", "OpenAI API key has been configured for this session.");
+              Alert.alert("Saved", "OpenAI API key saved. It will sync across your devices.");
             }}
             disabled={!aiKey.trim()}
           >
@@ -310,6 +349,32 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* ── Blocked Users section ── */}
+      {blockedUsers.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Blocked Users</Text>
+          </View>
+          {blockedUsers.map((u) => (
+            <View key={u.uid} style={styles.blockedRow}>
+              <View style={styles.blockedAvatar}>
+                <Text style={styles.blockedAvatarText}>{initials(u.displayName)}</Text>
+              </View>
+              <View style={styles.friendInfo}>
+                <Text style={styles.friendName}>{u.displayName}</Text>
+                <Text style={styles.friendSince}>{u.email}</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.unblockBtn}
+                onPress={() => handleUnblockUser(u.uid, u.displayName)}
+              >
+                <Text style={styles.unblockBtnText}>Unblock</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* Sign out */}
       <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
@@ -579,6 +644,62 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     marginBottom: 12,
     lineHeight: 18,
+  },
+  // ── Error banner ──
+  errorBanner: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
+  },
+  errorBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#b91c1c",
+  },
+  // ── Blocked Users ──
+  blockedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fef2f2",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#fecaca",
+  },
+  blockedAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#ef4444",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  blockedAvatarText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  unblockBtn: {
+    borderWidth: 1,
+    borderColor: "#ef4444",
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  unblockBtnText: {
+    color: "#ef4444",
+    fontSize: 13,
+    fontWeight: "600",
   },
   // ── Sign out ──
   signOutButton: {

@@ -4,6 +4,7 @@ import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
 import { registerForPushNotifications } from "../src/services/notificationService";
+import { loadOpenAIKey } from "../src/services/aiService";
 
 function RootNavigator() {
   const { user, loading } = useAuth();
@@ -45,6 +46,10 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
+  useEffect(() => {
+    loadOpenAIKey();
+  }, []);
+
   return (
     <AuthProvider>
       <RootNavigator />

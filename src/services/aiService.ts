@@ -1,15 +1,52 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { doc, getDoc, setDoc, deleteField, updateDoc } from "firebase/firestore";
+import { db, auth } from "../config/firebase";
 import * as pathService from "./pathService";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const STORAGE_KEY = "board_openai_key";
 
-/**
- * Set your OpenAI API key here, or replace with an environment variable loader.
- * For production, move this to a server-side Cloud Function.
- */
 let _apiKey: string | null = null;
 
-export function setOpenAIKey(key: string) {
+function privateKeyDoc(uid: string) {
+  return doc(db, "users", uid, "private", "apiKeys");
+}
+
+export async function loadOpenAIKey(): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (uid) {
+    try {
+      const snap = await getDoc(privateKeyDoc(uid));
+      if (snap.exists() && snap.data().openaiKey) {
+        _apiKey = snap.data().openaiKey;
+        AsyncStorage.setItem(STORAGE_KEY, _apiKey!).catch(() => {});
+        return;
+      }
+    } catch {}
+  }
+  // Fall back to local cache if Firestore unavailable or user not signed in
+  try {
+    const stored = await AsyncStorage.getItem(STORAGE_KEY);
+    if (stored) _apiKey = stored;
+  } catch {}
+}
+
+export async function setOpenAIKey(key: string): Promise<void> {
   _apiKey = key;
+  AsyncStorage.setItem(STORAGE_KEY, key).catch(() => {});
+  const uid = auth.currentUser?.uid;
+  if (uid) {
+    await setDoc(privateKeyDoc(uid), { openaiKey: key }, { merge: true });
+  }
+}
+
+export async function clearOpenAIKey(): Promise<void> {
+  _apiKey = null;
+  AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+  const uid = auth.currentUser?.uid;
+  if (uid) {
+    await updateDoc(privateKeyDoc(uid), { openaiKey: deleteField() });
+  }
 }
 
 export function getOpenAIKey(): string | null {
