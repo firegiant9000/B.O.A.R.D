@@ -8,6 +8,8 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  TextInput,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -29,17 +31,27 @@ function formatDuration(minutes: number): string {
 function formatDate(date: Date): string {
   const now = new Date();
   const diffMs = date.getTime() - now.getTime();
+  const diffMins = Math.round(diffMs / (1000 * 60));
   const diffHrs = diffMs / (1000 * 60 * 60);
 
   if (Math.abs(diffHrs) < 1) {
-    const diffMins = Math.round(diffMs / (1000 * 60));
     if (diffMins > 0) return `In ${diffMins}m`;
     if (diffMins < 0) return `${Math.abs(diffMins)}m ago`;
     return "Now";
   }
-  if (Math.abs(diffHrs) < 24) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  if (Math.abs(diffHrs) < 48) {
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (date.toDateString() === now.toDateString()) return `Today ${timeStr}`;
+    if (date.toDateString() === tomorrow.toDateString()) return `Tomorrow ${timeStr}`;
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return `Yesterday ${timeStr}`;
   }
+
   return date.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
@@ -67,14 +79,19 @@ export default function ScheduleScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<FilterTab>("active");
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [joinModalVisible, setJoinModalVisible] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joining, setJoining] = useState(false);
 
   const fetchSessions = useCallback(async () => {
     if (!user) return;
     try {
       const data = await sessionService.getSessionsForUser(user.uid);
       setSessions(data);
+      setFetchError(null);
     } catch {
-      // Silent fail
+      setFetchError("Failed to load sessions. Pull down to retry.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -88,6 +105,34 @@ export default function ScheduleScreen() {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchSessions();
+  };
+
+  const handleStartSession = (session: Session) => {
+    Alert.alert("Start Session", `Mark "${session.title}" as active now?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Start",
+        onPress: async () => {
+          try {
+            await sessionService.updateSessionStatus(session.id, "active");
+            setSessions((prev) =>
+              prev.map((s) => (s.id === session.id ? { ...s, status: "active" } : s))
+            );
+            if (session.participantIds.length > 0) {
+              const tokens = await sessionService.getParticipantPushTokens(session.participantIds);
+              await notificationService.sendSessionPushNotifications(
+                tokens,
+                session.title,
+                session.boardTitle,
+                userProfile?.displayName ?? "Admin"
+              );
+            }
+          } catch {
+            Alert.alert("Error", "Failed to start session.");
+          }
+        },
+      },
+    ]);
   };
 
   const handleMarkEnded = (sessionId: string) => {
@@ -155,6 +200,30 @@ export default function ScheduleScreen() {
       Alert.alert("Summary Failed", error.message ?? "Failed to generate summary.");
     } finally {
       setGeneratingId(null);
+    }
+  };
+
+  const handleJoinByCode = async () => {
+    if (!user || !joinCode.trim()) return;
+    setJoining(true);
+    try {
+      const result = await sessionService.joinSessionByCode(joinCode.trim(), user.uid);
+      if (!result) {
+        Alert.alert("Not Found", "No session found with that code. Check the code and try again.");
+        return;
+      }
+      setJoinModalVisible(false);
+      setJoinCode("");
+      if (result.alreadyJoined) {
+        router.push(`/session/${result.sessionId}`);
+      } else {
+        await fetchSessions();
+        router.push(`/session/${result.sessionId}`);
+      }
+    } catch {
+      Alert.alert("Error", "Failed to join session. Please try again.");
+    } finally {
+      setJoining(false);
     }
   };
 
@@ -230,6 +299,15 @@ export default function ScheduleScreen() {
                   <Ionicons name="notifications-outline" size={14} color="#2563eb" />
                   <Text style={styles.actionBtnText}>Resend Notification</Text>
                 </TouchableOpacity>
+                {tab === "upcoming" && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.actionBtnStart]}
+                    onPress={() => handleStartSession(item)}
+                  >
+                    <Ionicons name="play-circle-outline" size={14} color="#16a34a" />
+                    <Text style={[styles.actionBtnText, { color: "#16a34a" }]}>Start Session</Text>
+                  </TouchableOpacity>
+                )}
                 {tab === "active" && (
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.actionBtnDanger]}
@@ -294,6 +372,64 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Screen header */}
+      <View style={styles.screenHeader}>
+        <Text style={styles.screenTitle}>Schedule</Text>
+        <TouchableOpacity
+          style={styles.joinCodeBtn}
+          onPress={() => setJoinModalVisible(true)}
+        >
+          <Ionicons name="enter-outline" size={16} color="#2563eb" />
+          <Text style={styles.joinCodeBtnText}>Join by Code</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Join by Code modal */}
+      <Modal
+        visible={joinModalVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setJoinModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Join a Session</Text>
+            <Text style={styles.modalSubtitle}>
+              Enter the invite code shared by the session creator.
+            </Text>
+            <TextInput
+              style={styles.codeInput}
+              value={joinCode}
+              onChangeText={(t) => setJoinCode(t.toUpperCase())}
+              placeholder="SESS-XXXXXX"
+              placeholderTextColor="#9ca3af"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              maxLength={11}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => { setJoinModalVisible(false); setJoinCode(""); }}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalJoinBtn, (!joinCode.trim() || joining) && styles.modalJoinBtnDisabled]}
+                onPress={handleJoinByCode}
+                disabled={!joinCode.trim() || joining}
+              >
+                {joining ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalJoinText}>Join</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Filter tabs */}
       <View style={styles.tabs}>
         {(["active", "upcoming", "past"] as FilterTab[]).map((tab) => (
@@ -315,6 +451,16 @@ export default function ScheduleScreen() {
           </TouchableOpacity>
         ))}
       </View>
+
+      {fetchError && (
+        <View style={styles.errorBanner}>
+          <Ionicons name="alert-circle-outline" size={15} color="#b91c1c" />
+          <Text style={styles.errorBannerText}>{fetchError}</Text>
+          <TouchableOpacity onPress={() => setFetchError(null)}>
+            <Ionicons name="close" size={15} color="#b91c1c" />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.centered}>
@@ -506,6 +652,10 @@ const styles = StyleSheet.create({
     borderColor: "#fecaca",
     backgroundColor: "#fff1f2",
   },
+  actionBtnStart: {
+    borderColor: "#bbf7d0",
+    backgroundColor: "#f0fdf4",
+  },
   actionBtnAI: {
     borderColor: "#ddd6fe",
     backgroundColor: "#f5f3ff",
@@ -556,6 +706,22 @@ const styles = StyleSheet.create({
     color: "#374151",
     lineHeight: 20,
   },
+  // ── Error banner ──
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#fef2f2",
+    borderBottomWidth: 1,
+    borderBottomColor: "#fecaca",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  errorBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#b91c1c",
+  },
   // ── Empty state ──
   emptyState: {
     alignItems: "center",
@@ -574,5 +740,108 @@ const styles = StyleSheet.create({
     color: "#d1d5db",
     textAlign: "center",
     lineHeight: 20,
+  },
+  // ── Screen header ──
+  screenHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 56,
+    paddingBottom: 8,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+  },
+  screenTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  joinCodeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2563eb",
+    backgroundColor: "#eff6ff",
+  },
+  joinCodeBtnText: {
+    color: "#2563eb",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  // ── Join modal ──
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 24,
+    width: "100%",
+    gap: 12,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: "#6b7280",
+    lineHeight: 20,
+  },
+  codeInput: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 10,
+    padding: 14,
+    fontSize: 20,
+    fontWeight: "700",
+    letterSpacing: 3,
+    color: "#111",
+    textAlign: "center",
+    backgroundColor: "#f9fafb",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 4,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    alignItems: "center",
+  },
+  modalCancelText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#6b7280",
+  },
+  modalJoinBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 10,
+    backgroundColor: "#2563eb",
+    alignItems: "center",
+  },
+  modalJoinBtnDisabled: {
+    opacity: 0.5,
+  },
+  modalJoinText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#fff",
   },
 });

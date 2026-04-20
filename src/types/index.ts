@@ -60,6 +60,7 @@ export interface Session {
   createdByName: string;
   participantIds: string[];
   status: "scheduled" | "active" | "ended";
+  joinCode?: string;
   summary?: string;
   createdAt: Date;
 }

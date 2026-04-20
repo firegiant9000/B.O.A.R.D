@@ -4,16 +4,18 @@ import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
 import { registerForPushNotifications } from "../src/services/notificationService";
+import { loadOpenAIKey } from "../src/services/aiService";
 
 function RootNavigator() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
-  // Register for push notifications once the user is authenticated
+  // Register for push notifications and load remote API key once authenticated
   useEffect(() => {
     if (user) {
       registerForPushNotifications(user.uid);
+      loadOpenAIKey();
     }
   }, [user?.uid]);
 

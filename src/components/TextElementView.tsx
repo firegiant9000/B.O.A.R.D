@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Platform,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { TextElement } from "../types";
 
 const HANDLE_SIZE = 16;
@@ -21,6 +22,7 @@ interface TextElementViewProps {
   onSelect: (id: string) => void;
   onBlur: (id: string, text: string) => void;
   onResize: (id: string, width: number, height: number, fontSize: number) => void;
+  onDelete?: (id: string) => void;
 }
 
 export default function TextElementView({
@@ -30,6 +32,7 @@ export default function TextElementView({
   onSelect,
   onBlur,
   onResize,
+  onDelete,
 }: TextElementViewProps) {
   const [localText, setLocalText] = useState(element.text);
   const [dims, setDims] = useState({ width: element.width, height: element.height });
@@ -162,6 +165,15 @@ export default function TextElementView({
           <View {...trPan.panHandlers} style={[styles.handle, styles.handleTR]} />
           <View {...blPan.panHandlers} style={[styles.handle, styles.handleBL]} />
           <View {...brPan.panHandlers} style={[styles.handle, styles.handleBR]} />
+          {/* Delete button */}
+          {onDelete && (
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => onDelete(element.id)}
+            >
+              <Ionicons name="trash-outline" size={12} color="#fff" />
+            </TouchableOpacity>
+          )}
         </>
       )}
     </View>
@@ -205,4 +217,15 @@ const styles = StyleSheet.create({
   handleTR: { top: -HANDLE_SIZE / 2, right: -HANDLE_SIZE / 2 },
   handleBL: { bottom: -HANDLE_SIZE / 2, left: -HANDLE_SIZE / 2 },
   handleBR: { bottom: -HANDLE_SIZE / 2, right: -HANDLE_SIZE / 2 },
+  deleteBtn: {
+    position: "absolute",
+    top: -(HANDLE_SIZE + 6),
+    right: 0,
+    backgroundColor: "#ef4444",
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    justifyContent: "center",
+    alignItems: "center",
+  },
 });

@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { BoardPresence } from "../types";
 import * as friendService from "../services/friendService";
+import * as boardService from "../services/boardService";
 
 interface BoardUserBarProps {
   presence: BoardPresence[];
@@ -18,12 +19,26 @@ interface BoardUserBarProps {
   currentUser: { uid: string; displayName: string; email: string };
   blockedIds: string[];
   onBlock: (userId: string) => void;
+  ownerId?: string;
+  adminId?: string;
+  boardId?: string;
+  onAdminChanged?: (newAdminId: string) => void;
 }
 
 type FriendStatus = "idle" | "loading" | "sent" | "friends" | "incoming";
 
 // Distinct colors for guest avatars so they stand out
 const AVATAR_COLORS = ["#7c3aed", "#db2777", "#059669", "#d97706", "#dc2626"];
+
+function formatLastSeen(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "Active just now";
+  if (diffMins < 60) return `Active ${diffMins}m ago`;
+  const diffHrs = Math.floor(diffMins / 60);
+  if (diffHrs < 24) return `Active ${diffHrs}h ago`;
+  return "Active over a day ago";
+}
 
 function avatarColor(userId: string): string {
   let hash = 0;
@@ -37,6 +52,10 @@ export default function BoardUserBar({
   currentUser,
   blockedIds,
   onBlock,
+  ownerId,
+  adminId,
+  boardId,
+  onAdminChanged,
 }: BoardUserBarProps) {
   const [selectedUser, setSelectedUser] = useState<BoardPresence | null>(null);
   const [friendStatus, setFriendStatus] = useState<FriendStatus>("idle");
@@ -111,6 +130,30 @@ export default function BoardUserBar({
     );
   };
 
+  const handleMakeAdmin = () => {
+    if (!selectedUser || !boardId) return;
+    Alert.alert(
+      "Make Admin",
+      `Make ${selectedUser.displayName} the board admin? You will lose admin privileges.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Confirm",
+          onPress: async () => {
+            try {
+              await boardService.assignBoardAdmin(boardId, selectedUser.userId);
+              onAdminChanged?.(selectedUser.userId);
+              setSelectedUser(null);
+              Alert.alert("Done", `${selectedUser.displayName} is now the board admin.`);
+            } catch {
+              Alert.alert("Error", "Failed to change admin.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (visible.length === 0) return null;
 
   return (
@@ -155,6 +198,9 @@ export default function BoardUserBar({
             </View>
 
             <Text style={styles.cardName}>{selectedUser?.displayName}</Text>
+            {selectedUser?.lastSeen && (
+              <Text style={styles.cardLastSeen}>{formatLastSeen(selectedUser.lastSeen)}</Text>
+            )}
             <Text style={styles.cardInfo}>
               <Text style={styles.cardNameInline}>{selectedUser?.displayName}</Text>
               {" is working on "}
@@ -192,6 +238,17 @@ export default function BoardUserBar({
                 <Ionicons name="ban-outline" size={16} color="#ef4444" />
                 <Text style={styles.blockBtnText}>Block User</Text>
               </TouchableOpacity>
+
+              {ownerId &&
+                currentUser.uid === ownerId &&
+                selectedUser &&
+                adminId &&
+                selectedUser.userId !== adminId && (
+                  <TouchableOpacity style={styles.makeAdminBtn} onPress={handleMakeAdmin}>
+                    <Ionicons name="shield-outline" size={16} color="#2563eb" />
+                    <Text style={styles.makeAdminBtnText}>Make Admin</Text>
+                  </TouchableOpacity>
+                )}
             </View>
           </View>
         </TouchableOpacity>
@@ -270,6 +327,11 @@ const styles = StyleSheet.create({
     color: "#111827",
     marginBottom: 6,
   },
+  cardLastSeen: {
+    fontSize: 12,
+    color: "#9ca3af",
+    marginBottom: 8,
+  },
   cardInfo: {
     fontSize: 13,
     color: "#6b7280",
@@ -333,6 +395,23 @@ const styles = StyleSheet.create({
   },
   blockBtnText: {
     color: "#ef4444",
+    fontWeight: "600",
+    fontSize: 15,
+  },
+  makeAdminBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1.5,
+    borderColor: "#bfdbfe",
+    paddingVertical: 11,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    width: "100%",
+  },
+  makeAdminBtnText: {
+    color: "#2563eb",
     fontWeight: "600",
     fontSize: 15,
   },

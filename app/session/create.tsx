@@ -101,8 +101,9 @@ export default function CreateSessionScreen() {
     }
     if (!user) return;
 
-    const finalDuration = customDuration
-      ? parseInt(customDuration, 10) || durationMinutes
+    const parsedCustom = customDuration ? parseInt(customDuration, 10) : NaN;
+    const finalDuration = !isNaN(parsedCustom) && parsedCustom > 0
+      ? Math.max(5, parsedCustom)
       : durationMinutes;
 
     setLoading(true);

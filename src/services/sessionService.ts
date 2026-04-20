@@ -10,12 +10,22 @@ import {
   where,
   orderBy,
   serverTimestamp,
+  arrayUnion,
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { Session } from "../types";
 
 const sessionsRef = collection(db, "sessions");
+
+function generateJoinCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "SESS-";
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
 
 function mapSession(id: string, data: any): Session {
   return {
@@ -30,6 +40,7 @@ function mapSession(id: string, data: any): Session {
     createdByName: data.createdByName ?? "",
     participantIds: data.participantIds ?? [],
     status: data.status ?? "scheduled",
+    joinCode: data.joinCode,
     summary: data.summary,
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
@@ -38,16 +49,32 @@ function mapSession(id: string, data: any): Session {
 export async function createSession(
   data: Omit<Session, "id" | "createdAt">
 ): Promise<string> {
-  // Omit undefined fields — Firestore rejects them
-  const { summary, ...rest } = data;
+  const { summary, joinCode: _jc, ...rest } = data;
   const payload: Record<string, any> = {
     ...rest,
+    joinCode: generateJoinCode(),
     scheduledAt: Timestamp.fromDate(rest.scheduledAt),
     createdAt: serverTimestamp(),
   };
   if (summary !== undefined) payload.summary = summary;
   const ref = await addDoc(sessionsRef, payload);
   return ref.id;
+}
+
+export async function joinSessionByCode(
+  code: string,
+  userId: string
+): Promise<{ sessionId: string; alreadyJoined: boolean } | null> {
+  const q = query(sessionsRef, where("joinCode", "==", code.trim().toUpperCase()));
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  const sessionDoc = snap.docs[0];
+  const data = sessionDoc.data();
+  if ((data.participantIds ?? []).includes(userId) || data.createdById === userId) {
+    return { sessionId: sessionDoc.id, alreadyJoined: true };
+  }
+  await updateDoc(sessionDoc.ref, { participantIds: arrayUnion(userId) });
+  return { sessionId: sessionDoc.id, alreadyJoined: false };
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {

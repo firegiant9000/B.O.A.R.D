@@ -142,3 +142,18 @@ export async function hasPendingRequest(fromId: string, toId: string): Promise<b
   const snap = await getDocs(q);
   return !snap.empty;
 }
+
+export async function getUsersByIds(
+  uids: string[]
+): Promise<{ uid: string; displayName: string; email: string }[]> {
+  if (uids.length === 0) return [];
+  const results = await Promise.all(
+    uids.map(async (uid) => {
+      const snap = await getDoc(doc(db, "users", uid));
+      if (!snap.exists()) return null;
+      const data = snap.data() as any;
+      return { uid, displayName: data.displayName ?? "Unknown", email: data.email ?? "" };
+    })
+  );
+  return results.filter(Boolean) as { uid: string; displayName: string; email: string }[];
+}
