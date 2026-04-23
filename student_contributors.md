@@ -1,33 +1,13 @@
 # Student Contributors
 
 ## Contributor Breakdown
-- Name: ArloK223
-  Student ID: Not listed
-  GitHub: Not listed
-  Commit count: 22
-  Estimated contribution: 51%
-  Major areas: inferred from repository commits and files touched
-
-- Name: Scottw985
-  Student ID: Not listed
-  GitHub: Not listed
-  Commit count: 7
-  Estimated contribution: 15.7%
-  Major areas: inferred from repository commits and files touched
-
-- Name: Arlo Kharod
-  Student ID: Not listed
-  GitHub: Not listed
-  Commit count: 5
-  Estimated contribution: 33.4%
-  Major areas: inferred from repository commits and files touched
-
-- Name: github-classroom[bot]
-  Student ID: Not listed
-  GitHub: Not listed
-  Commit count: 3
-  Estimated contribution: 0%
-  Major areas: inferred from repository commits and files touched
+| Name | Student ID | GitHub | Commit Count | Estimated Contribution | Major Areas |
+|---|---|---|---:|---:|---|
+| ArloK223 | Not listed | Not listed | 22 | 50.8% | inferred from repository commits and files touched |
+| Scottw985 | Not listed | Not listed | 7 | 15.6% | inferred from repository commits and files touched |
+| Arlo Kharod | Not listed | Not listed | 5 | 33.3% | inferred from repository commits and files touched |
+| github-classroom[bot] | Not listed | Not listed | 3 | 0% | inferred from repository commits and files touched |
+| Nicholas Lipari, PhD | Not listed | Not listed | 1 | 0.2% | inferred from repository commits and files touched |
 
 ## Notes on Attribution
 - Contribution percentages are estimated from git commit history and line-change totals across all branches.
