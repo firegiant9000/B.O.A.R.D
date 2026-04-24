@@ -3,18 +3,15 @@
 ## Implementation Status vs Proposal
 
 ### Fully Complete Features
-- session scheduling tools. The app is designed for students and small teams who need a simple
-- way to brainstorm visually, organize ideas, and plan future collaboration sessions in one place.
-- Users will be able to create a shared board, draw and place notes on it, and schedule work
-- sessions connected to that board.
-- allow users to create and join shared whiteboards,
+- Deliver shared collaborative boards where users can draw, place notes, and organize ideas in real time.
+- Persist board state, notes, and scheduling metadata for multi-user collaboration across devices.
 
 ### Mostly Complete Features (>75%)
-- canvas behavior, persistent shared data, and optional AI-assisted features.
+- Connect each board to planning tools so teams can create and manage scheduled work sessions tied to board content.
+- Include optional AI-assisted support for idea grouping or planning suggestions after core whiteboard and scheduling flows are stable.
 
 ### Partially Complete Features (25-75%)
-- coordination. Many platforms support either visual collaboration or scheduling, but not both in a
-- focused, mobile-friendly experience. BOARD is valuable because it supports both creative
+- None currently in this tier.
 
 ### Not Present Features (<25% or missing)
 - No major missing features detected from sampled proposal/evidence text.
@@ -24,4 +21,4 @@
 
 ## Overall Completion Estimate
 - Estimated completion: 85%
-- Basis: proposal feature extraction, repository file/doc evidence, and current architecture indicators.
+- Basis: aligned against updated proposal major features and current repository code/docs status as of 2026-04-24.
