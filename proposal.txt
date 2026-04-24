@@ -1,0 +1,132 @@
+Project Proposal Draft
+1. Project Title and Project Information
+
+Project Title: B.O.A.R.D
+Group Members: Arlo Kharod, Scott Williams
+Repository URL: https://github.com/School-of-Computing-and-Informatics/cmps-357-sp26-
+final-project-cmps357-team2
+GitHub Classroom Assignment: https://classroom.github.com/a/oHRMfboi
+
+
+
+2. Project Overview
+BOARD is a mobile collaboration app that combines a shared whiteboard with lightweight
+session scheduling tools. The app is designed for students and small teams who need a simple
+way to brainstorm visually, organize ideas, and plan future collaboration sessions in one place.
+Users will be able to create a shared board, draw and place notes on it, and schedule work
+sessions connected to that board.
+
+This project solves the problem of switching between separate tools for brainstorming and
+coordination. Many platforms support either visual collaboration or scheduling, but not both in a
+focused, mobile-friendly experience. BOARD is valuable because it supports both creative
+ideation and team planning while also requiring meaningful technical depth through interactive
+canvas behavior, persistent shared data, and optional AI-assisted features.
+
+
+
+3. Project Goals
+The goals of BOARD are to:
+
+   •   allow users to create and join shared whiteboards,
+   •   support drawing, erasing, and adding text notes,
+
+   •   provide persistent storage for boards and session data,
+
+   •   allow users to schedule collaboration sessions tied to a board,
+
+   •   support collaboration between multiple users,
+
+   •   include an AI-generated session summary feature if time permits.
+
+These goals are concrete and measurable because the finished system must demonstrate working
+board interaction, saved data, scheduled sessions, and a usable mobile workflow.
+4. Key Features
+Core System Features
+
+BOARD will allow users to create boards, join shared boards, and interact with a digital
+whiteboard using basic drawing tools. Users will also be able to add simple text notes to support
+brainstorming and planning.
+
+Scheduling and Collaboration
+
+Each board can have scheduled collaboration sessions with a title, date, time, and description.
+This connects the brainstorming space with actual team coordination and gives users a reason to
+return to saved boards.
+
+Data Storage and Retrieval
+Board content, user data, and scheduled sessions will be stored in the backend so teams can
+reopen and continue work later. Persistent storage is necessary for a usable collaborative
+experience.
+AI-Assisted Features
+
+If core features are completed on time, BOARD may include an AI session summarizer that
+generates a short recap of what was discussed or written during a session. A sketch-cleanup
+assistant is also being considered as a stretch feature, but it is not part of the required core scope.
+
+
+
+5. Technical Stack (Proposed)
+The proposed mobile frontend is React Native with Expo because it supports efficient cross-
+platform development and allows the project to focus on app functionality instead of device-
+specific setup. For backend services, Firebase is the current choice because it provides
+authentication, cloud-hosted storage, and simplified data synchronization within a short semester
+timeline. Firestore will likely be used for storing board data, user information, and session
+records because the project involves flexible shared content rather than only rigid relational data.
+
+Authentication will be handled through Firebase Authentication so users can securely create
+accounts and access shared boards. If the AI summary feature is implemented, it will use an
+external API such as the OpenAI API to generate short text summaries from notes or session
+content. This stack fits the project because it supports mobile development, persistent storage,
+user accounts, and optional feature expansion without requiring excessive infrastructure work.
+
+
+
+6. Architecture Overview
+The app will use a client-cloud architecture. The React Native frontend will handle user
+interaction, board drawing, and scheduling screens. User actions such as creating boards, saving
+notes, or scheduling sessions will be sent to Firebase services, where the data will be stored and
+later retrieved by collaborators.
+The system is separated into a mobile UI layer, a board interaction layer, a scheduling layer, and
+a cloud data layer. This separation keeps the project organized and makes it easier to develop and
+test features independently. If the AI summary feature is added, session text data will be sent to
+an external API and the returned summary will be stored with the related session.
+
+
+
+7. Development Timeline
+Week 1 (March 16–22): Finalize scope, set up repository, assign responsibilities, and build
+wireframes.
+Week 2 (March 23–29): Set up React Native project, Firebase services, authentication, and initial
+navigation.
+Week 3 (March 30–April 5): Implement board creation, board listing, and basic drawing tools.
+Week 4 (April 6–12): Add session scheduling, persistent board storage, and prepare checkpoint
+progress by April 8.
+Week 5 (April 13–19): Improve collaboration flow, board sharing, and interface usability.
+Week 6 (April 20–26): Implement AI session summary if feasible, test persistence and edge
+cases, and refine features.
+Week 7 (April 27–May 1): Final debugging, polish, documentation, and presentation preparation.
+
+This timeline keeps the core functionality first and places AI enhancement after the main system
+is working.
+
+
+
+8. Stretch Goals
+Possible stretch goals include real-time board updates, export of boards as images, color-coded
+collaborator contributions, push reminders for scheduled sessions, and sketch cleanup for rough
+drawings.
+
+
+
+9. Why This Project Matters
+BOARD demonstrates mobile development, cloud-backed data storage, authentication,
+interactive UI design, and integration planning. It goes beyond a basic CRUD app because it
+includes a drawing-based interface, collaboration features, scheduling support, and optional AI
+enhancement. The project applies concepts from modern software development such as modular
+architecture, backend integration, scoped milestone planning, and feature prioritization.
+
+This project is also portfolio-worthy because it solves a real collaboration problem in a practical
+way. It shows the ability to design a user-focused system, make realistic technical choices, and
+deliver a polished application that combines multiple software engineering concepts into one
+cohesive product.
+
