@@ -42,6 +42,7 @@ function mapSession(id: string, data: any): Session {
     status: data.status ?? "scheduled",
     joinCode: data.joinCode,
     summary: data.summary,
+    canvasSnapshot: data.canvasSnapshot,
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
 }
@@ -184,6 +185,13 @@ export async function updateSessionStatus(
   status: Session["status"]
 ): Promise<void> {
   await updateDoc(doc(db, "sessions", sessionId), { status });
+}
+
+export async function updateSessionSnapshot(
+  sessionId: string,
+  dataUrl: string
+): Promise<void> {
+  await updateDoc(doc(db, "sessions", sessionId), { canvasSnapshot: dataUrl });
 }
 
 export async function updateSessionSummary(
