@@ -62,6 +62,7 @@ export interface Session {
   status: "scheduled" | "active" | "ended";
   joinCode?: string;
   summary?: string;
+  canvasSnapshot?: string;
   createdAt: Date;
 }
 

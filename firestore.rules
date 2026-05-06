@@ -40,14 +40,26 @@ service cloud.firestore {
 
     // ── boards ────────────────────────────────────────────────────────────────
     match /boards/{boardId} {
+      // Members + owner can always read; anyone signed-in can read a board that
+      // has an inviteCode (needed for the join-by-code lookup query).
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.ownerId ||
-                      request.auth.uid in resource.data.members
+                      request.auth.uid in resource.data.members ||
+                      resource.data.inviteCode != null
                     );
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
+      // Admin can change anything; existing members can touch members/updatedAt;
+      // a non-member can self-join via invite code (mirrors the sessions rule).
       allow update: if isBoardAdmin(boardId) ||
                       (isBoardMember(boardId) &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']));
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt'])) ||
+                      (
+                        resource.data.inviteCode != null &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']) &&
+                        request.resource.data.members.hasAll(resource.data.members) &&
+                        request.resource.data.members.size() == resource.data.members.size() + 1 &&
+                        request.resource.data.members.hasAny([request.auth.uid])
+                      );
       allow delete: if isBoardAdmin(boardId);
 
       // paths, notes, textElements — any board member can read/write/delete

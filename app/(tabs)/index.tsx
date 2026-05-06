@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useState } from "react";
 import {
   View,
   Text,
@@ -22,7 +22,7 @@ const showAlert = (title: string, message: string) => {
     Alert.alert(title, message);
   }
 };
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useNavigation } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
@@ -83,9 +83,11 @@ export default function BoardsScreen() {
     });
   }, [navigation]);
 
-  useEffect(() => {
-    fetchBoards();
-  }, [fetchBoards]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchBoards();
+    }, [fetchBoards])
+  );
 
   const handleRefresh = () => {
     setRefreshing(true);

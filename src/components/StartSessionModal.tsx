@@ -17,6 +17,7 @@ import { BoardPresence, FriendRequest } from "../types";
 import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as notificationService from "../services/notificationService";
+import { showAlert } from "../utils/alerts";
 
 interface StartSessionModalProps {
   visible: boolean;
@@ -113,13 +114,13 @@ export default function StartSessionModal({
 
   const handleCreate = async () => {
     if (!title.trim()) {
-      Alert.alert("Missing Title", "Please enter a session title.");
+      showAlert("Missing Title", "Please enter a session title.");
       return;
     }
 
     const durationNum = parseInt(duration, 10);
     if (isNaN(durationNum) || durationNum <= 0) {
-      Alert.alert("Invalid Duration", "Please enter a valid duration in minutes.");
+      showAlert("Invalid Duration", "Please enter a valid duration in minutes.");
       return;
     }
 
@@ -153,14 +154,14 @@ export default function StartSessionModal({
 
       onSessionCreated(sessionId);
       onClose();
-      Alert.alert(
+      showAlert(
         "Session Started",
         participantIds.length > 0
           ? `Session created and ${participantIds.length} participant(s) have been notified.`
           : "Session created. No participants were notified."
       );
     } catch {
-      Alert.alert("Error", "Failed to create session. Please try again.");
+      showAlert("Error", "Failed to create session. Please try again.");
     } finally {
       setSubmitting(false);
     }

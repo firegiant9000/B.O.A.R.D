@@ -96,7 +96,8 @@ async function gatherBoardContent(boardId: string): Promise<string> {
  */
 export async function generateSessionSummary(
   boardId: string,
-  context: SessionContext
+  context: SessionContext,
+  imageDataUrl?: string
 ): Promise<string> {
   if (!_apiKey) {
     throw new Error(
@@ -107,8 +108,9 @@ export async function generateSessionSummary(
   const boardContent = await gatherBoardContent(boardId);
 
   const systemPrompt = `You are a helpful assistant that summarizes collaboration sessions.
-Given the session metadata and board content, write a concise summary (3-5 sentences) of what was discussed or worked on.
-Focus on key topics, decisions, and action items. Be specific and useful.`;
+You will receive session metadata, transcribed text content, and (if present) an image of the whiteboard.
+If an image is present, describe concretely what is drawn or written on it (shapes, words, diagrams, sketches) — do not say "no content was found" when an image is provided.
+Write a concise summary (3-5 sentences) combining all signals. Focus on what was actually on the board and any apparent topics or decisions.`;
 
   const userPrompt = `Session: "${context.sessionTitle}"
 Board: "${context.boardTitle}"
@@ -120,6 +122,20 @@ ${boardContent}
 
 Please provide a brief session summary.`;
 
+  const useVision = !!imageDataUrl;
+  const userMessage = useVision
+    ? {
+        role: "user",
+        content: [
+          { type: "text", text: userPrompt },
+          {
+            type: "image_url",
+            image_url: { url: imageDataUrl, detail: "high" },
+          },
+        ],
+      }
+    : { role: "user", content: userPrompt };
+
   const response = await fetch(OPENAI_API_URL, {
     method: "POST",
     headers: {
@@ -127,10 +143,10 @@ Please provide a brief session summary.`;
       "Authorization": `Bearer ${_apiKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-3.5-turbo",
+      model: useVision ? "gpt-4o-mini" : "gpt-3.5-turbo",
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        userMessage,
       ],
       max_tokens: 300,
       temperature: 0.7,

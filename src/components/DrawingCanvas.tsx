@@ -48,18 +48,21 @@ function simplifyPoints(
   return result;
 }
 
-export default function DrawingCanvas({
-  paths,
-  currentPath,
-  color,
-  strokeWidth,
-  tool,
-  onStrokeStart,
-  onStrokeMove,
-  onStrokeEnd,
-  onCanvasTap,
-  disabled = false,
-}: DrawingCanvasProps) {
+function DrawingCanvas(
+  {
+    paths,
+    currentPath,
+    color,
+    strokeWidth,
+    tool,
+    onStrokeStart,
+    onStrokeMove,
+    onStrokeEnd,
+    onCanvasTap,
+    disabled = false,
+  }: DrawingCanvasProps,
+  svgRef: React.Ref<any>
+) {
   const isMoveRef = useRef(false);
   const startRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -125,7 +128,7 @@ export default function DrawingCanvas({
 
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
-      <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
+      <Svg ref={svgRef} width={width} height={height} style={StyleSheet.absoluteFill}>
         {/* Render saved paths — eraser strokes paint over with the background color */}
         {pathStrings.map((p) => {
           if (!p.d) return null;
@@ -156,6 +159,8 @@ export default function DrawingCanvas({
     </View>
   );
 }
+
+export default React.forwardRef(DrawingCanvas);
 
 const styles = StyleSheet.create({
   container: {

@@ -26,7 +26,9 @@ import * as boardService from "../../src/services/boardService";
 import * as pathService from "../../src/services/pathService";
 import * as presenceService from "../../src/services/presenceService";
 import * as friendService from "../../src/services/friendService";
-import { Board, BoardPresence, DrawPath, TextNote, TextElement } from "../../src/types";
+import * as sessionService from "../../src/services/sessionService";
+import { captureSvgAsPng } from "../../src/utils/canvasCapture";
+import { Board, BoardPresence, DrawPath, Session, TextNote, TextElement } from "../../src/types";
 
 type Tool = "pen" | "eraser" | "text";
 
@@ -72,6 +74,13 @@ export default function BoardScreen() {
 
   // Session modal
   const [sessionModalVisible, setSessionModalVisible] = useState(false);
+
+  // Active admin-owned session for this board (drives End Session button)
+  const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const [endingSession, setEndingSession] = useState(false);
+
+  // Ref to the underlying SVG element on web, for canvas snapshot capture
+  const canvasSvgRef = useRef<any>(null);
 
   // Share modal
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
@@ -201,6 +210,74 @@ export default function BoardScreen() {
       Alert.alert("Error", "Failed to load board");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Find an admin-owned active session for this board.
+  // Use the user-scoped query (rules-compatible) and filter client-side by board.
+  const refreshActiveSession = useCallback(async () => {
+    if (!id || !user) return;
+    try {
+      const sessions = await sessionService.getSessionsForUser(user.uid);
+      const mine = sessions.find(
+        (s) =>
+          s.boardId === id &&
+          s.status === "active" &&
+          s.createdById === user.uid
+      );
+      setActiveSession(mine ?? null);
+    } catch (err) {
+      console.warn("[board] refreshActiveSession failed:", err);
+    }
+  }, [id, user]);
+
+  useEffect(() => {
+    refreshActiveSession();
+  }, [refreshActiveSession]);
+
+  const handleEndSession = async () => {
+    if (!activeSession) return;
+    setEndingSession(true);
+    try {
+      let svgEl: SVGSVGElement | null = null;
+      const ref: any = canvasSvgRef.current;
+      if (ref) {
+        // react-native-svg on web exposes the DOM node in different shapes by version
+        if (ref.tagName === "svg") svgEl = ref;
+        else if (ref.elementRef?.current?.tagName === "svg")
+          svgEl = ref.elementRef.current;
+        else if (ref._touchableNode?.tagName === "svg") svgEl = ref._touchableNode;
+        else if (typeof ref.querySelector === "function")
+          svgEl = ref.querySelector("svg");
+      }
+      if (!svgEl && Platform.OS === "web" && typeof document !== "undefined") {
+        // Last-ditch: there should only be one SVG inside the canvas container
+        svgEl = document.querySelector(
+          ".canvas-container svg, [data-canvas] svg, svg"
+        ) as SVGSVGElement | null;
+      }
+      const snapshot = await captureSvgAsPng(svgEl);
+      console.log(
+        "[end-session] svgEl=",
+        svgEl?.tagName,
+        "snapshot=",
+        snapshot ? `${Math.round(snapshot.length / 1024)}KB` : "null"
+      );
+      if (snapshot) {
+        try {
+          await sessionService.updateSessionSnapshot(activeSession.id, snapshot);
+          console.log("[end-session] snapshot saved to", activeSession.id);
+        } catch (err) {
+          console.warn("[end-session] snapshot upload failed:", err);
+        }
+      }
+      await sessionService.updateSessionStatus(activeSession.id, "ended");
+      setActiveSession(null);
+      showSaveToast();
+    } catch {
+      setErrorMessage("Failed to end session.");
+    } finally {
+      setEndingSession(false);
     }
   };
 
@@ -581,13 +658,28 @@ export default function BoardScreen() {
           </TouchableOpacity>
           {isAdmin && (
             <>
-              <TouchableOpacity
-                style={styles.startSessionBtn}
-                onPress={() => setSessionModalVisible(true)}
-              >
-                <Ionicons name="play-circle-outline" size={16} color="#fff" />
-                <Text style={styles.startSessionText}>Session</Text>
-              </TouchableOpacity>
+              {activeSession ? (
+                <TouchableOpacity
+                  style={styles.endSessionBtn}
+                  onPress={handleEndSession}
+                  disabled={endingSession}
+                >
+                  {endingSession ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="stop-circle-outline" size={16} color="#fff" />
+                  )}
+                  <Text style={styles.startSessionText}>End Session</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.startSessionBtn}
+                  onPress={() => setSessionModalVisible(true)}
+                >
+                  <Ionicons name="play-circle-outline" size={16} color="#fff" />
+                  <Text style={styles.startSessionText}>Session</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={styles.iconBtn}
                 onPress={() =>
@@ -634,6 +726,7 @@ export default function BoardScreen() {
           </View>
         )}
         <DrawingCanvas
+          ref={canvasSvgRef}
           paths={visiblePaths}
           currentPath={currentPoints}
           color={activeColor}
@@ -695,7 +788,10 @@ export default function BoardScreen() {
           adminName={currentUserInfo.displayName}
           presenceUsers={presence}
           onClose={() => setSessionModalVisible(false)}
-          onSessionCreated={() => setSessionModalVisible(false)}
+          onSessionCreated={() => {
+            setSessionModalVisible(false);
+            refreshActiveSession();
+          }}
         />
       )}
     </KeyboardAvoidingView>
@@ -749,6 +845,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     backgroundColor: "#2563eb",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  endSessionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ef4444",
     paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 8,
