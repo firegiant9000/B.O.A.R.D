@@ -11,11 +11,13 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
+import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { FriendRequest } from "../../src/types";
 import * as friendService from "../../src/services/friendService";
 import * as aiService from "../../src/services/aiService";
+import { showAlert } from "../../src/utils/alerts";
 
 export default function ProfileScreen() {
   const { userProfile, user, signOut } = useAuth();
@@ -58,9 +60,11 @@ export default function ProfileScreen() {
     }
   }, [user]);
 
-  useEffect(() => {
-    fetchFriends();
-  }, [fetchFriends]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchFriends();
+    }, [fetchFriends])
+  );
 
   useEffect(() => {
     aiService.loadOpenAIKey().then(() => {
@@ -81,7 +85,7 @@ export default function ProfileScreen() {
     try {
       await signOut();
     } catch (error: any) {
-      Alert.alert("Error", error.message ?? "Failed to sign out.");
+      showAlert("Error", error.message ?? "Failed to sign out.");
     }
   };
 
@@ -118,12 +122,12 @@ export default function ProfileScreen() {
         pending: "A friend request is already pending with this user.",
         self: "You cannot add yourself as a friend.",
       };
-      Alert.alert(
+      showAlert(
         result === "sent" ? "Success" : "Notice",
         messages[result] ?? "Something went wrong."
       );
     } catch {
-      Alert.alert("Error", "Failed to send friend request.");
+      showAlert("Error", "Failed to send friend request.");
     } finally {
       setAddingFriend(false);
     }
@@ -135,10 +139,10 @@ export default function ProfileScreen() {
       setPendingRequests((prev) => prev.filter((r) => r.id !== requestId));
       if (accept) {
         fetchFriends(); // Refresh friends list to show the new friend
-        Alert.alert("Friends!", `You and ${name} are now friends.`);
+        showAlert("Friends!", `You and ${name} are now friends.`);
       }
     } catch {
-      Alert.alert("Error", "Failed to respond to request.");
+      showAlert("Error", "Failed to respond to request.");
     }
   };
 
@@ -147,9 +151,9 @@ export default function ProfileScreen() {
     try {
       await friendService.unblockUser(user.uid, uid);
       setBlockedUsers((prev) => prev.filter((u) => u.uid !== uid));
-      Alert.alert("Unblocked", `${name} has been unblocked.`);
+      showAlert("Unblocked", `${name} has been unblocked.`);
     } catch {
-      Alert.alert("Error", "Failed to unblock user.");
+      showAlert("Error", "Failed to unblock user.");
     }
   };
 
@@ -341,7 +345,7 @@ export default function ProfileScreen() {
               if (!trimmed) return;
               await aiService.setOpenAIKey(trimmed);
               setAiKeySaved(true);
-              Alert.alert("Saved", "OpenAI API key saved. It will sync across your devices.");
+              showAlert("Saved", "OpenAI API key saved. It will sync across your devices.");
             }}
             disabled={!aiKey.trim()}
           >

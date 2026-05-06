@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -11,13 +11,14 @@ import {
   Modal,
   TextInput,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { Session } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
 import * as aiService from "../../src/services/aiService";
+import { showAlert, confirmAlert } from "../../src/utils/alerts";
 
 type FilterTab = "upcoming" | "active" | "past";
 
@@ -98,9 +99,11 @@ export default function ScheduleScreen() {
     }
   }, [user]);
 
-  useEffect(() => {
-    fetchSessions();
-  }, [fetchSessions]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchSessions();
+    }, [fetchSessions])
+  );
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -108,56 +111,54 @@ export default function ScheduleScreen() {
   };
 
   const handleStartSession = (session: Session) => {
-    Alert.alert("Start Session", `Mark "${session.title}" as active now?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Start",
-        onPress: async () => {
-          try {
-            await sessionService.updateSessionStatus(session.id, "active");
-            setSessions((prev) =>
-              prev.map((s) => (s.id === session.id ? { ...s, status: "active" } : s))
+    confirmAlert({
+      title: "Start Session",
+      message: `Mark "${session.title}" as active now?`,
+      confirmText: "Start",
+      onConfirm: async () => {
+        try {
+          await sessionService.updateSessionStatus(session.id, "active");
+          setSessions((prev) =>
+            prev.map((s) => (s.id === session.id ? { ...s, status: "active" } : s))
+          );
+          if (session.participantIds.length > 0) {
+            const tokens = await sessionService.getParticipantPushTokens(session.participantIds);
+            await notificationService.sendSessionPushNotifications(
+              tokens,
+              session.title,
+              session.boardTitle,
+              userProfile?.displayName ?? "Admin"
             );
-            if (session.participantIds.length > 0) {
-              const tokens = await sessionService.getParticipantPushTokens(session.participantIds);
-              await notificationService.sendSessionPushNotifications(
-                tokens,
-                session.title,
-                session.boardTitle,
-                userProfile?.displayName ?? "Admin"
-              );
-            }
-          } catch {
-            Alert.alert("Error", "Failed to start session.");
           }
-        },
+        } catch {
+          showAlert("Error", "Failed to start session.");
+        }
       },
-    ]);
+    });
   };
 
   const handleMarkEnded = (sessionId: string) => {
-    Alert.alert("End Session", "Mark this session as ended?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "End Session",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await sessionService.updateSessionStatus(sessionId, "ended");
-            setSessions((prev) =>
-              prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s))
-            );
-          } catch {
-            Alert.alert("Error", "Failed to update session.");
-          }
-        },
+    confirmAlert({
+      title: "End Session",
+      message: "Mark this session as ended?",
+      confirmText: "End Session",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await sessionService.updateSessionStatus(sessionId, "ended");
+          setSessions((prev) =>
+            prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s))
+          );
+        } catch {
+          showAlert("Error", "Failed to update session.");
+        }
       },
-    ]);
+    });
   };
 
   const handleResendNotification = async (session: Session) => {
     if (session.participantIds.length === 0) {
-      Alert.alert("No Participants", "This session has no participants to notify.");
+      showAlert("No Participants", "This session has no participants to notify.");
       return;
     }
     try {
@@ -168,15 +169,15 @@ export default function ScheduleScreen() {
         session.boardTitle,
         userProfile?.displayName ?? "Admin"
       );
-      Alert.alert("Sent", `Notification resent to ${session.participantIds.length} participant(s).`);
+      showAlert("Sent", `Notification resent to ${session.participantIds.length} participant(s).`);
     } catch {
-      Alert.alert("Error", "Failed to resend notification.");
+      showAlert("Error", "Failed to resend notification.");
     }
   };
 
   const handleGenerateSummary = async (session: Session) => {
     if (!aiService.getOpenAIKey()) {
-      Alert.alert(
+      showAlert(
         "API Key Required",
         "To generate AI summaries, add your OpenAI API key in the Profile tab under Settings.",
       );
@@ -184,20 +185,32 @@ export default function ScheduleScreen() {
     }
 
     setGeneratingId(session.id);
+    console.log(
+      "[generate-summary] session=",
+      session.id,
+      "hasSnapshot=",
+      !!session.canvasSnapshot,
+      session.canvasSnapshot
+        ? `(${Math.round(session.canvasSnapshot.length / 1024)}KB)`
+        : ""
+    );
     try {
-      const summary = await aiService.generateSessionSummary(session.boardId, {
-        sessionTitle: session.title,
-        boardTitle: session.boardTitle,
-        durationMinutes: session.durationMinutes,
-        participantCount: session.participantIds.length + 1,
-      });
+      const summary = await aiService.generateSessionSummary(
+        session.boardId,
+        {
+          sessionTitle: session.title,
+          boardTitle: session.boardTitle,
+          durationMinutes: session.durationMinutes,
+          participantCount: session.participantIds.length + 1,
+        },
+        session.canvasSnapshot
+      );
       await sessionService.updateSessionSummary(session.id, summary);
       setSessions((prev) =>
         prev.map((s) => (s.id === session.id ? { ...s, summary } : s))
       );
-      Alert.alert("Summary Generated", summary);
     } catch (error: any) {
-      Alert.alert("Summary Failed", error.message ?? "Failed to generate summary.");
+      showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
     } finally {
       setGeneratingId(null);
     }
@@ -209,7 +222,7 @@ export default function ScheduleScreen() {
     try {
       const result = await sessionService.joinSessionByCode(joinCode.trim(), user.uid);
       if (!result) {
-        Alert.alert("Not Found", "No session found with that code. Check the code and try again.");
+        showAlert("Not Found", "No session found with that code. Check the code and try again.");
         return;
       }
       setJoinModalVisible(false);
@@ -221,7 +234,7 @@ export default function ScheduleScreen() {
         router.push(`/session/${result.sessionId}`);
       }
     } catch {
-      Alert.alert("Error", "Failed to join session. Please try again.");
+      showAlert("Error", "Failed to join session. Please try again.");
     } finally {
       setJoining(false);
     }
