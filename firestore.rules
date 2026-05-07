@@ -86,7 +86,8 @@ service cloud.firestore {
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
-                      request.auth.uid in resource.data.participantIds
+                      request.auth.uid in resource.data.participantIds ||
+                      resource.data.joinCode != null
                     );
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.createdById;
       allow update: if isSignedIn() && (
