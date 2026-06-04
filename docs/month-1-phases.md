@@ -52,8 +52,32 @@ offline resilience (P6)  ── independent; parallelizable to a 2nd contributor
 
 ## Phases
 
-### Phase 1 — Safety net & test harness *(do first, low risk)*
+### Phase 1 — Safety net & test harness *(do first, low risk)* — ✅ DONE
 Unblocks safe refactoring of the canvas in later phases.
+
+**Delivered:**
+- `src/lib/errorReporting.ts` — central capture seam (console today; Sentry swap is a
+  one-liner in M2). Top-level `ErrorBoundary` (`src/components/ErrorBoundary.tsx`) wired
+  into `app/_layout.tsx`; `initErrorReporting()` called at startup.
+- Every silent catch now routes through the seam: `aiService` (×3), `notificationService`
+  (×2), `ShareBoardModal` (×1), `app/board/[id].tsx` (×3).
+- Jest + `jest-expo` + `@testing-library/react-native` harness; `firebase/firestore` mocked
+  via `src/test-utils/firestoreMock.ts`. 75 tests across all 8 services + ErrorBoundary.
+- **Service coverage ≈ 86% lines** (gate set to 60% in `package.json` `coverageThreshold`).
+- CI runs `npm run test:coverage -- --ci` after the type-check.
+
+**Deviations from the original plan (senior calls):**
+1. **Sentry seam, native SDK deferred to M2.** `@sentry/react-native` needs a DSN + native
+   build (EAS, M2) to function; installing it now yields a half-wired integration. Built the
+   abstraction the roadmap calls a "stub" instead.
+2. **Mocked Firestore, not `@firebase/rules-unit-testing`.** Services import a singleton `db`
+   pinned to the prod project, so emulator tests would risk prod writes and need emulator-in-CI.
+   Emulator-backed rules tests belong in the M3 rules work.
+3. **Added `babel-plugin-dynamic-import-node` (test env only).** Jest can't execute native
+   `import()`, which several services use to lazy-load native modules. Scoped to `env.test` in
+   `babel.config.js`; does not affect the Metro/production build.
+4. **Correction:** the plan cited `friendService:72` as a silent catch — the real site was
+   `ShareBoardModal.tsx:72`. Fixed there.
 
 - Top-level React error boundary in `app/_layout.tsx`.
 - Wire Sentry (free tier); replace every `.catch(() => {})` with `console.warn` +

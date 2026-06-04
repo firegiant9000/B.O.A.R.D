@@ -28,6 +28,7 @@ import * as presenceService from "../../src/services/presenceService";
 import * as friendService from "../../src/services/friendService";
 import * as sessionService from "../../src/services/sessionService";
 import { captureSvgAsPng } from "../../src/utils/canvasCapture";
+import { captureException } from "../../src/lib/errorReporting";
 import { Board, BoardPresence, DrawPath, Session, TextNote, TextElement } from "../../src/types";
 
 type Tool = "pen" | "eraser" | "text";
@@ -136,20 +137,27 @@ export default function BoardScreen() {
     const displayName = userProfile?.displayName ?? user.email ?? "User";
     const email = userProfile?.email ?? user.email ?? "";
 
-    presenceService.joinBoard(id, user.uid, displayName, email).catch(() => {});
+    presenceService
+      .joinBoard(id, user.uid, displayName, email)
+      .catch((e) => captureException(e, { op: "board.joinPresence" }));
 
     const unsubscribe = presenceService.subscribeToBoardPresence(id, setPresence);
 
     return () => {
       unsubscribe();
-      presenceService.leaveBoard(id, user.uid).catch(() => {});
+      presenceService
+        .leaveBoard(id, user.uid)
+        .catch((e) => captureException(e, { op: "board.leavePresence" }));
     };
   }, [id, user]);
 
   // Load blocked IDs on mount
   useEffect(() => {
     if (!user) return;
-    friendService.getBlockedIds(user.uid).then(setBlockedIds).catch(() => {});
+    friendService
+      .getBlockedIds(user.uid)
+      .then(setBlockedIds)
+      .catch((e) => captureException(e, { op: "board.getBlockedIds" }));
   }, [user]);
 
   // Real-time subscriptions for board content

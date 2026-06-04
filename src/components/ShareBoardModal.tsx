@@ -15,6 +15,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as boardService from "../services/boardService";
 import * as friendService from "../services/friendService";
+import { captureException } from "../lib/errorReporting";
 
 interface Friend {
   uid: string;
@@ -69,7 +70,7 @@ export default function ShareBoardModal({
         );
         setFriends(mapped);
       })
-      .catch(() => {})
+      .catch((e) => captureException(e, { op: "ShareBoardModal.getFriends" }))
       .finally(() => setLoadingFriends(false));
   }, [visible, currentUserId]);
 

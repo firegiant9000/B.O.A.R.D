@@ -3,8 +3,12 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
+import ErrorBoundary from "../src/components/ErrorBoundary";
+import { initErrorReporting } from "../src/lib/errorReporting";
 import { registerForPushNotifications } from "../src/services/notificationService";
 import { loadOpenAIKey } from "../src/services/aiService";
+
+initErrorReporting();
 
 function RootNavigator() {
   const { user, loading } = useAuth();
@@ -48,8 +52,10 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <RootNavigator />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <RootNavigator />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
