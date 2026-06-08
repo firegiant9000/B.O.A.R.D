@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -21,17 +21,50 @@ import JoinBoardModal from "../../src/components/JoinBoardModal";
 import ShareBoardModal from "../../src/components/ShareBoardModal";
 import BoardUserBar from "../../src/components/BoardUserBar";
 import StartSessionModal from "../../src/components/StartSessionModal";
+import ZoomControls from "../../src/components/ZoomControls";
+import SelectionOverlay from "../../src/components/SelectionOverlay";
+import OfflineBanner from "../../src/components/OfflineBanner";
 import { useAuth } from "../../src/hooks/useAuth";
+import { useViewport } from "../../src/hooks/useViewport";
+import { useThrottledValue } from "../../src/hooks/useThrottledValue";
+import { useSelection } from "../../src/hooks/useSelection";
+import { Point, Bounds, boundsOfPoints, unionBounds } from "../../src/lib/viewport";
+import { viewportBounds, boundsIntersect } from "../../src/lib/culling";
+import { pointNearPolyline, boundsContainPoint } from "../../src/lib/hitTest";
+import { rdpSimplify } from "../../src/lib/simplify";
 import * as boardService from "../../src/services/boardService";
 import * as pathService from "../../src/services/pathService";
+import * as snapshotService from "../../src/services/snapshotService";
 import * as presenceService from "../../src/services/presenceService";
 import * as friendService from "../../src/services/friendService";
 import * as sessionService from "../../src/services/sessionService";
 import { captureSvgAsPng } from "../../src/utils/canvasCapture";
 import { captureException } from "../../src/lib/errorReporting";
+import { reportSyncState } from "../../src/lib/connectivity";
 import { Board, BoardPresence, DrawPath, Session, TextNote, TextElement } from "../../src/types";
 
-type Tool = "pen" | "eraser" | "text";
+type Tool = "pen" | "eraser" | "text" | "select";
+
+// Phase 5 hit-testing tolerances (board units, before zoom). Selection adds a
+// generous reach around the thin stroke geometry so taps land; the eraser reach
+// is derived per-stroke from the active width.
+const SELECT_TAP_PADDING = 10;
+const ERASER_PAD = 10; // matches the legacy white-eraser render inflation
+
+// Feature flag for the Phase 2 pan/zoom transform. Off => identity viewport and
+// drawing only (pre-Phase-2 behavior) as a quick rollback if parity regresses.
+const ENABLE_PAN_ZOOM = true;
+
+// Phase 3 write-path perf: cap stroke sampling to ~30Hz and simplify with RDP
+// (board-space tolerance, ≈px at 100% zoom) before persisting.
+const STROKE_SAMPLE_MS = 1000 / 30;
+const RDP_TOLERANCE = 2.5;
+
+// Phase 4 viewport culling: re-evaluate which elements are on screen at most
+// every CULL_THROTTLE_MS during pan/zoom, keeping a CULL_MARGIN_PX screen-space
+// buffer ring mounted so panned-in content never pops in a frame late.
+const CULL_THROTTLE_MS = 50;
+const CULL_MARGIN_PX = 200;
 
 export default function BoardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -48,6 +81,8 @@ export default function BoardScreen() {
   const [currentPoints, setCurrentPoints] = useState<
     { x: number; y: number }[] | null
   >(null);
+  // Timestamp of the last sampled stroke point — drives 30Hz move coalescing.
+  const lastSampleRef = useRef(0);
 
   // Text element state
   const [textElements, setTextElements] = useState<TextElement[]>([]);
@@ -107,8 +142,59 @@ export default function BoardScreen() {
   // Ref so the text-element snapshot callback always sees the current editing ID
   const editingTextIdRef = useRef<string | null>(null);
 
+  // Viewport (pan/zoom). Identity viewport keeps board-space === screen-space,
+  // so pre-existing strokes render unchanged at default zoom.
+  const viewportCtl = useViewport();
+  const { viewport } = viewportCtl;
+  // Viewport sampled for culling — lags the live viewport so the rendered set
+  // changes ~20×/s during pan/zoom instead of every frame.
+  const cullViewport = useThrottledValue(viewport, CULL_THROTTLE_MS);
+
+  // Stroke selection (Phase 5). Own state slice so toolbar/AI can read it later
+  // (ROADMAP A.3). Distinct from the text-element selection above, which keeps
+  // its bespoke inline editing/resize until transforms unify in M2.
+  const selection = useSelection();
+
+  // Ids deleted by the in-progress eraser stroke — guards against re-deleting a
+  // path on subsequent moves before the optimistic setPaths re-renders.
+  const erasedIdsRef = useRef<Set<string>>(new Set());
+  // Latest visible paths for synchronous hit-testing inside gesture callbacks.
+  const visiblePathsRef = useRef<DrawPath[]>([]);
+
+  // Phase 7 checkpointing. `lastSnapshotCountRef` is the stroke count captured by
+  // the latest snapshot; the trigger fires once a full interval accrues past it.
+  // The in-flight guard keeps a single snapshot write from racing itself.
+  const lastSnapshotCountRef = useRef(0);
+  const snapshotInFlightRef = useRef(false);
+
   // Derived
   const isAdmin = !!user && !!board && user.uid === board.adminId;
+
+  // Board-space bounds of all content, for fit-to-content.
+  const contentBounds = (): Bounds | null =>
+    unionBounds([
+      ...visiblePaths.map((p) => boundsOfPoints(p.points)),
+      ...visibleTextElements.map((el) => ({
+        minX: el.position.x,
+        minY: el.position.y,
+        maxX: el.position.x + el.width,
+        maxY: el.position.y + el.height,
+      })),
+      ...visibleNotes.map((n) => ({
+        minX: n.position.x,
+        minY: n.position.y,
+        maxX: n.position.x,
+        maxY: n.position.y,
+      })),
+    ]);
+
+  const canvasCenter = (): Point => ({
+    x: canvasSize.width / 2,
+    y: canvasSize.height / 2,
+  });
+  const handleZoomIn = () => viewportCtl.zoomAtPoint(1.25, canvasCenter());
+  const handleZoomOut = () => viewportCtl.zoomAtPoint(0.8, canvasCenter());
+  const handleFitToContent = () => viewportCtl.fit(contentBounds(), canvasSize);
 
   // Safe navigation: fall back to Boards tab when there is no history to pop
   const goBack = () => {
@@ -163,11 +249,64 @@ export default function BoardScreen() {
   // Real-time subscriptions for board content
   useEffect(() => {
     if (!id) return;
-    return pathService.subscribeToBoardPaths(id, (incoming) => {
-      setPaths(incoming);
-      setCanvasReady(true);
-    });
+    // Reporting sync state from the paths listener (always active on a board)
+    // drives the offline/syncing banner without a second listener.
+    return pathService.subscribeToBoardPaths(
+      id,
+      (incoming) => {
+        setPaths(incoming);
+        setCanvasReady(true);
+      },
+      reportSyncState
+    );
   }, [id]);
+
+  // Phase 7 cold-load fast path: if a snapshot exists, paint from snapshot + the
+  // strokes drawn since its watermark (one snapshot read + a small delta) instead of
+  // waiting on the full-collection listener to stream every doc. The realtime listener
+  // above stays authoritative and reconciles to identical content. When no snapshot
+  // exists we skip — the listener already does the only initial read.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await snapshotService.getLatestSnapshot(id);
+        if (cancelled || !snap) return;
+        lastSnapshotCountRef.current = snap.pathCount;
+        const initial = await snapshotService.loadBoardState(id);
+        if (cancelled) return;
+        // Only seed if the listener hasn't already populated, to avoid clobbering it.
+        setPaths((prev) => (prev.length === 0 ? initial : prev));
+        setCanvasReady(true);
+      } catch (e) {
+        captureException(e, { op: "board.coldLoad" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // Phase 7 trigger: once a full interval of strokes has accrued past the last
+  // snapshot, compact the current path set into a new checkpoint. Guarded so the
+  // write fires once per threshold crossing. Non-destructive — old path docs stay
+  // (live-listener correctness); pruning is deferred to M5 (see snapshotService).
+  useEffect(() => {
+    if (!id || snapshotInFlightRef.current) return;
+    if (!snapshotService.shouldSnapshot(paths.length, lastSnapshotCountRef.current)) return;
+    snapshotInFlightRef.current = true;
+    const captured = paths;
+    snapshotService
+      .createSnapshot(id, captured)
+      .then(() => {
+        lastSnapshotCountRef.current = captured.length;
+      })
+      .catch((e) => captureException(e, { op: "board.createSnapshot" }))
+      .finally(() => {
+        snapshotInFlightRef.current = false;
+      });
+  }, [paths, id]);
 
   useEffect(() => {
     if (!id) return;
@@ -332,30 +471,53 @@ export default function BoardScreen() {
 
   // --- Drawing handlers ---
 
+  // Only pen and eraser produce live strokes; text/select route through taps.
+  const isDrawingTool = activeTool === "pen" || activeTool === "eraser";
+
   const handleStrokeStart = () => {
-    if (activeTool === "text") return;
+    if (!isDrawingTool) return;
+    lastSampleRef.current = 0; // first move of a new stroke always records
+    if (activeTool === "eraser") erasedIdsRef.current = new Set();
     setCurrentPoints([]);
   };
 
   const handleStrokeMove = (point: { x: number; y: number }) => {
-    if (activeTool === "text") return;
+    if (!isDrawingTool) return;
+    // Coalesce gesture frames to ~30Hz: cap how many points enter the stroke so
+    // the write payload and JS work scale with stroke length, not frame rate.
+    // The live render stays smooth — 30Hz is well above the perceptible floor.
+    const now = Date.now();
+    if (now - lastSampleRef.current < STROKE_SAMPLE_MS) return;
+    lastSampleRef.current = now;
+    if (activeTool === "eraser") eraseAtPoint(point);
     setCurrentPoints((prev) => (prev ? [...prev, point] : [point]));
   };
 
   const handleStrokeEnd = async () => {
-    if (activeTool === "text") return;
+    if (!isDrawingTool) return;
+    // Real eraser: deletion happened incrementally in handleStrokeMove; the
+    // stroke itself is never persisted (the old white-paint behavior is gone).
+    if (activeTool === "eraser") {
+      erasedIdsRef.current = new Set();
+      setCurrentPoints(null);
+      return;
+    }
     if (!currentPoints || currentPoints.length === 0) {
       setCurrentPoints(null);
       return;
     }
 
+    // RDP-simplify in board-space before the write: fewer points = smaller doc,
+    // cheaper sync, and lighter render — without a visible change to the stroke.
+    const simplified = rdpSimplify(currentPoints, RDP_TOLERANCE);
+
     const newPath: Omit<DrawPath, "id" | "createdAt"> = {
       boardId: id!,
       userId: user?.uid ?? "",
-      points: currentPoints,
+      points: simplified,
       color: activeColor,
       strokeWidth: activeStrokeWidth,
-      tool: activeTool as "pen" | "eraser",
+      tool: "pen",
     };
 
     try {
@@ -369,9 +531,76 @@ export default function BoardScreen() {
     setCurrentPoints(null);
   };
 
-  // --- Canvas tap ---
+  // --- Eraser: board-space hit-test → delete intersected strokes ---
 
-  const handleCanvasTap = (point: { x: number; y: number }) => {
+  // Delete every not-yet-erased stroke whose geometry comes within the eraser
+  // radius of `point`. Optimistic local removal keeps the UI responsive; the
+  // Firestore subscription confirms (or, on failure, restores) the deletion.
+  const eraseAtPoint = (point: Point) => {
+    const radius = (activeStrokeWidth + ERASER_PAD) / 2;
+    const hits: string[] = [];
+    for (const p of visiblePathsRef.current) {
+      if (erasedIdsRef.current.has(p.id)) continue;
+      const reach = radius + p.strokeWidth / 2;
+      // Broad-phase: skip strokes whose (inflated) bbox can't contain the point.
+      if (p.bbox && !boundsContainPoint(p.bbox, point, reach)) continue;
+      // Narrow-phase: actual distance to the polyline.
+      if (pointNearPolyline(p.points, point, reach)) {
+        hits.push(p.id);
+        erasedIdsRef.current.add(p.id);
+      }
+    }
+    if (hits.length === 0) return;
+    setPaths((prev) => prev.filter((p) => !hits.includes(p.id)));
+    if (selection.selectedId && hits.includes(selection.selectedId)) selection.clear();
+    hits.forEach((pathId) => {
+      pathService.deletePath(id!, pathId).catch((e) => {
+        captureException(e, { op: "board.erase" });
+        setErrorMessage("Some strokes couldn't be erased.");
+      });
+    });
+    scheduleSave();
+  };
+
+  // --- Selection: tap a stroke to select it (topmost wins) ---
+
+  const selectAtPoint = (point: Point) => {
+    // Iterate newest-first so the most recently drawn stroke under the tap wins.
+    for (let i = visiblePathsRef.current.length - 1; i >= 0; i--) {
+      const p = visiblePathsRef.current[i];
+      const reach = SELECT_TAP_PADDING + p.strokeWidth / 2;
+      if (p.bbox && !boundsContainPoint(p.bbox, point, reach)) continue;
+      if (pointNearPolyline(p.points, point, reach)) {
+        selection.select(p.id);
+        setSelectedTextId(null);
+        setEditingTextId(null);
+        return;
+      }
+    }
+    selection.clear();
+  };
+
+  const { selectedId, clear: clearSelection } = selection;
+  const handleDeleteSelectedPath = useCallback(async () => {
+    if (!selectedId) return;
+    clearSelection();
+    setPaths((prev) => prev.filter((p) => p.id !== selectedId));
+    try {
+      await pathService.deletePath(id!, selectedId);
+      scheduleSave();
+    } catch (e) {
+      captureException(e, { op: "board.deleteSelected" });
+      setErrorMessage("Failed to delete element.");
+    }
+  }, [id, selectedId, clearSelection, scheduleSave]);
+
+  // --- Canvas tap (point is board-space) ---
+
+  const handleCanvasTap = (point: Point) => {
+    if (activeTool === "select") {
+      selectAtPoint(point);
+      return;
+    }
     if (activeTool === "text") {
       if (selectedTextId || editingTextId) {
         // First tap on blank canvas deselects the active element
@@ -380,21 +609,51 @@ export default function BoardScreen() {
       } else {
         handleCreateTextElement(point);
       }
+      return;
+    }
+    if (activeTool === "eraser") {
+      // A stationary tap erases whatever is under it.
+      erasedIdsRef.current = new Set();
+      eraseAtPoint(point);
+      erasedIdsRef.current = new Set();
+      return;
+    }
+    // Pen: a stationary tap drops a single-point dot.
+    handleDrawDot(point);
+  };
+
+  const handleDrawDot = async (point: Point) => {
+    const dot: Omit<DrawPath, "id" | "createdAt"> = {
+      boardId: id!,
+      userId: user?.uid ?? "",
+      points: [point],
+      color: activeColor,
+      strokeWidth: activeStrokeWidth,
+      tool: "pen",
+    };
+    try {
+      await pathService.savePath(id!, dot);
+      setRedoStack([]);
+      scheduleSave();
+    } catch (e) {
+      captureException(e, { op: "board.drawDot" });
+      setErrorMessage("Failed to save.");
     }
   };
 
   // --- Text element handlers ---
 
-  const handleCreateTextElement = async (point: { x: number; y: number }) => {
+  const handleCreateTextElement = async (point: Point) => {
     const DEFAULT_EL_WIDTH = 160;
     const DEFAULT_EL_HEIGHT = 52;
+    // point is board-space; the board is unbounded, so no screen clamp.
     const newEl: Omit<TextElement, "id" | "createdAt"> = {
       boardId: id!,
       userId: user?.uid ?? "",
       text: "",
       position: {
-        x: Math.max(4, Math.min(point.x - 75, canvasSize.width - DEFAULT_EL_WIDTH - 4)),
-        y: Math.max(4, Math.min(point.y - 20, canvasSize.height - DEFAULT_EL_HEIGHT - 4)),
+        x: point.x - DEFAULT_EL_WIDTH / 2,
+        y: point.y - DEFAULT_EL_HEIGHT / 2,
       },
       width: DEFAULT_EL_WIDTH,
       height: DEFAULT_EL_HEIGHT,
@@ -528,6 +787,7 @@ export default function BoardScreen() {
       setTextElements([]);
       setSelectedTextId(null);
       setEditingTextId(null);
+      selection.clear();
       setRedoStack([]);
       scheduleSave();
     } catch {
@@ -586,10 +846,107 @@ export default function BoardScreen() {
     setBoard((prev) => (prev ? { ...prev, adminId: newAdminId } : prev));
   };
 
-  // Filter out blocked users' content
-  const visiblePaths = paths.filter((p) => !blockedIds.includes(p.userId));
-  const visibleNotes = notes.filter((n) => !blockedIds.includes(n.userId));
-  const visibleTextElements = textElements.filter((el) => !blockedIds.includes(el.userId));
+  // Filter out blocked users' content. Memoized so the culling pass below (and
+  // fit-to-content) see a stable array identity between renders.
+  const visiblePaths = useMemo(
+    () => paths.filter((p) => !blockedIds.includes(p.userId)),
+    [paths, blockedIds]
+  );
+  const visibleNotes = useMemo(
+    () => notes.filter((n) => !blockedIds.includes(n.userId)),
+    [notes, blockedIds]
+  );
+  const visibleTextElements = useMemo(
+    () => textElements.filter((el) => !blockedIds.includes(el.userId)),
+    [textElements, blockedIds]
+  );
+
+  // Keep the synchronous hit-test source (eraser/select) current.
+  useEffect(() => {
+    visiblePathsRef.current = visiblePaths;
+  }, [visiblePaths]);
+
+  // Drop a stroke selection when leaving the select tool.
+  useEffect(() => {
+    if (activeTool !== "select") clearSelection();
+  }, [activeTool, clearSelection]);
+
+  // The selected stroke (for the bounding-box overlay), if it still exists.
+  const selectedPath = useMemo(
+    () => (selection.selectedId ? visiblePaths.find((p) => p.id === selection.selectedId) ?? null : null),
+    [selection.selectedId, visiblePaths]
+  );
+  const selectedPathBounds = useMemo(() => {
+    if (!selectedPath) return null;
+    return selectedPath.bbox ?? boundsOfPoints(selectedPath.points);
+  }, [selectedPath]);
+
+  // Web: Delete/Backspace removes the selected stroke (mobile uses the trash
+  // affordance on the overlay). Ignore while editing text so it stays a normal
+  // backspace there.
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (editingTextId) return;
+      if ((e.key === "Delete" || e.key === "Backspace") && selection.selectedId) {
+        e.preventDefault();
+        handleDeleteSelectedPath();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [selection.selectedId, editingTextId, handleDeleteSelectedPath]);
+
+  // Phase 4 viewport culling — render only what overlaps the visible board rect.
+  // Paths always carry a bbox (persisted on write, computed on read for legacy
+  // docs); a path missing one is kept rather than risk dropping it. Notes/text
+  // elements derive their box from position + size. The element being edited is
+  // always kept so an off-screen edit can't be unmounted mid-keystroke.
+  const culledPaths = useMemo(() => {
+    const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
+    return visiblePaths.filter((p) => !p.bbox || boundsIntersect(p.bbox, view));
+  }, [visiblePaths, cullViewport, canvasSize]);
+
+  const culledNotes = useMemo(() => {
+    const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
+    return visibleNotes.filter((n) =>
+      boundsIntersect(
+        { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y },
+        view
+      )
+    );
+  }, [visibleNotes, cullViewport, canvasSize]);
+
+  const culledTextElements = useMemo(() => {
+    const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
+    return visibleTextElements.filter(
+      (el) =>
+        el.id === editingTextId ||
+        boundsIntersect(
+          {
+            minX: el.position.x,
+            minY: el.position.y,
+            maxX: el.position.x + el.width,
+            maxY: el.position.y + el.height,
+          },
+          view
+        )
+    );
+  }, [visibleTextElements, cullViewport, canvasSize, editingTextId]);
+
+  // Overlay transform — mirrors the SVG <G transform>. transformOrigin "0 0"
+  // makes RN's transform anchor at the top-left so it matches SVG semantics
+  // (screen = translate + scale * board), instead of RN's default center origin.
+  const overlayTransformStyle = ENABLE_PAN_ZOOM
+    ? {
+        transform: [
+          { translateX: viewport.x },
+          { translateY: viewport.y },
+          { scale: viewport.scale },
+        ],
+        transformOrigin: "0 0" as const,
+      }
+    : undefined;
 
   if (loading) {
     return (
@@ -711,6 +1068,9 @@ export default function BoardScreen() {
         <Text style={styles.saveToastText}>Saved</Text>
       </Animated.View>
 
+      {/* Offline / syncing banner (Phase 6) */}
+      <OfflineBanner />
+
       {/* Error banner */}
       {errorMessage && (
         <View style={styles.errorBanner}>
@@ -735,40 +1095,68 @@ export default function BoardScreen() {
         )}
         <DrawingCanvas
           ref={canvasSvgRef}
-          paths={visiblePaths}
+          paths={culledPaths}
           currentPath={currentPoints}
           color={activeColor}
           strokeWidth={activeStrokeWidth}
-          tool={activeTool === "text" ? "pen" : activeTool}
+          tool={activeTool === "eraser" ? "eraser" : "pen"}
+          viewport={viewport}
+          enablePanZoom={ENABLE_PAN_ZOOM}
+          width={canvasSize.width}
+          height={canvasSize.height}
           onStrokeStart={handleStrokeStart}
           onStrokeMove={handleStrokeMove}
           onStrokeEnd={handleStrokeEnd}
-          onCanvasTap={handleCanvasTap}
+          onTap={handleCanvasTap}
+          onPanBy={viewportCtl.panBy}
+          onZoomAtPoint={viewportCtl.zoomAtPoint}
+          onFling={viewportCtl.fling}
+          onGestureStart={viewportCtl.stopFling}
         />
-        <TextNoteOverlay
-          notes={visibleNotes}
-          pendingNotePosition={pendingNotePosition}
-          currentUserId={user?.uid ?? ""}
-          isAdmin={isAdmin}
-          onSubmitNote={handleSubmitNote}
-          onCancelNote={handleCancelNote}
-          onDeleteNote={handleDeleteNote}
-        />
-        {/* Text elements overlay */}
+        {/* Overlay layer — shares the canvas viewport transform so text and
+            notes stay locked to the strokes when panning/zooming. */}
         <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-          {visibleTextElements.map((el) => (
-            <TextElementView
-              key={el.id}
-              element={el}
-              isSelected={selectedTextId === el.id}
-              isEditing={editingTextId === el.id}
-              onSelect={handleTextSelect}
-              onBlur={handleTextBlur}
-              onResize={handleTextResize}
-              onDelete={el.userId === user?.uid || isAdmin ? handleTextDelete : undefined}
+          <View style={[StyleSheet.absoluteFill, overlayTransformStyle]} pointerEvents="box-none">
+            <TextNoteOverlay
+              notes={culledNotes}
+              pendingNotePosition={pendingNotePosition}
+              currentUserId={user?.uid ?? ""}
+              isAdmin={isAdmin}
+              onSubmitNote={handleSubmitNote}
+              onCancelNote={handleCancelNote}
+              onDeleteNote={handleDeleteNote}
             />
-          ))}
+            {culledTextElements.map((el) => (
+              <TextElementView
+                key={el.id}
+                element={el}
+                isSelected={selectedTextId === el.id}
+                isEditing={editingTextId === el.id}
+                scale={viewport.scale}
+                onSelect={handleTextSelect}
+                onBlur={handleTextBlur}
+                onResize={handleTextResize}
+                onDelete={el.userId === user?.uid || isAdmin ? handleTextDelete : undefined}
+              />
+            ))}
+            {selectedPathBounds && (
+              <SelectionOverlay
+                bounds={selectedPathBounds}
+                scale={viewport.scale}
+                onDelete={handleDeleteSelectedPath}
+              />
+            )}
+          </View>
         </View>
+        {ENABLE_PAN_ZOOM && (
+          <ZoomControls
+            scale={viewport.scale}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onReset={viewportCtl.reset}
+            onFit={handleFitToContent}
+          />
+        )}
       </View>
 
       {/* Toolbar */}

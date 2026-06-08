@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-type Tool = "pen" | "eraser" | "text";
+type Tool = "pen" | "eraser" | "text" | "select";
 
 interface ToolbarProps {
   activeTool: Tool;
@@ -90,6 +90,11 @@ export default function Toolbar({
             icon="text"
             active={activeTool === "text"}
             onPress={() => onToolChange("text")}
+          />
+          <ToolButton
+            icon="resize-outline"
+            active={activeTool === "select"}
+            onPress={() => onToolChange("select")}
           />
         </View>
 

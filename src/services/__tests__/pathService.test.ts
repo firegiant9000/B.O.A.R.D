@@ -31,6 +31,41 @@ describe("savePath", () => {
     expect(payload).toMatchObject({ userId: "u1", tool: "pen" });
     expect(payload.createdAt).toBe("__serverTimestamp__");
   });
+
+  it("persists a board-space bbox inflated by half the stroke width", async () => {
+    addDoc.mockResolvedValueOnce({ id: "path-2" });
+
+    await pathService.savePath("board-1", {
+      boardId: "board-1",
+      userId: "u1",
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 20 },
+      ],
+      color: "#000",
+      strokeWidth: 4, // half-width = 2
+      tool: "pen",
+    });
+
+    const payload = addDoc.mock.calls[0][1];
+    expect(payload.bbox).toEqual({ minX: -2, minY: -2, maxX: 12, maxY: 22 });
+  });
+
+  it("inflates the eraser bbox by half the rendered (strokeWidth + 10) width", async () => {
+    addDoc.mockResolvedValueOnce({ id: "path-3" });
+
+    await pathService.savePath("board-1", {
+      boardId: "board-1",
+      userId: "u1",
+      points: [{ x: 0, y: 0 }],
+      color: "#000",
+      strokeWidth: 0, // rendered = 10, half = 5
+      tool: "eraser",
+    });
+
+    const payload = addDoc.mock.calls[0][1];
+    expect(payload.bbox).toEqual({ minX: -5, minY: -5, maxX: 5, maxY: 5 });
+  });
 });
 
 describe("getBoardPaths", () => {
@@ -69,6 +104,38 @@ describe("getBoardPaths", () => {
     );
     const paths = await pathService.getBoardPaths("board-1");
     expect(paths[0].strokeWidth).toBe(5);
+  });
+
+  it("returns the stored bbox when present", async () => {
+    const bbox = { minX: 1, minY: 2, maxX: 3, maxY: 4 };
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["p1", { points: [{ x: 1, y: 2 }], color: "#000", tool: "pen", bbox }],
+      ])
+    );
+    const paths = await pathService.getBoardPaths("board-1");
+    expect(paths[0].bbox).toEqual(bbox);
+  });
+
+  it("computes a fallback bbox for legacy docs missing one", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        [
+          "p1",
+          {
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 10 },
+            ],
+            color: "#000",
+            strokeWidth: 4, // half-width = 2
+            tool: "pen",
+          },
+        ],
+      ])
+    );
+    const paths = await pathService.getBoardPaths("board-1");
+    expect(paths[0].bbox).toEqual({ minX: -2, minY: -2, maxX: 12, maxY: 12 });
   });
 });
 
@@ -132,6 +199,31 @@ describe("subscribeToBoardPaths", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0][0]).toHaveLength(1);
     expect(returned).toBe(unsub);
+  });
+
+  it("opts into metadata changes and reports sync state when given a reporter", () => {
+    (fs.onSnapshot as jest.Mock).mockImplementationOnce((_q, _opts, cb) => {
+      const snap = makeQuerySnap([
+        ["p1", { points: [{ x: 0, y: 0 }], color: "#000", tool: "pen" }],
+      ]) as any;
+      snap.metadata = { fromCache: true, hasPendingWrites: true };
+      cb(snap);
+      return jest.fn();
+    });
+
+    const onChange = jest.fn();
+    const onSyncState = jest.fn();
+    pathService.subscribeToBoardPaths("board-1", onChange, onSyncState);
+
+    // includeMetadataChanges is requested (options object as 2nd arg).
+    expect((fs.onSnapshot as jest.Mock).mock.calls[0][1]).toEqual({
+      includeMetadataChanges: true,
+    });
+    expect(onSyncState).toHaveBeenCalledWith({
+      fromCache: true,
+      hasPendingWrites: true,
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,14 +1,17 @@
 import { useEffect } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
 import ErrorBoundary from "../src/components/ErrorBoundary";
 import { initErrorReporting } from "../src/lib/errorReporting";
+import { initConnectivity } from "../src/lib/connectivity";
 import { registerForPushNotifications } from "../src/services/notificationService";
 import { loadOpenAIKey } from "../src/services/aiService";
 
 initErrorReporting();
+initConnectivity();
 
 function RootNavigator() {
   const { user, loading } = useAuth();
@@ -52,10 +55,12 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <ErrorBoundary>
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
-    </ErrorBoundary>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ErrorBoundary>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </ErrorBoundary>
+    </GestureHandlerRootView>
   );
 }

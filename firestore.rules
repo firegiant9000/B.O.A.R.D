@@ -75,6 +75,11 @@ service cloud.firestore {
         allow read, write: if isBoardMember(boardId);
       }
 
+      // snapshots — compacted checkpoints of the paths (Phase 7); any member reads/writes
+      match /snapshots/{snapshotId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
       // presence — each user manages only their own presence doc
       match /presence/{userId} {
         allow read:   if isBoardMember(boardId);

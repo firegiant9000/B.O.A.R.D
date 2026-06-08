@@ -38,6 +38,8 @@ export const orderBy = jest.fn((field: string, dir: string = "asc") => ({
   dir,
 }));
 
+export const limit = jest.fn((n: number) => ({ __type: "limit", n }));
+
 export const addDoc = jest.fn();
 export const getDocs = jest.fn();
 export const getDoc = jest.fn();
