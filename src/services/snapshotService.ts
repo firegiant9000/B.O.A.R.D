@@ -110,8 +110,13 @@ function snapshotPathToDrawPath(boardId: string, p: SnapshotPath): DrawPath {
  * snapshotted strokes still propagate). Watermark-scoped live listening + pruning
  * needs deletion tombstones and is deferred to M5.
  */
-export async function loadBoardState(boardId: string): Promise<DrawPath[]> {
-  const snapshot = await getLatestSnapshot(boardId);
+export async function loadBoardState(
+  boardId: string,
+  preloaded?: BoardSnapshot | null
+): Promise<DrawPath[]> {
+  // Accept an already-fetched snapshot so callers that read it first (e.g. to seed
+  // the checkpoint baseline) don't pay for a second getLatestSnapshot round-trip.
+  const snapshot = preloaded !== undefined ? preloaded : await getLatestSnapshot(boardId);
   if (!snapshot) return getBoardPaths(boardId);
 
   const byId = new Map<string, DrawPath>();

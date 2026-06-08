@@ -166,6 +166,10 @@ export default function BoardScreen() {
   // The in-flight guard keeps a single snapshot write from racing itself.
   const lastSnapshotCountRef = useRef(0);
   const snapshotInFlightRef = useRef(false);
+  // Gate the checkpoint trigger until cold-load has established the true baseline
+  // count. Without it, the listener can push paths while lastSnapshotCountRef is
+  // still 0, and shouldSnapshot(>=500, 0) would write a redundant snapshot on load.
+  const snapshotBaselineReadyRef = useRef(false);
 
   // Derived
   const isAdmin = !!user && !!board && user.uid === board.adminId;
@@ -272,15 +276,22 @@ export default function BoardScreen() {
     (async () => {
       try {
         const snap = await snapshotService.getLatestSnapshot(id);
-        if (cancelled || !snap) return;
-        lastSnapshotCountRef.current = snap.pathCount;
-        const initial = await snapshotService.loadBoardState(id);
         if (cancelled) return;
-        // Only seed if the listener hasn't already populated, to avoid clobbering it.
-        setPaths((prev) => (prev.length === 0 ? initial : prev));
-        setCanvasReady(true);
+        if (snap) {
+          lastSnapshotCountRef.current = snap.pathCount;
+          // Reuse the snapshot we just read instead of re-fetching it inside loadBoardState.
+          const initial = await snapshotService.loadBoardState(id, snap);
+          if (cancelled) return;
+          // Only seed if the listener hasn't already populated, to avoid clobbering it.
+          setPaths((prev) => (prev.length === 0 ? initial : prev));
+          setCanvasReady(true);
+        }
       } catch (e) {
         captureException(e, { op: "board.coldLoad" });
+      } finally {
+        // Baseline is established (count from the snapshot, or 0 when none exists)
+        // — only now may the checkpoint trigger fire.
+        if (!cancelled) snapshotBaselineReadyRef.current = true;
       }
     })();
     return () => {
@@ -293,7 +304,7 @@ export default function BoardScreen() {
   // write fires once per threshold crossing. Non-destructive — old path docs stay
   // (live-listener correctness); pruning is deferred to M5 (see snapshotService).
   useEffect(() => {
-    if (!id || snapshotInFlightRef.current) return;
+    if (!id || !snapshotBaselineReadyRef.current || snapshotInFlightRef.current) return;
     if (!snapshotService.shouldSnapshot(paths.length, lastSnapshotCountRef.current)) return;
     snapshotInFlightRef.current = true;
     const captured = paths;

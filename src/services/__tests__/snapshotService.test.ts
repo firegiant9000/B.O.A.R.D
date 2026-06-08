@@ -156,6 +156,38 @@ describe("loadBoardState", () => {
     expect(paths.find((p) => p.id === "b")!.color).toBe("#0f0");
   });
 
+  it("uses a preloaded snapshot without re-fetching it", async () => {
+    // Only the delta query should hit getDocs; the snapshot is supplied directly.
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["c", { points: [{ x: 2, y: 2 }], color: "#f00", tool: "pen", strokeWidth: 5, createdAt: ts(new Date(3000)) }],
+      ])
+    );
+    const preloaded = {
+      id: "snap-1",
+      boardId: "board-1",
+      paths: [
+        { id: "a", userId: "u1", points: [{ x: 0, y: 0 }], color: "#000", strokeWidth: 5, tool: "pen" as const, createdAtMs: 1000 },
+      ],
+      pathCount: 1,
+      watermarkMs: 1000,
+      createdAt: new Date(1000),
+    };
+    const paths = await snapshotService.loadBoardState("board-1", preloaded);
+    expect(getDocs).toHaveBeenCalledTimes(1);
+    expect(paths.map((p) => p.id)).toEqual(["a", "c"]);
+  });
+
+  it("falls back to a full replay when preloaded snapshot is null", async () => {
+    // preloaded === null means "known to have no snapshot" → straight to replay.
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([["p1", { points: [{ x: 0, y: 0 }], color: "#000", tool: "pen" }]])
+    );
+    const paths = await snapshotService.loadBoardState("board-1", null);
+    expect(getDocs).toHaveBeenCalledTimes(1);
+    expect(paths[0].id).toBe("p1");
+  });
+
   it("skips delta docs missing required fields", async () => {
     getDocs
       .mockResolvedValueOnce(
