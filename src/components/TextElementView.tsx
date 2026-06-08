@@ -19,6 +19,8 @@ interface TextElementViewProps {
   element: TextElement;
   isSelected: boolean;
   isEditing: boolean;
+  /** Current viewport zoom — resize drags happen in screen px and are divided by this to get board units. */
+  scale?: number;
   onSelect: (id: string) => void;
   onBlur: (id: string, text: string) => void;
   onResize: (id: string, width: number, height: number, fontSize: number) => void;
@@ -29,6 +31,7 @@ export default function TextElementView({
   element,
   isSelected,
   isEditing,
+  scale = 1,
   onSelect,
   onBlur,
   onResize,
@@ -44,7 +47,9 @@ export default function TextElementView({
   const onBlurRef = useRef(onBlur);
   const elementIdRef = useRef(element.id);
   const localTextRef = useRef(localText);
+  const scaleRef = useRef(scale);
 
+  useEffect(() => { scaleRef.current = scale; });
   useEffect(() => { dimsRef.current = dims; });
   useEffect(() => { onResizeRef.current = onResize; });
   useEffect(() => { onBlurRef.current = onBlur; });
@@ -87,8 +92,10 @@ export default function TextElementView({
         live.h = start.h;
       },
       onPanResponderMove: (evt) => {
-        const dx = evt.nativeEvent.pageX - start.px;
-        const dy = evt.nativeEvent.pageY - start.py;
+        // pageX/Y are screen px; divide by zoom to get board-space deltas.
+        const s = scaleRef.current || 1;
+        const dx = (evt.nativeEvent.pageX - start.px) / s;
+        const dy = (evt.nativeEvent.pageY - start.py) / s;
         let w = start.w;
         let h = start.h;
         if (corner === "br") { w += dx; h += dy; }

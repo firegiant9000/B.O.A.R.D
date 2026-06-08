@@ -1,5 +1,6 @@
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { captureException } from "../lib/errorReporting";
 
 /**
  * Requests notification permissions and registers the device's Expo push token,
@@ -41,8 +42,10 @@ export async function registerForPushNotifications(userId: string): Promise<stri
     }
 
     return token;
-  } catch {
-    // expo-notifications not installed or permissions unavailable — fail silently
+  } catch (e) {
+    // expo-notifications not installed or permissions unavailable — non-fatal,
+    // but report so it's visible rather than silently dropped.
+    captureException(e, { op: "registerForPushNotifications" });
     return null;
   }
 }
@@ -80,6 +83,6 @@ export async function sendSessionPushNotifications(
     });
   } catch (error) {
     // Non-fatal — session is still created even if the push fails
-    console.warn("Push notification delivery failed:", error);
+    captureException(error, { op: "sendSessionPushNotifications" });
   }
 }

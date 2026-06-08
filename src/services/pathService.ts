@@ -13,16 +13,39 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { DrawPath, TextNote, TextElement } from "../types";
+import { Bounds, boundsOfPoints, inflateBounds } from "../lib/viewport";
 
 // --- Draw Paths ---
+
+/**
+ * Board-space bbox of a stroke, inflated by half the rendered stroke width so a
+ * thick line is never clipped by viewport culling. Eraser strokes render at
+ * strokeWidth + 10 (see DrawingCanvas), so they inflate to match. Returns null
+ * for an empty point set.
+ */
+function computePathBbox(
+  points: { x: number; y: number }[],
+  strokeWidth: number,
+  tool: DrawPath["tool"]
+): Bounds | null {
+  const bounds = boundsOfPoints(points);
+  if (!bounds) return null;
+  const rendered = tool === "eraser" ? strokeWidth + 10 : strokeWidth;
+  return inflateBounds(bounds, rendered / 2);
+}
 
 export async function savePath(
   boardId: string,
   path: Omit<DrawPath, "id" | "createdAt">
 ): Promise<string> {
   const pathsRef = collection(db, "boards", boardId, "paths");
+  // Recompute bbox at write time from the (already-simplified) points so every
+  // call site — strokes, dots, redo — persists a current box regardless of what
+  // the caller passed.
+  const bbox = computePathBbox(path.points, path.strokeWidth, path.tool);
   const docRef = await addDoc(pathsRef, {
     ...path,
+    ...(bbox ? { bbox } : {}),
     createdAt: serverTimestamp(),
   });
   return docRef.id;
@@ -38,14 +61,19 @@ export async function getBoardPaths(boardId: string): Promise<DrawPath[]> {
       const data = d.data();
       // Skip documents missing required drawing fields
       if (!data.points || !data.color || !data.tool) return null;
+      const strokeWidth = data.strokeWidth ?? 5;
+      const tool = data.tool as "pen" | "eraser";
       return {
         id: d.id,
         boardId: data.boardId ?? "",
         userId: data.userId ?? "",
         points: data.points,
         color: data.color,
-        strokeWidth: data.strokeWidth ?? 5,
-        tool: data.tool as "pen" | "eraser",
+        strokeWidth,
+        tool,
+        // Legacy docs predate bbox — compute it on read so Phase 4 culling
+        // can treat every stroke uniformly.
+        bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
         createdAt: data.createdAt?.toDate() ?? new Date(),
       };
     })
@@ -192,28 +220,48 @@ export async function clearBoardTextElements(boardId: string): Promise<void> {
 
 export function subscribeToBoardPaths(
   boardId: string,
-  onChange: (paths: DrawPath[]) => void
+  onChange: (paths: DrawPath[]) => void,
+  // Phase 6: optional connectivity reporter. When supplied, the listener opts into
+  // metadata changes so it can surface fromCache / hasPendingWrites for the offline
+  // banner. Omitting it preserves the original (data-only) subscription behavior.
+  onSyncState?: (meta: { fromCache: boolean; hasPendingWrites: boolean }) => void
 ): () => void {
   const q = query(collection(db, "boards", boardId, "paths"), orderBy("createdAt", "asc"));
-  return onSnapshot(q, (snapshot) => {
+  const handle = (snapshot: any) => {
+    if (onSyncState) {
+      onSyncState({
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites,
+      });
+    }
     const paths = snapshot.docs
-      .map((d) => {
+      .map((d: any) => {
         const data = d.data();
         if (!data.points || !data.color || !data.tool) return null;
+        const strokeWidth = data.strokeWidth ?? 5;
+        const tool = data.tool as "pen" | "eraser";
         return {
           id: d.id,
           boardId: data.boardId ?? "",
           userId: data.userId ?? "",
           points: data.points,
           color: data.color,
-          strokeWidth: data.strokeWidth ?? 5,
-          tool: data.tool as "pen" | "eraser",
+          strokeWidth,
+          tool,
+          // Legacy docs predate bbox — compute it on read so Phase 4 culling
+          // can treat every stroke uniformly.
+          bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
           createdAt: data.createdAt?.toDate() ?? new Date(),
         };
       })
-      .filter((p): p is NonNullable<typeof p> => p !== null);
+      .filter((p: any): p is NonNullable<typeof p> => p !== null);
     onChange(paths);
-  });
+  };
+  // includeMetadataChanges only when a reporter wants fromCache/pendingWrites
+  // transitions; otherwise the original single-arg listener.
+  return onSyncState
+    ? onSnapshot(q, { includeMetadataChanges: true }, handle)
+    : onSnapshot(q, handle);
 }
 
 export function subscribeToBoardNotes(

@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { doc, getDoc, setDoc, deleteField } from "firebase/firestore";
 import { db, auth } from "../config/firebase";
+import { captureException } from "../lib/errorReporting";
 import * as pathService from "./pathService";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
@@ -19,21 +20,29 @@ export async function loadOpenAIKey(): Promise<void> {
       const snap = await getDoc(privateKeyDoc(uid));
       if (snap.exists() && snap.data().openaiKey) {
         _apiKey = snap.data().openaiKey;
-        AsyncStorage.setItem(STORAGE_KEY, _apiKey!).catch(() => {});
+        AsyncStorage.setItem(STORAGE_KEY, _apiKey!).catch((e) =>
+          captureException(e, { op: "loadOpenAIKey.cacheWrite" })
+        );
         return;
       }
-    } catch {}
+    } catch (e) {
+      captureException(e, { op: "loadOpenAIKey.firestoreRead" });
+    }
   }
   // Fall back to local cache if Firestore unavailable or user not signed in
   try {
     const stored = await AsyncStorage.getItem(STORAGE_KEY);
     if (stored) _apiKey = stored;
-  } catch {}
+  } catch (e) {
+    captureException(e, { op: "loadOpenAIKey.cacheRead" });
+  }
 }
 
 export async function setOpenAIKey(key: string): Promise<void> {
   _apiKey = key;
-  AsyncStorage.setItem(STORAGE_KEY, key).catch(() => {});
+  AsyncStorage.setItem(STORAGE_KEY, key).catch((e) =>
+    captureException(e, { op: "setOpenAIKey.cacheWrite" })
+  );
   const uid = auth.currentUser?.uid;
   if (uid) {
     await setDoc(privateKeyDoc(uid), { openaiKey: key }, { merge: true });
@@ -42,7 +51,9 @@ export async function setOpenAIKey(key: string): Promise<void> {
 
 export async function clearOpenAIKey(): Promise<void> {
   _apiKey = null;
-  AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+  AsyncStorage.removeItem(STORAGE_KEY).catch((e) =>
+    captureException(e, { op: "clearOpenAIKey.cacheRemove" })
+  );
   const uid = auth.currentUser?.uid;
   if (uid) {
     await setDoc(privateKeyDoc(uid), { openaiKey: deleteField() }, { merge: true });
