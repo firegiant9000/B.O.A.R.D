@@ -1,4 +1,23 @@
 import { classifyShare, handleSharedItem, placeSharedItem } from "../shareIntake";
+import { uploadImage } from "../../services/imageService";
+import { PreparedImage } from "../images";
+
+jest.mock("../../services/imageService", () => ({
+  uploadImage: jest.fn(),
+}));
+
+const mockUploadImage = uploadImage as jest.MockedFunction<typeof uploadImage>;
+
+function preparedImage(): PreparedImage {
+  const blob = { size: 1 } as Blob;
+  return {
+    full: { blob, width: 200, height: 100 },
+    thumbnail: { blob, width: 64, height: 32 },
+    naturalWidth: 200,
+    naturalHeight: 100,
+    alt: "shared.png",
+  };
+}
 
 describe("classifyShare", () => {
   it("classifies an image by mime type", () => {
@@ -63,9 +82,31 @@ describe("handleSharedItem", () => {
 });
 
 describe("placeSharedItem", () => {
-  it("reports not-placed until the Phase 9 pipeline exists", async () => {
-    const res = await placeSharedItem("b1", { kind: "image", uri: "file:///a.png" });
+  beforeEach(() => mockUploadImage.mockReset());
+
+  it("uploads a prepared image aspect-fitted + centered, and returns its id", async () => {
+    mockUploadImage.mockResolvedValue("img-1");
+    const res = await placeSharedItem("b1", "u1", preparedImage(), { x: 500, y: 400 });
+
+    expect(res).toEqual({ placed: true, imageId: "img-1" });
+    expect(mockUploadImage).toHaveBeenCalledTimes(1);
+    const [boardId, userId, prepared, placement] = mockUploadImage.mock.calls[0];
+    expect(boardId).toBe("b1");
+    expect(userId).toBe("u1");
+    expect(prepared.alt).toBe("shared.png");
+    // 200x100 source is under the 360px long-edge ceiling, so it is placed at its
+    // natural size (placementBox never upscales), centered on (500,400).
+    expect(placement.width).toBe(200);
+    expect(placement.height).toBe(100);
+    expect(placement.x).toBe(500 - 100);
+    expect(placement.y).toBe(400 - 50);
+    expect(placement.alt).toBe("shared.png");
+  });
+
+  it("reports not-placed with a reason when the upload fails", async () => {
+    mockUploadImage.mockRejectedValue(new Error("storage down"));
+    const res = await placeSharedItem("b1", "u1", preparedImage(), { x: 0, y: 0 });
     expect(res.placed).toBe(false);
-    expect(res.reason).toMatch(/phase 9/i);
+    expect(res.reason).toMatch(/storage down/i);
   });
 });

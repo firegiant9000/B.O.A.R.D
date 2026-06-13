@@ -14,7 +14,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.adaptivesoftware.board"
+      "bundleIdentifier": "com.adaptivesoftware.board",
+      "associatedDomains": ["applinks:boardapp.example.com"]
     },
     "android": {
       "package": "com.adaptivesoftware.board",
@@ -26,30 +27,17 @@
       },
       "intentFilters": [
         {
-          "action": "SEND",
+          "action": "VIEW",
+          "autoVerify": true,
           "category": [
-            "DEFAULT"
+            "DEFAULT",
+            "BROWSABLE"
           ],
           "data": [
             {
-              "mimeType": "image/*"
-            },
-            {
-              "mimeType": "application/pdf"
-            },
-            {
-              "mimeType": "text/plain"
-            }
-          ]
-        },
-        {
-          "action": "SEND_MULTIPLE",
-          "category": [
-            "DEFAULT"
-          ],
-          "data": [
-            {
-              "mimeType": "image/*"
+              "scheme": "https",
+              "host": "boardapp.example.com",
+              "pathPrefix": "/b"
             }
           ]
         }
@@ -81,7 +69,19 @@
           "cameraPermission": "Allow B.O.A.R.D to use the camera so you can add photos to a board."
         }
       ],
-      "./plugins/withHardwareKeyCommands"
+      "./plugins/withHardwareKeyCommands",
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsImageWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsText": true
+          },
+          "androidIntentFilters": ["image/*", "text/*"],
+          "androidMultiIntentFilters": ["image/*"]
+        }
+      ]
     ],
     "extra": {
       "firebase": {

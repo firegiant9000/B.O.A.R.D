@@ -6,20 +6,25 @@
  * deep-link contract. The routing logic here is platform-agnostic and unit-tested;
  * the OS-specific receive bridge is wired in `_layout.tsx` / native config.
  *
- * NATIVE BOUNDARY: `expo-sharing` / `expo-intent-launcher` are OUTBOUND APIs.
- * Receiving a shared *file* requires a native target — an iOS Share Extension and
- * the Android SEND `intentFilters` declared in app.json. Those only run in an EAS
- * build (not Expo Go / web), so the file paths below are exercised on-device only.
- * Shared *links* arrive through the ordinary deep-link path and are fully handled.
+ * INBOUND LINKS (fully wired): a shared/opened link routes through the deep-link
+ * contract and is handled by expo-router — the custom `boardapp://` scheme plus,
+ * once the associated domain is provisioned, the `https://<domain>/b/<code>`
+ * Universal/App Link (native association declared in app.json). `handleSharedItem`
+ * maps link/text payloads to the matching navigation outcome.
  *
- * PHASE 9 BOUNDARY: placing a shared image/PDF as a first-class canvas element
- * needs the `image` element type + `imageService` upload pipeline from Phase 9,
- * which does not exist yet. Until then `handleSharedItem` returns a `place-*`
- * outcome that the caller surfaces as "coming soon"; the wiring is ready so Phase 9
- * only has to fill in the upload + element-create step (see `placeSharedItem`).
+ * INBOUND IMAGES: the OS receiver is `expo-share-intent` (Android `SEND` reader +
+ * a generated iOS Share Extension, configured by its plugin in app.json and
+ * consumed in `app/_layout.tsx`). It hands the shared file(s) to the `/share`
+ * board-picker, which downscales each via `imagePicker.prepareNativeImageUri` and
+ * calls `placeSharedItem` to upload + create the `image` element through the Phase 9
+ * pipeline — the same path the in-app picker and web paste use. The receiver only
+ * runs in an EAS build (not Expo Go / web), so it is verified on-device.
  */
 
 import { parseDeepLink } from "./deepLinks";
+import { placementBox, PreparedImage } from "./images";
+import { Point } from "./viewport";
+import { uploadImage } from "../services/imageService";
 
 export type SharedItem =
   | { kind: "link"; url: string }
@@ -97,17 +102,30 @@ export function handleSharedItem(item: SharedItem): ShareOutcome {
 }
 
 /**
- * Placement seam for shared media. Phase 9 fills this in: upload `uri` via
- * `imageService`, then create an `image` element on `boardId`. Today it signals
- * that the pipeline isn't ready so the UI can show an honest message instead of
- * silently dropping the share.
+ * Place a shared image onto a board. Uploads the (already downscaled) image via
+ * the Phase 9 `imageService` pipeline and creates an `image` element aspect-fitted
+ * and centered on `center` (board-space) — identical to the in-app picker / web
+ * paste path. The caller is responsible for turning the OS share payload into a
+ * `PreparedImage` first (native-module work; see this module's header), keeping
+ * this function free of native imports and unit-testable.
+ *
+ * Returns the new image id on success; `placed: false` with a reason on failure,
+ * so the caller can surface an honest message instead of dropping the share.
  */
 export async function placeSharedItem(
-  _boardId: string,
-  _item: Extract<SharedItem, { kind: "image" | "file" }>
-): Promise<{ placed: boolean; reason?: string }> {
-  return {
-    placed: false,
-    reason: "Image & file placement ships with Phase 9 (image elements).",
-  };
+  boardId: string,
+  userId: string,
+  prepared: PreparedImage,
+  center: Point
+): Promise<{ placed: boolean; imageId?: string; reason?: string }> {
+  try {
+    const box = placementBox(prepared.naturalWidth, prepared.naturalHeight, center);
+    const imageId = await uploadImage(boardId, userId, prepared, {
+      ...box,
+      alt: prepared.alt,
+    });
+    return { placed: true, imageId };
+  } catch (e) {
+    return { placed: false, reason: String(e) };
+  }
 }

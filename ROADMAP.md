@@ -173,17 +173,24 @@ they depend on signed builds, store credentials, and real devices.
    exception on a standalone build, confirm it lands in the Sentry dashboard.
 4. **Push on real devices** — FCM (Android) + APNs (iOS) credentials wired via EAS;
    confirm a session notification fires on ≥ 1 standalone iOS and ≥ 1 Android.
-5. **Fill the real associated domain** into `public/.well-known/apple-app-site-association`
-   + `assetlinks.json` (currently a `<domain>` placeholder), then verify a
-   `https://<domain>/b/<inviteCode>` tap opens the app and joins on both platforms,
-   and that sharing a PNG lands it on a board.
-6. **Lighthouse** against the served PWA build — confirm > 80 perf / > 90 a11y;
+5. **Universal/App Links — swap the placeholder domain.** The native association is
+   now declared (`ios.associatedDomains` + an Android `autoVerify` `VIEW` intent
+   filter in `app.json`) against the `boardapp.example.com` placeholder. Replace it
+   with the real domain in `app.json`, `EXPO_PUBLIC_LINK_DOMAIN`, and the two
+   `public/.well-known/` association files (Apple Team ID + EAS SHA-256), then verify
+   a `https://<domain>/b/<inviteCode>` tap opens the app and joins on both platforms.
+6. **Share-INTO-app receiver — wired, needs on-device verification.** `expo-share-intent`
+   (approved) provides the Android `SEND` reader + generated iOS Share Extension via its
+   config plugin; `_layout.tsx` routes a shared image to the `/share` board-picker, which
+   places it through the Phase 9 pipeline. Runs in an EAS build only — verify "share a PNG
+   from Photos → lands on the chosen board" on real iOS + Android.
+7. **Lighthouse** against the served PWA build — confirm > 80 perf / > 90 a11y;
    exercise the install prompt.
-7. **Auth round-trips on a real account** — password-reset email + verification tap-through.
-8. **Mobile-parity gate (canvas Phases 7–12):** on a real mid-range Android, exercise
+8. **Auth round-trips on a real account** — password-reset email + verification tap-through.
+9. **Mobile-parity gate (canvas Phases 7–12):** on a real mid-range Android, exercise
    each canvas feature, run the perf check vs `docs/perf-baseline.md`, and attach a
    screenshot to the PR.
-9. **Manual hardware-key hooks** — the config plugin no-ops on SDK 55 Swift/Kotlin
+10. **Manual hardware-key hooks** — the config plugin no-ops on SDK 55 Swift/Kotlin
    templates; add the AppDelegate/MainActivity hooks by hand at prebuild (README).
 
 **Known limits carried forward (intentional, tracked for M3+):** Storage objects

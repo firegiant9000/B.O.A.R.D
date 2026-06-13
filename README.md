@@ -161,34 +161,40 @@ source of truth (builders + parser). Do not hand-format these strings elsewhere.
 
 ### Enabling the https links (domain required — not yet provisioned)
 
-Phase 4 shipped **scheme-first**: the `boardapp://` flow and the `/b/{code}` route
-work now. The https form needs a real domain. To turn it on:
+The `boardapp://` scheme flow and the `/b/{code}` route work now. The native
+association config for the https form is **already declared** in `app.json`
+(`ios.associatedDomains` + an Android `autoVerify` `VIEW` intent filter), using the
+`boardapp.example.com` **placeholder host**. To go live, swap the placeholder for
+your real domain in three places that must all agree, then rebuild:
 
-1. Set the domain: `eas secret:create --name EXPO_PUBLIC_LINK_DOMAIN --value "board.yourdomain.com"`.
-2. Host the association files (templates in `public/.well-known/`, served at the
+1. Set the runtime domain: `eas secret:create --name EXPO_PUBLIC_LINK_DOMAIN --value "board.yourdomain.com"` (read by `deepLinks.ts` when building invite URLs).
+2. Replace `boardapp.example.com` in `app.json` — both `ios.associatedDomains`
+   and the Android `VIEW` intent filter `host`.
+3. Host the association files (templates in `public/.well-known/`, served at the
    web root): fill `apple-app-site-association` with your Apple Team ID and
    `assetlinks.json` with the EAS Android signing SHA-256 (`eas credentials`).
-3. Add native config to `app.json`:
-   - iOS: `expo.ios.associatedDomains: ["applinks:board.yourdomain.com"]`
-   - Android: add a `VIEW` `intentFilter` with `autoVerify: true` for
-     `scheme: "https"`, `host: "board.yourdomain.com"`, `pathPrefix: "/b"`.
-4. Rebuild (config changes only take effect in an EAS build).
+4. Rebuild (native config + associated-domain verification only take effect in an
+   EAS build).
 
 ### Share sheet (share INTO B.O.A.R.D)
 
-Android `intentFilters` for `SEND` / `SEND_MULTIPLE` (image, PDF, text) make the
-app a share target. Inbound routing logic lives in `src/lib/shareIntake.ts`
-(`classifyShare` → `handleSharedItem`); shared **links** route straight through the
-deep-link contract. Caveats:
+Sharing an image **into** B.O.A.R.D is wired end-to-end via `expo-share-intent`:
 
-- **iOS** needs a Share Extension (separate native target / config plugin) — not
-  included yet; tracked for a follow-up.
-- Placing a shared **image/PDF** as a canvas element depends on the Phase 9 image
-  pipeline (`imageService` + `image` element type), which doesn't exist yet.
-  `placeSharedItem` is the ready seam Phase 9 fills in; until then the UI shows a
-  "coming soon" outcome rather than dropping the share.
-- `expo-sharing` / `expo-intent-launcher` are **outbound** APIs; inbound file
-  share is verifiable only in an EAS build (not Expo Go / web).
+- **OS receiver:** the `expo-share-intent` config plugin (in `app.json`) registers
+  the Android `SEND` / `SEND_MULTIPLE` filters (image, text) and generates the iOS
+  Share Extension. `app/_layout.tsx` consumes its hook (`useShareIntentContext`).
+- **Routing:** a shared **link/text** is parsed through the deep-link contract
+  (`classifyShare` → `handleSharedItem`) and navigated inline. A shared **image** is
+  stashed (`src/lib/pendingShare.ts`) and the user is sent to the `/share`
+  board-picker (`app/share.tsx`).
+- **Placement:** the picker downscales each image (`imagePicker.prepareNativeImageUri`)
+  and calls `placeSharedItem`, which uploads + creates the `image` element via the
+  Phase 9 pipeline. Images land near the board origin (cascaded for a multi-image
+  share) and can be repositioned.
+
+The receiver runs in an **EAS build only** (not Expo Go / web), so the share-a-PNG
+flow is verified on-device. `expo-sharing` / `expo-intent-launcher` remain
+**outbound** APIs and are unrelated to this inbound path.
 
 ---
 

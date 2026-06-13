@@ -2,13 +2,19 @@ import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as Sentry from "@sentry/react-native";
+import {
+  ShareIntentProvider,
+  useShareIntentContext,
+} from "expo-share-intent";
 import { AuthProvider } from "../src/contexts/AuthContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
 import ErrorBoundary from "../src/components/ErrorBoundary";
 import PWAInstallPrompt from "../src/components/PWAInstallPrompt";
-import { initErrorReporting } from "../src/lib/errorReporting";
+import { initErrorReporting, captureException } from "../src/lib/errorReporting";
 import { initConnectivity } from "../src/lib/connectivity";
+import { classifyShare, handleSharedItem } from "../src/lib/shareIntake";
+import { setPendingShare } from "../src/lib/pendingShare";
 import {
   registerForPushNotifications,
   configureForegroundHandler,
@@ -20,10 +26,60 @@ initErrorReporting();
 initConnectivity();
 configureForegroundHandler();
 
+/**
+ * Routes an inbound OS share (Android SEND / iOS Share Extension via
+ * `expo-share-intent`). A shared link/text is parsed through the deep-link
+ * contract and navigated inline; shared image(s) are stashed and the user is sent
+ * to the `/share` board-picker to place them. No-ops on web and until signed in.
+ */
+function useIncomingShare(authed: boolean): void {
+  const { isReady, hasShareIntent, shareIntent, resetShareIntent } =
+    useShareIntentContext();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isReady || !hasShareIntent || !authed) return;
+    try {
+      const images = (shareIntent.files ?? []).filter((f) =>
+        f.mimeType?.startsWith("image/")
+      );
+      if (images.length > 0) {
+        setPendingShare(
+          images.map((f) => ({
+            uri: f.path,
+            width: f.width ?? 0,
+            height: f.height ?? 0,
+            name: f.fileName ?? "shared-image",
+          }))
+        );
+        router.push("/share");
+      } else {
+        // Link / text: route through the same contract as the share-sheet logic.
+        const raw = shareIntent.webUrl ?? shareIntent.text ?? "";
+        const item = classifyShare({ text: raw });
+        const outcome = item ? handleSharedItem(item) : null;
+        if (outcome?.action === "open-board") {
+          router.push(`/board/${outcome.boardId}`);
+        } else if (outcome?.action === "join-invite") {
+          router.push(`/b/${outcome.inviteCode}`);
+        }
+        // Unsupported text is silently ignored (nothing to place).
+      }
+    } catch (e) {
+      captureException(e, { op: "incomingShare" });
+    } finally {
+      resetShareIntent();
+    }
+    // shareIntent is replaced wholesale on each share; key off the ready flags.
+  }, [isReady, hasShareIntent, authed]);
+}
+
 function RootNavigator() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  useIncomingShare(!!user);
 
   // Register for push notifications and load remote API key once authenticated
   useEffect(() => {
@@ -67,6 +123,8 @@ function RootNavigator() {
       {/* Universal/App Link landing: https://<domain>/b/{inviteCode} (Phase 4). */}
       <Stack.Screen name="b/[code]" />
       <Stack.Screen name="board/[id]" options={{ presentation: "modal" }} />
+      {/* Share-target board picker for an inbound image share (Phase 4). */}
+      <Stack.Screen name="share" options={{ presentation: "modal" }} />
       <Stack.Screen name="session/create" options={{ presentation: "modal" }} />
       <Stack.Screen name="session/[id]" options={{ presentation: "modal" }} />
     </Stack>
@@ -75,15 +133,19 @@ function RootNavigator() {
 
 function RootLayout() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <ErrorBoundary>
-        <AuthProvider>
-          <RootNavigator />
-          {/* Web-only PWA install banner; renders null on native (Phase 5). */}
-          <PWAInstallPrompt />
-        </AuthProvider>
-      </ErrorBoundary>
-    </GestureHandlerRootView>
+    // ShareIntentProvider must sit above the navigator so a cold-start share (the
+    // app was launched by the share sheet) is captured before the first render.
+    <ShareIntentProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <ErrorBoundary>
+          <AuthProvider>
+            <RootNavigator />
+            {/* Web-only PWA install banner; renders null on native (Phase 5). */}
+            <PWAInstallPrompt />
+          </AuthProvider>
+        </ErrorBoundary>
+      </GestureHandlerRootView>
+    </ShareIntentProvider>
   );
 }
 
