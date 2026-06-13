@@ -48,11 +48,12 @@ service cloud.firestore {
                       resource.data.inviteCode != null
                     );
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
-      // Admin can change anything; existing members can touch members/updatedAt;
-      // a non-member can self-join via invite code (mirrors the sessions rule).
+      // Admin can change anything; existing members can touch members/updatedAt
+      // and the shared backgroundTemplate (Phase 12); a non-member can self-join
+      // via invite code (mirrors the sessions rule).
       allow update: if isBoardAdmin(boardId) ||
                       (isBoardMember(boardId) &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt'])) ||
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt', 'backgroundTemplate'])) ||
                       (
                         resource.data.inviteCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']) &&
@@ -72,6 +73,15 @@ service cloud.firestore {
       }
 
       match /textElements/{elementId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
+      // shapes, images (Phase 7 / 9) — any board member can read/write/delete
+      match /shapes/{shapeId} {
+        allow read, write: if isBoardMember(boardId);
+      }
+
+      match /images/{imageId} {
         allow read, write: if isBoardMember(boardId);
       }
 

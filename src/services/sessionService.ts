@@ -15,16 +15,15 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { Session } from "../types";
+import { randomCode } from "../lib/secureRandom";
 
 const sessionsRef = collection(db, "sessions");
 
+// Excludes ambiguous glyphs (I/O/0/1) so codes read aloud unambiguously.
+const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
 function generateJoinCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "SESS-";
-  for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return code;
+  return `SESS-${randomCode(6, JOIN_CODE_CHARS)}`;
 }
 
 function mapSession(id: string, data: any): Session {

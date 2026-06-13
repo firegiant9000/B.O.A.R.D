@@ -8,6 +8,7 @@ import { UserProfile } from "../types";
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
+  emailVerified: boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (
@@ -16,6 +17,9 @@ interface AuthContextType {
     displayName: string
   ) => Promise<void>;
   signOut: () => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<void>;
+  resendVerification: () => Promise<void>;
+  reloadUser: () => Promise<boolean>;
 }
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -23,11 +27,13 @@ export const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
+      setEmailVerified(firebaseUser?.emailVerified ?? false);
 
       if (firebaseUser) {
         const profileDoc = await getDoc(doc(db, "users", firebaseUser.uid));
@@ -66,6 +72,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const handleSignOut = async () => {
     await authService.signOut();
     setUserProfile(null);
+    setEmailVerified(false);
+  };
+
+  const sendPasswordReset = async (email: string) => {
+    await authService.sendPasswordReset(email);
+  };
+
+  const resendVerification = async () => {
+    await authService.sendVerificationEmail();
+  };
+
+  // Reload reflects a verification done elsewhere; onAuthStateChanged does not
+  // re-fire on reload, so we push the fresh flag into state ourselves.
+  const reloadUser = async () => {
+    const verified = await authService.reloadUser();
+    setEmailVerified(verified);
+    return verified;
   };
 
   return (
@@ -73,10 +96,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         userProfile,
+        emailVerified,
         loading,
         signIn: handleSignIn,
         signUp: handleSignUp,
         signOut: handleSignOut,
+        sendPasswordReset,
+        resendVerification,
+        reloadUser,
       }}
     >
       {children}

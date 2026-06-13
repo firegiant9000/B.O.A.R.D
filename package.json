@@ -16,8 +16,11 @@
     "setupFilesAfterEnv": [
       "<rootDir>/jest.setup.ts"
     ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/node_modules/react-native-key-command/"
+    ],
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|firebase|@firebase/.*))"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|firebase|@firebase/.*|rbush|quickselect))"
     ],
     "collectCoverageFrom": [
       "src/services/**/*.ts",
@@ -34,18 +37,29 @@
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.6.0",
+    "@sentry/react-native": "~7.11.0",
+    "@types/rbush": "^4.0.0",
     "expo": "~55.0.8",
+    "expo-clipboard": "~55.0.13",
     "expo-constants": "~55.0.9",
+    "expo-crypto": "~55.0.15",
+    "expo-image-manipulator": "~55.0.17",
+    "expo-image-picker": "~55.0.20",
+    "expo-intent-launcher": "~55.0.8",
     "expo-linking": "~55.0.8",
     "expo-notifications": "~55.0.17",
     "expo-router": "~55.0.7",
+    "expo-share-intent": "^6.1.1",
+    "expo-sharing": "~55.0.7",
     "expo-splash-screen": "~55.0.12",
     "expo-status-bar": "~55.0.4",
     "firebase": "^12.11.0",
+    "rbush": "^4.0.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-native": "0.83.2",
     "react-native-gesture-handler": "~2.30.0",
+    "react-native-key-command": "^1.0.15",
     "react-native-reanimated": "4.2.1",
     "react-native-safe-area-context": "~5.6.2",
     "react-native-screens": "~4.23.0",

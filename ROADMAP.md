@@ -109,69 +109,95 @@ The plan is structured as three two-month phases:
 
 ---
 
-### Month 1 — Hardening + Foundations
+### Month 1 — Hardening + Foundations ✅ COMPLETE
 
 **Goal:** Make the app survive contact with real users on real networks.
 
-**Scope:**
-1. **Drawing perf + correctness (measured on a real Android device)**
-   - Throttle PanResponder move events to ~30Hz; batch points client-side, flush on stroke end.
-   - Replace eraser-paints-white with real stroke deletion. Eraser tool detects intersected paths and calls `pathService.deletePath` for each.
-   - Add Ramer-Douglas-Peucker simplification with a 2-3px tolerance applied **before** Firestore write (not just before render).
-   - **Establish a mobile baseline.** On a mid-range Android (Pixel 6a / Galaxy A-series), measure: time-to-first-paint of an existing board, dropped-frame % during a 30s continuous draw, Firestore writes/second under load, JS-thread responsiveness during multi-user draw. These numbers become the regression baseline for every later canvas change. **Mobile parity is a hard gate on merging canvas changes from this month onward.**
-2. **Offline support**
-   - Enable Firestore offline persistence on web (`enableIndexedDbPersistence`) and native (already on by default — verify).
-   - Surface a "you're offline, changes will sync when reconnected" banner.
-   - Make the realtime listeners resilient to disconnects (auto-reconnect, dedupe on reattach).
-3. **Error handling baseline**
-   - Add a top-level React error boundary in `app/_layout.tsx`.
-   - Replace every `.catch(() => {})` with at least `console.warn` + a `Sentry.captureException` stub (wire up Sentry but don't pay for it yet — free tier is fine).
-4. **Tests, finally**
-   - Add Jest + `@testing-library/react-native`.
-   - Write unit tests for the service layer (`boardService`, `sessionService`, `pathService`, `friendService`). Mock Firestore via `@firebase/rules-unit-testing`.
-   - Target: 60% coverage on `src/services/`.
-   - Add a `test` step to `.github/workflows/ci.yml`.
-5. **Pan + zoom (the missing canvas foundation)**
-   - Two-finger pan and pinch-to-zoom on mobile; scroll-wheel zoom + click-drag pan on web; trackpad gestures on macOS web.
-   - Establish a clean **coordinate model**: every element is stored in *board-space* (logical coordinates, infinite plane). The viewport is `{ x, y, scale }`. A render-time transform maps board-space → screen-space. **All future tools, shapes, embeds, and integrations depend on this contract — get it right now.**
-   - Zoom range: 10% to 800%. "Fit to content" and "100%" shortcuts. Pinch zoom origin = midpoint between fingers.
-   - Inertia / momentum on pan (feels native on mobile, also expected on trackpad).
-6. **Viewport culling (perf foundation)**
-   - Only render elements whose bounding box intersects the visible viewport.
-   - Compute and persist a `bbox: { minX, minY, maxX, maxY }` on every element doc at write time.
-   - Render loop filters the in-memory element set against the viewport bbox before assembling the SVG tree. Re-evaluated on pan/zoom (debounced 50ms).
-   - Big perf win on boards with hundreds of strokes; currently every stroke is in the tree even if it's off-screen.
-7. **Board snapshot / checkpoint system**
-   - Every N writes (default 500), a Cloud Function (or client-side compaction) collapses the prior paths into a compact `snapshots/{ts}` doc storing the consolidated state. Cold loads pull the latest snapshot + paths since snapshot rather than replaying 10k separate path docs.
-   - Required for any board with sustained heavy use (classroom worksheet, week-long study board).
-   - Snapshots are also the basis for the M5 board-version-history feature.
-8. **Selection primitive**
-   - Tap to select a single element (stroke, shape, text, sticky). Selected element shows a bounding box + handles.
-   - Delete key (web) / trash icon (mobile) removes it.
-   - Foundation for multi-select, group transforms, clipboard, and comments in later months — keep the selection model in its own state slice (`useSelection` hook) from day one.
+**Status:** Delivered across 7 phases, all merged to `main` (PR #89). Full
+retrospective — what shipped, senior-call deviations, and carry-forward items —
+lives in [`docs/month-1-phases.md`](docs/month-1-phases.md). Summary below.
 
-**Out of scope:** No top-line user-facing features beyond the canvas foundations above. Visual redesign. AI work. Shapes / multi-select / clipboard (M2). Permissions / comments (M3).
-
-**Verification:**
-- Manual: drop network mid-stroke on web, observe banner + auto-resync.
-- Manual: erase a stroke, refresh, confirm it stays erased (currently fails).
-- CI: `npm test` runs in CI and passes.
-
-**Risks:**
-- Throttling regressing perceived smoothness. Mitigation: A/B with feature flag, measure roundtrip on each path.
-- Firestore offline persistence on web has quirks with multiple tabs — document the limitation in README.
+**Shipped:**
+1. ✅ **Drawing perf + correctness** — 30 Hz input coalescing + RDP simplification before the Firestore write; persisted per-path `bbox`. (`src/lib/simplify.ts`, `pathService`)
+2. ✅ **Offline support** — `persistentLocalCache` + multi-tab manager, connectivity detection, offline banner. (`src/config/firebase.ts`, `OfflineBanner.tsx`)
+3. ✅ **Error handling baseline** — top-level `ErrorBoundary`, `errorReporting.ts` seam replacing silent catches.
+4. ✅ **Tests** — Jest + `@testing-library/react-native`; 16 suites / 140 tests; 60% global gate enforced in CI.
+5. ✅ **Pan + zoom + coordinate model** — board-space/viewport contract, `react-native-gesture-handler`, 10–800% zoom, `ENABLE_PAN_ZOOM` flag. (`src/lib/viewport.ts`, `useViewport.ts`)
+6. ✅ **Viewport culling** — R-tree-free bbox cull with 200px margin ring, throttled re-eval. (`src/lib/culling.ts`)
+7. ✅ **Board snapshot / checkpoint** — client-side compaction every 500 writes; cold-load accelerator + M5 version-history substrate. (`snapshotService.ts`)
+8. ✅ **Selection primitive** — single-element tap-select via `useSelection` slice, bbox/handles, delete; **real eraser** (stroke deletion, not white paint). (`hitTest.ts`, `SelectionOverlay.tsx`)
 
 **Exit criteria:**
-- All four scope items merged to `main`.
-- Eraser works correctly.
-- 60% test coverage on services confirmed via `jest --coverage`.
-- Sentry dashboard receives at least one captured exception from dogfooding.
+- ✅ All scope items merged to `main`.
+- ✅ Eraser works correctly (erase → refresh → stays erased).
+- ✅ ≥ 60% service coverage via `jest --coverage`.
+- ⚠️ **Sentry dogfood exception — NOT met.** The seam is in place but the real
+  `@sentry/react-native` SDK needs a DSN + native (EAS) build. **Carried into
+  Month 2** (see M2 Phase 1 below; tracked as issue #3).
+
+**Open carry-forward into later months:** real Sentry SDK (M2), selection
+unification on text (M2), on-device Android perf baseline numbers (M2+),
+Cloud-Function snapshot compaction + pruning (M5). Details in
+[`docs/month-1-phases.md`](docs/month-1-phases.md) § Carry-forward.
 
 ---
 
 ### Month 2 — Production Readiness + Auth Polish
 
 **Goal:** Make the app installable from the actual app stores (or installable as a real PWA) by anyone, not just Expo Go users.
+
+**Status:** Code-complete on `feature/month-2-production-readiness`; remaining work
+is device/store verification, not implementation. Phase-by-phase record lives in
+[`docs/month-2-phases.md`](docs/month-2-phases.md). All 12 scope items have shipped
+code; `tsc --noEmit` is clean and the suite is green (28 suites / 306 tests). Two
+items are deferred by design (see below). The exit criteria are **not yet met** —
+they depend on signed builds, store credentials, and real devices.
+
+**Implementation status (this branch):**
+- ✅ **Code-complete (all 12 scope items):** EAS profiles + Sentry SDK (1), push
+  for standalone builds (2), PWA manifest/SW/install prompt (3), auth polish —
+  reset + email verification (4), secrets hygiene + crypto codes (5), deep links /
+  Universal+App Links / share intake (6), shape tools (7), multi-select + group
+  transforms (8), clipboard (9), keyboard shortcuts (10), background templates
+  (11), first-class image elements (12).
+- ⏸️ **Deferred by design:** **Google Sign-In → M3** (behind the `authProviders`
+  seam; needs `expo-auth-session` + Phase-2 native OAuth redirect, can't be
+  verified without a native build). **Group/ungroup → later** (needs a persistent
+  `groupId` data-model primitive, out of a shortcuts phase).
+
+**Remaining to close Month 2 (verification + store ops — nothing code-blocked on a dev machine):**
+1. **Apple Developer Program enrollment** ($99/yr) — serial dependency; gates
+   TestFlight, APNs, and the iOS link/share verifications. Start day one.
+2. **Signed builds:** Android `.aab` → Play internal testing track; iOS → TestFlight.
+3. **Sentry dogfood exception** (carried from M1, issue #3) — throw a deliberate
+   exception on a standalone build, confirm it lands in the Sentry dashboard.
+4. **Push on real devices** — FCM (Android) + APNs (iOS) credentials wired via EAS;
+   confirm a session notification fires on ≥ 1 standalone iOS and ≥ 1 Android.
+5. **Universal/App Links — swap the placeholder domain.** The native association is
+   now declared (`ios.associatedDomains` + an Android `autoVerify` `VIEW` intent
+   filter in `app.json`) against the `boardapp.example.com` placeholder. Replace it
+   with the real domain in `app.json`, `EXPO_PUBLIC_LINK_DOMAIN`, and the two
+   `public/.well-known/` association files (Apple Team ID + EAS SHA-256), then verify
+   a `https://<domain>/b/<inviteCode>` tap opens the app and joins on both platforms.
+6. **Share-INTO-app receiver — wired, needs on-device verification.** `expo-share-intent`
+   (approved) provides the Android `SEND` reader + generated iOS Share Extension via its
+   config plugin; `_layout.tsx` routes a shared image to the `/share` board-picker, which
+   places it through the Phase 9 pipeline. Runs in an EAS build only — verify "share a PNG
+   from Photos → lands on the chosen board" on real iOS + Android.
+7. **Lighthouse** against the served PWA build — confirm > 80 perf / > 90 a11y;
+   exercise the install prompt.
+8. **Auth round-trips on a real account** — password-reset email + verification tap-through.
+9. **Mobile-parity gate (canvas Phases 7–12):** on a real mid-range Android, exercise
+   each canvas feature, run the perf check vs `docs/perf-baseline.md`, and attach a
+   screenshot to the PR.
+10. **Manual hardware-key hooks** — the config plugin no-ops on SDK 55 Swift/Kotlin
+   templates; add the AppDelegate/MainActivity hooks by hand at prebuild (README).
+
+**Known limits carried forward (intentional, tracked for M3+):** Storage objects
+orphaned on group-delete/clear-board; z-order is per-layer (paths < shapes < text),
+not global; non-uniform resize of an already-rotated shape is approximate; the board
+doc isn't subscribed, so background-template / title changes reach other members on
+next load, not live.
 
 **Scope:**
 1. **EAS Build setup**

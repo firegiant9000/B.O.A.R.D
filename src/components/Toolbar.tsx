@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-type Tool = "pen" | "eraser" | "text" | "select";
+type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand";
 
 interface ToolbarProps {
   activeTool: Tool;
@@ -18,6 +18,8 @@ interface ToolbarProps {
   onToolChange: (tool: Tool) => void;
   onColorChange: (color: string) => void;
   onStrokeWidthChange: (width: number) => void;
+  /** Insert an image (gallery/camera on native, file dialog on web). Phase 9. */
+  onInsertImage: () => void;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
@@ -50,6 +52,7 @@ export default function Toolbar({
   onToolChange,
   onColorChange,
   onStrokeWidthChange,
+  onInsertImage,
   onUndo,
   onRedo,
   canRedo,
@@ -92,9 +95,24 @@ export default function Toolbar({
             onPress={() => onToolChange("text")}
           />
           <ToolButton
+            icon="shapes-outline"
+            active={activeTool === "shape"}
+            onPress={() => onToolChange("shape")}
+          />
+          <ToolButton
             icon="resize-outline"
             active={activeTool === "select"}
             onPress={() => onToolChange("select")}
+          />
+          <ToolButton
+            icon="hand-left-outline"
+            active={activeTool === "hand"}
+            onPress={() => onToolChange("hand")}
+          />
+          <ToolButton
+            icon="image-outline"
+            active={false}
+            onPress={onInsertImage}
           />
         </View>
 

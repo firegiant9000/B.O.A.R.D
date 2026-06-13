@@ -1,9 +1,8 @@
 # Month 1 — Hardening + Foundations: Completion Record
 
-> **Status:** All 7 phases delivered.
-> Only Phase 1 (commit `84a8222`) is on `main`. Phases 2–7 live on
-> `feature/month-1-hardening` as uncommitted working-tree changes — commit and
-> open a PR to close M1 out.
+> **Status:** All 7 phases delivered and merged to `main` via PR #89
+> (Phase 1 in `84a8222`; Phases 2–7 in `2e146c4`, plus cold-load snapshot fix
+> `56d65d2`). Month 1 is closed.
 >
 > **Test status:** 16 suites, 140 tests passing. `npm run test:coverage` enforces
 > the 60% global lines/statements gate from CI.
@@ -100,8 +99,7 @@ These were stated as M1 process gates; they remain in force for every later canv
 
 ## Exit-criteria status (from ROADMAP Month 1)
 
-- ✅ **All scope items merged to working tree** (Phases 1–7).
-  *Pending:* commit Phases 2–7 from `feature/month-1-hardening` and open the PR.
+- ✅ **All scope items merged to `main`** (Phases 1–7, PR #89).
 - ✅ **Eraser works correctly** (Phase 5 — verified: erase a stroke, refresh, stays erased).
 - ✅ **≥ 60% service coverage via `jest --coverage`** (gate set in `package.json`; current run sits well above on services).
 - ⚠️ **Sentry receives a dogfood exception** — *not yet met.* Seam is in place; real SDK lands in M2 (carry-forward §1).
