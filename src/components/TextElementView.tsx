@@ -136,6 +136,11 @@ export default function TextElementView({
           width: dims.width,
           height: dims.height,
         },
+        // Phase 8 group rotate: spin about the box center so it lines up with
+        // the SVG elements rotated about the same group anchor.
+        element.rotation
+          ? { transform: [{ rotate: `${element.rotation}deg` }], transformOrigin: "50% 50%" }
+          : null,
       ]}
     >
       <TouchableOpacity

@@ -74,6 +74,7 @@ export async function getBoardPaths(boardId: string): Promise<DrawPath[]> {
         // Legacy docs predate bbox — compute it on read so Phase 4 culling
         // can treat every stroke uniformly.
         bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
+        z: data.z,
         createdAt: data.createdAt?.toDate() ?? new Date(),
       };
     })
@@ -100,6 +101,39 @@ export async function clearBoardPaths(boardId: string): Promise<void> {
   for (const chunk of chunks) {
     const batch = writeBatch(db);
     chunk.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+// --- Group operations (Phase 8) ---
+//
+// Multi-element move / recolor / stroke-width / z-order touch many docs at once;
+// these commit them as 500-op writeBatches (Firestore's per-batch ceiling) so a
+// group transform is one round-trip per chunk instead of N. The caller passes
+// the already-computed field deltas (e.g. translated points + bbox) — the
+// service stays a dumb writer, mirroring savePath's "write what you're given".
+
+type PathUpdate = Partial<Pick<DrawPath, "points" | "color" | "strokeWidth" | "bbox" | "z">>;
+
+export async function batchUpdatePaths(
+  boardId: string,
+  updates: { id: string; data: PathUpdate }[]
+): Promise<void> {
+  for (let i = 0; i < updates.length; i += 500) {
+    const batch = writeBatch(db);
+    for (const u of updates.slice(i, i + 500)) {
+      batch.update(doc(db, "boards", boardId, "paths", u.id), u.data);
+    }
+    await batch.commit();
+  }
+}
+
+export async function batchDeletePaths(boardId: string, ids: string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = writeBatch(db);
+    for (const pathId of ids.slice(i, i + 500)) {
+      batch.delete(doc(db, "boards", boardId, "paths", pathId));
+    }
     await batch.commit();
   }
 }
@@ -189,6 +223,8 @@ export async function getBoardTextElements(boardId: string): Promise<TextElement
       height: data.height,
       fontSize: data.fontSize,
       color: data.color,
+      z: data.z,
+      rotation: data.rotation,
       createdAt: data.createdAt?.toDate() ?? new Date(),
     };
   });
@@ -197,13 +233,42 @@ export async function getBoardTextElements(boardId: string): Promise<TextElement
 export async function updateTextElement(
   boardId: string,
   elementId: string,
-  updates: Partial<Pick<TextElement, "text" | "position" | "width" | "height" | "fontSize" | "color">>
+  updates: Partial<
+    Pick<TextElement, "text" | "position" | "width" | "height" | "fontSize" | "color" | "rotation">
+  >
 ): Promise<void> {
   await updateDoc(doc(db, "boards", boardId, "textElements", elementId), updates);
 }
 
 export async function deleteTextElement(boardId: string, elementId: string): Promise<void> {
   await deleteDoc(doc(db, "boards", boardId, "textElements", elementId));
+}
+
+type TextElementUpdate = Partial<
+  Pick<TextElement, "text" | "position" | "width" | "height" | "fontSize" | "color" | "z" | "rotation">
+>;
+
+export async function batchUpdateTextElements(
+  boardId: string,
+  updates: { id: string; data: TextElementUpdate }[]
+): Promise<void> {
+  for (let i = 0; i < updates.length; i += 500) {
+    const batch = writeBatch(db);
+    for (const u of updates.slice(i, i + 500)) {
+      batch.update(doc(db, "boards", boardId, "textElements", u.id), u.data);
+    }
+    await batch.commit();
+  }
+}
+
+export async function batchDeleteTextElements(boardId: string, ids: string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = writeBatch(db);
+    for (const elementId of ids.slice(i, i + 500)) {
+      batch.delete(doc(db, "boards", boardId, "textElements", elementId));
+    }
+    await batch.commit();
+  }
 }
 
 export async function clearBoardTextElements(boardId: string): Promise<void> {
@@ -251,6 +316,7 @@ export function subscribeToBoardPaths(
           // Legacy docs predate bbox — compute it on read so Phase 4 culling
           // can treat every stroke uniformly.
           bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
+          z: data.z,
           createdAt: data.createdAt?.toDate() ?? new Date(),
         };
       })
@@ -306,6 +372,8 @@ export function subscribeToBoardTextElements(
         height: data.height,
         fontSize: data.fontSize,
         color: data.color,
+        z: data.z,
+        rotation: data.rotation,
         createdAt: data.createdAt?.toDate() ?? new Date(),
       };
     });

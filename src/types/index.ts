@@ -8,6 +8,17 @@ export interface UserProfile {
   pushToken?: string;
 }
 
+// Phase 12 (roadmap item 11). Per-board background template, rendered as a
+// non-interactive SVG layer behind every element (Appendix A.4 step 6). Optional
+// / migration-tolerant: absent ⇒ "blank" (the pre-Phase-12 behavior).
+export type BackgroundTemplate =
+  | "blank"
+  | "grid"
+  | "dots"
+  | "lined"
+  | "isometric"
+  | "coordinate";
+
 export interface Board {
   id: string;
   title: string;
@@ -16,6 +27,7 @@ export interface Board {
   collaboratorIds: string[];
   inviteCode: string;
   members: string[];
+  backgroundTemplate?: BackgroundTemplate;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,6 +44,9 @@ export interface DrawPath {
   // write time for viewport culling (Phase 4). Optional so legacy docs and the
   // read-path fallback (compute-from-points) stay valid.
   bbox?: Bounds;
+  // Z-order within the paths layer (Phase 8). Optional/migration-tolerant: docs
+  // predating it read as 0 and tiebreak on createdAt, preserving draw order.
+  z?: number;
   createdAt: Date;
 }
 
@@ -121,5 +136,72 @@ export interface TextElement {
   height: number;
   fontSize: number;
   color: string;
+  // Z-order within the textElements layer (Phase 8); see DrawPath.z.
+  z?: number;
+  // Rotation in degrees about the box center (Phase 8 group rotate). Optional /
+  // migration-tolerant: absent ⇒ 0 (axis-aligned, the pre-Phase-8 behavior).
+  rotation?: number;
+  createdAt: Date;
+}
+
+// Phase 7 (roadmap item 7, Appendix A.2). Vector shape primitives. rect/ellipse/
+// triangle store an axis-aligned box at (x,y) with positive width/height; line/arrow
+// store the vector from the start point (x,y) to the end point (x+width, y+height),
+// so width/height may be negative. `bbox` is persisted at write time for culling/
+// hit-testing parity with paths; `rotation` (degrees) is reserved for the Phase 8
+// transform work and defaults to 0.
+export type ShapeKind = "rect" | "ellipse" | "line" | "arrow" | "triangle";
+export type ArrowheadStyle = "none" | "classic" | "dot" | "circle" | "open";
+
+export interface ShapeElement {
+  id: string;
+  boardId: string;
+  userId: string;
+  shape: ShapeKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  fill: string; // CSS color or "none"
+  stroke: string;
+  strokeWidth: number;
+  dashed: boolean;
+  arrowheadStart: ArrowheadStyle;
+  arrowheadEnd: ArrowheadStyle;
+  bbox?: Bounds;
+  // Z-order within the shapes layer (Phase 8); see DrawPath.z.
+  z?: number;
+  createdAt: Date;
+}
+
+// Phase 9 (roadmap item 12, Appendix A.2). A first-class image element. The
+// original (downscaled to ≤ 2048px long edge) and a thumbnail live in Firebase
+// Storage at `storagePath` / `thumbnailPath`; `url` / `thumbnailUrl` are the
+// resolved download URLs persisted alongside them so the SVG renderer has a
+// usable `href` without an async lookup per element (download URLs are bearer
+// tokens, no broader than the Firestore read the member already has). Geometry
+// mirrors a box shape: (x,y) top-left, positive width/height, `rotation` degrees
+// about the box center, participating in the Phase 8 selection/transform system.
+// `naturalWidth`/`naturalHeight` preserve the source aspect for re-fit math.
+export interface ImageElement {
+  id: string;
+  boardId: string;
+  userId: string;
+  storagePath: string;
+  thumbnailPath: string;
+  url: string;
+  thumbnailUrl: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  naturalWidth: number;
+  naturalHeight: number;
+  alt: string;
+  bbox?: Bounds;
+  // Z-order within the images layer (Phase 8); see DrawPath.z.
+  z?: number;
   createdAt: Date;
 }

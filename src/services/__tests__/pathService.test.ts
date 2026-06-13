@@ -338,3 +338,67 @@ describe("text elements", () => {
     expect(returned).toBe(unsub);
   });
 });
+
+describe("group batch operations (Phase 8)", () => {
+  it("batchUpdatePaths updates each doc at the right path in one batch", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+
+    await pathService.batchUpdatePaths("board-1", [
+      { id: "p1", data: { z: 3 } },
+      { id: "p2", data: { color: "#f00" } },
+    ]);
+
+    expect(batch.update).toHaveBeenCalledTimes(2);
+    expect(batch.update.mock.calls[0][0].path).toEqual(["boards", "board-1", "paths", "p1"]);
+    expect(batch.update.mock.calls[0][1]).toEqual({ z: 3 });
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("batchUpdatePaths chunks past the 500-op batch ceiling", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValue(batch);
+
+    const updates = Array.from({ length: 501 }, (_, i) => ({ id: `p${i}`, data: { z: i } }));
+    await pathService.batchUpdatePaths("board-1", updates);
+
+    expect(fs.writeBatch).toHaveBeenCalledTimes(2);
+    expect(batch.commit).toHaveBeenCalledTimes(2);
+  });
+
+  it("batchDeletePaths deletes each id and commits", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+
+    await pathService.batchDeletePaths("board-1", ["p1", "p2", "p3"]);
+
+    expect(batch.delete).toHaveBeenCalledTimes(3);
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("batchUpdateTextElements writes to the textElements subcollection", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+
+    await pathService.batchUpdateTextElements("board-1", [
+      { id: "t1", data: { position: { x: 5, y: 6 } } },
+    ]);
+
+    expect(batch.update.mock.calls[0][0].path).toEqual(["boards", "board-1", "textElements", "t1"]);
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("batchDeleteTextElements deletes each id", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+    await pathService.batchDeleteTextElements("board-1", ["t1", "t2"]);
+    expect(batch.delete).toHaveBeenCalledTimes(2);
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("batch helpers are no-ops on empty input", async () => {
+    await pathService.batchUpdatePaths("board-1", []);
+    await pathService.batchDeletePaths("board-1", []);
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+  });
+});
