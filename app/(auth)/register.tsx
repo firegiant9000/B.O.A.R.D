@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuth } from "../../src/hooks/useAuth";
+import { showAlert } from "../../src/utils/alerts";
 
 export default function RegisterScreen() {
   const [displayName, setDisplayName] = useState("");
@@ -40,6 +41,10 @@ export default function RegisterScreen() {
     setLoading(true);
     try {
       await signUp(email.trim(), password, displayName.trim());
+      showAlert(
+        "Verify your email",
+        `We sent a verification link to ${email.trim()}. Verify to secure your account — you can keep using BOARD in the meantime.`
+      );
     } catch (error: any) {
       Alert.alert("Registration Failed", error.message ?? "An error occurred.");
     } finally {
