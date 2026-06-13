@@ -127,7 +127,8 @@ export default function ScheduleScreen() {
               tokens,
               session.title,
               session.boardTitle,
-              userProfile?.displayName ?? "Admin"
+              userProfile?.displayName ?? "Admin",
+              { sessionId: session.id, boardId: session.boardId }
             );
           }
         } catch {
@@ -167,7 +168,8 @@ export default function ScheduleScreen() {
         tokens,
         session.title,
         session.boardTitle,
-        userProfile?.displayName ?? "Admin"
+        userProfile?.displayName ?? "Admin",
+        { sessionId: session.id, boardId: session.boardId }
       );
       showAlert("Sent", `Notification resent to ${session.participantIds.length} participant(s).`);
     } catch {

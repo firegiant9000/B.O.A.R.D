@@ -148,7 +148,8 @@ export default function StartSessionModal({
           tokens,
           title.trim(),
           boardTitle,
-          adminName
+          adminName,
+          { sessionId, boardId }
         );
       }
 

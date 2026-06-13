@@ -1,9 +1,13 @@
+import { View } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import UnverifiedEmailBanner from "../../src/components/UnverifiedEmailBanner";
 
 export default function TabsLayout() {
   return (
-    <Tabs
+    <View style={{ flex: 1 }}>
+      <UnverifiedEmailBanner />
+      <Tabs
       screenOptions={{
         tabBarActiveTintColor: "#2563eb",
         headerStyle: { backgroundColor: "#fff" },
@@ -37,6 +41,7 @@ export default function TabsLayout() {
           ),
         }}
       />
-    </Tabs>
+      </Tabs>
+    </View>
   );
 }

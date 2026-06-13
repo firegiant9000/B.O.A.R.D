@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// Firebase Storage rules (Month 2, Phase 9 — image elements).
+//
+// Image originals/thumbnails live under boards/{boardId}/images/{imageId}/.
+// Read + write are gated by board membership, resolved cross-service from the
+// board's Firestore doc (`members` array) — the same predicate the Firestore
+// rules use for the boards/{boardId}/images subcollection, so doc + bytes share
+// one access model. Uploads are constrained to images and a 10 MB ceiling
+// (originals are downscaled client-side to ≤ 2048px before upload).
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBoardMember(boardId) {
+      return isSignedIn() &&
+        request.auth.uid in
+          firestore.get(/databases/(default)/documents/boards/$(boardId)).data.members;
+    }
+
+    function isValidImageUpload() {
+      return request.resource.size < 10 * 1024 * 1024 &&
+             request.resource.contentType.matches('image/.*');
+    }
+
+    match /boards/{boardId}/images/{imageId}/{fileName} {
+      allow read:  if isBoardMember(boardId);
+      allow write: if isBoardMember(boardId) && isValidImageUpload();
+      allow delete: if isBoardMember(boardId);
+    }
+
+    // Everything else is denied by default (no catch-all match).
+  }
+}

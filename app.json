@@ -13,19 +13,52 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.adaptivesoftware.board"
     },
     "android": {
+      "package": "com.adaptivesoftware.board",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "image/*"
+            },
+            {
+              "mimeType": "application/pdf"
+            },
+            {
+              "mimeType": "text/plain"
+            }
+          ]
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "image/*"
+            }
+          ]
+        }
+      ]
     },
     "web": {
       "bundler": "metro",
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "output": "static"
     },
     "plugins": [
       "expo-router",
@@ -39,7 +72,26 @@
           "androidCollapsedTitle": "Board Sessions"
         }
       ],
-      "@react-native-community/datetimepicker"
-    ]
+      "@react-native-community/datetimepicker",
+      "@sentry/react-native",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow B.O.A.R.D to access your photos so you can add images to a board.",
+          "cameraPermission": "Allow B.O.A.R.D to use the camera so you can add photos to a board."
+        }
+      ],
+      "./plugins/withHardwareKeyCommands"
+    ],
+    "extra": {
+      "firebase": {
+        "apiKey": "AIzaSyAJFFIUWRaydXbhEjgdln4IfHfynJVfJK0",
+        "authDomain": "board-6b415.firebaseapp.com",
+        "projectId": "board-6b415",
+        "storageBucket": "board-6b415.firebasestorage.app",
+        "messagingSenderId": "1077801569891",
+        "appId": "1:1077801569891:web:e1b872528ab64cd9cdb256"
+      }
+    }
   }
 }
