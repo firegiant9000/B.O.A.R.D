@@ -15,8 +15,12 @@ import {
 } from "firebase/firestore";
 import { db, auth } from "../config/firebase";
 import { Board } from "../types";
+import { randomCode } from "../lib/secureRandom";
+import { isBackgroundTemplate } from "../lib/backgrounds";
 
 const boardsRef = collection(db, "boards");
+
+const INVITE_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function mapBoard(id: string, data: Record<string, any>): Board {
   return {
@@ -27,18 +31,16 @@ function mapBoard(id: string, data: Record<string, any>): Board {
     collaboratorIds: data.collaboratorIds ?? [],
     inviteCode: data.inviteCode ?? "",
     members: data.members ?? [],
+    backgroundTemplate: isBackgroundTemplate(data.backgroundTemplate)
+      ? data.backgroundTemplate
+      : "blank",
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   };
 }
 
 function generateInviteCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let suffix = "";
-  for (let i = 0; i < 6; i++) {
-    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `BORD-${suffix}`;
+  return `BORD-${randomCode(6, INVITE_CODE_CHARS)}`;
 }
 
 /** Deletes all documents in a subcollection in 500-doc batches. */
@@ -91,7 +93,7 @@ export async function getBoard(boardId: string): Promise<Board | null> {
 
 export async function updateBoard(
   boardId: string,
-  data: Partial<Pick<Board, "title" | "adminId">>
+  data: Partial<Pick<Board, "title" | "adminId" | "backgroundTemplate">>
 ): Promise<void> {
   await updateDoc(doc(db, "boards", boardId), {
     ...data,
@@ -160,6 +162,20 @@ export async function addMemberByEmail(
     updatedAt: serverTimestamp(),
   });
   return { result: "added", uid };
+}
+
+/**
+ * Read-only lookup of a board by its invite code. Used by the `/b/{code}`
+ * Universal/App Link landing route to resolve a code → board before routing the
+ * viewer into the existing membership/join gate. Returns null when no board
+ * matches, so the route can show a clean "invalid link" state.
+ */
+export async function getBoardByInviteCode(inputCode: string): Promise<Board | null> {
+  const normalized = inputCode.trim().toUpperCase();
+  const q = query(boardsRef, where("inviteCode", "==", normalized));
+  const snapshot = await getDocs(q);
+  if (snapshot.empty) return null;
+  return mapBoard(snapshot.docs[0].id, snapshot.docs[0].data());
 }
 
 export async function joinBoardByCode(inputCode: string): Promise<JoinBoardResult> {

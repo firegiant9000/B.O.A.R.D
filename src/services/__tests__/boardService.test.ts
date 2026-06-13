@@ -62,6 +62,32 @@ describe("getBoard", () => {
     const board = await boardService.getBoard("board-1");
     expect(board).toMatchObject({ id: "board-1", title: "Untitled", adminId: "o1" });
   });
+
+  it("defaults backgroundTemplate to blank when absent or invalid", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { ownerId: "o1" }));
+    expect((await boardService.getBoard("board-1"))?.backgroundTemplate).toBe("blank");
+
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("board-1", { ownerId: "o1", backgroundTemplate: "squares" })
+    );
+    expect((await boardService.getBoard("board-1"))?.backgroundTemplate).toBe("blank");
+  });
+
+  it("maps a valid backgroundTemplate through", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("board-1", { ownerId: "o1", backgroundTemplate: "coordinate" })
+    );
+    expect((await boardService.getBoard("board-1"))?.backgroundTemplate).toBe("coordinate");
+  });
+});
+
+describe("updateBoard", () => {
+  it("persists the backgroundTemplate alongside an updatedAt bump", async () => {
+    await boardService.updateBoard("board-1", { backgroundTemplate: "dots" });
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.backgroundTemplate).toBe("dots");
+    expect(update.updatedAt).toBeDefined();
+  });
 });
 
 describe("leaveBoard", () => {
@@ -144,6 +170,27 @@ describe("joinBoardByCode", () => {
 
     expect(res).toEqual({ boardId: "board-1", alreadyMember: false });
     expect(updateDoc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getBoardByInviteCode", () => {
+  it("normalizes the code and returns null when no board matches", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+
+    expect(await boardService.getBoardByInviteCode("  bord-zzzzzz ")).toBeNull();
+    expect((fs.where as jest.Mock).mock.calls.at(-1)).toEqual([
+      "inviteCode",
+      "==",
+      "BORD-ZZZZZZ",
+    ]);
+  });
+
+  it("maps and returns the board when found", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([["board-7", { title: "Shared", inviteCode: "BORD-AAAAAA" }]]));
+
+    const board = await boardService.getBoardByInviteCode("BORD-AAAAAA");
+
+    expect(board).toMatchObject({ id: "board-7", title: "Shared", inviteCode: "BORD-AAAAAA" });
   });
 });
 

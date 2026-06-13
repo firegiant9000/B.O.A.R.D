@@ -6,18 +6,48 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
 } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
+import Constants from "expo-constants";
 import { Platform } from "react-native";
 
-// TODO: Replace with your Firebase project config
-// Get these values from Firebase Console > Project Settings > Your Apps
+/**
+ * Firebase config resolution (Month 2, Phase 1 — secrets hygiene).
+ *
+ * Source order, highest precedence first:
+ *   1. `EXPO_PUBLIC_FIREBASE_*` env vars — injected at build time (EAS) for the
+ *      production project, so prod credentials never live in source control.
+ *   2. `expo.extra.firebase` in app.json — the committed dev/default project.
+ *
+ * Note: the Firebase web `apiKey` is a public client identifier, not a secret
+ * (access is gated by Firestore/Storage rules), so committing the dev value is
+ * fine. Moving it to config is about hygiene and per-environment swapping.
+ */
+const extraFirebase =
+  (Constants.expoConfig?.extra?.firebase as
+    | Record<string, string>
+    | undefined) ?? {};
+
 const firebaseConfig = {
-  apiKey: "AIzaSyAJFFIUWRaydXbhEjgdln4IfHfynJVfJK0",
-  authDomain: "board-6b415.firebaseapp.com",
-  projectId: "board-6b415",
-  storageBucket: "board-6b415.firebasestorage.app",
-  messagingSenderId: "1077801569891",
-  appId: "1:1077801569891:web:e1b872528ab64cd9cdb256",
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? extraFirebase.apiKey,
+  authDomain:
+    process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? extraFirebase.authDomain,
+  projectId:
+    process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? extraFirebase.projectId,
+  storageBucket:
+    process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ??
+    extraFirebase.storageBucket,
+  messagingSenderId:
+    process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ??
+    extraFirebase.messagingSenderId,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? extraFirebase.appId,
 };
+
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+  throw new Error(
+    "Firebase config missing. Set expo.extra.firebase in app.json or the " +
+      "EXPO_PUBLIC_FIREBASE_* env vars (see .env.example)."
+  );
+}
 
 const app = initializeApp(firebaseConfig);
 
@@ -57,3 +87,11 @@ function createDb() {
 }
 
 export const db = createDb();
+
+/**
+ * Firebase Storage (Phase 9 — image elements). Originals (downscaled to ≤ 2048px)
+ * and thumbnails live under `boards/{boardId}/images/{imageId}/`; reads/writes are
+ * gated by board membership in `storage.rules`. Uses the bucket from the resolved
+ * Firebase config above, so it follows the same dev/prod env swap.
+ */
+export const storage = getStorage(app);
