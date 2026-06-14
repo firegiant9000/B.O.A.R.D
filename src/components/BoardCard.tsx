@@ -7,9 +7,20 @@ interface BoardCardProps {
   onPress: () => void;
   onDelete?: () => void;
   sessionCount?: number;
+  // Phase 10 (dashboard). When `onTogglePin` is provided a star toggle renders;
+  // `pinned` controls its filled/outline state.
+  pinned?: boolean;
+  onTogglePin?: () => void;
 }
 
-export default function BoardCard({ board, onPress, onDelete, sessionCount }: BoardCardProps) {
+export default function BoardCard({
+  board,
+  onPress,
+  onDelete,
+  sessionCount,
+  pinned,
+  onTogglePin,
+}: BoardCardProps) {
   return (
     <View style={styles.wrapper}>
       <TouchableOpacity
@@ -38,6 +49,15 @@ export default function BoardCard({ board, onPress, onDelete, sessionCount }: Bo
             </View>
           )}
         </View>
+        {onTogglePin && (
+          <TouchableOpacity onPress={onTogglePin} hitSlop={8} style={styles.pinButton}>
+            <Ionicons
+              name={pinned ? "star" : "star-outline"}
+              size={20}
+              color={pinned ? "#f59e0b" : "#cbd5e1"}
+            />
+          </TouchableOpacity>
+        )}
       </TouchableOpacity>
       {onDelete && (
         <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
@@ -88,6 +108,13 @@ const styles = StyleSheet.create({
   meta: {
     fontSize: 13,
     color: "#888",
+  },
+  pinButton: {
+    width: 32,
+    height: 32,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 4,
   },
   deleteButton: {
     width: DELETE_BTN_WIDTH,

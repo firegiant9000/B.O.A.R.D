@@ -22,7 +22,14 @@ jest.mock("expo-constants", () => ({
 }));
 
 import * as notificationService from "../notificationService";
+import * as fs from "firebase/firestore";
+import { makeDocSnap, makeQuerySnap } from "../../test-utils/firestoreMock";
 import { captureException } from "../../lib/errorReporting";
+
+const getDoc = fs.getDoc as jest.Mock;
+const getDocs = fs.getDocs as jest.Mock;
+const addDoc = fs.addDoc as jest.Mock;
+const updateDoc = fs.updateDoc as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -157,5 +164,131 @@ describe("registerForPushNotifications", () => {
     expect(mockNotifications.getExpoPushTokenAsync).toHaveBeenCalledWith({
       projectId: "proj-123",
     });
+  });
+});
+
+// ── Phase 10 ──────────────────────────────────────────────────────────────────
+
+describe("getNotificationPref", () => {
+  it("defaults missing fields to DEFAULT_NOTIFICATION_PREF", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { displayName: "A" }));
+    expect(await notificationService.getNotificationPref("u1")).toEqual(
+      notificationService.DEFAULT_NOTIFICATION_PREF
+    );
+  });
+
+  it("merges a partial stored pref over the defaults", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("u1", { notificationPref: { pushOnMention: false } })
+    );
+    expect(await notificationService.getNotificationPref("u1")).toEqual({
+      pushOnMention: false,
+      emailDigest: true,
+    });
+  });
+});
+
+describe("updateNotificationPref", () => {
+  it("merges the patch over the current pref and writes it", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("u1", { notificationPref: { pushOnMention: true, emailDigest: true } })
+    );
+    await notificationService.updateNotificationPref("u1", { emailDigest: false });
+    expect(updateDoc.mock.calls[0][1]).toEqual({
+      notificationPref: { pushOnMention: true, emailDigest: false },
+    });
+  });
+});
+
+describe("notifyMentions", () => {
+  const baseArgs = {
+    actorId: "author",
+    actorName: "Author",
+    boardId: "b1",
+    boardTitle: "Calc HW",
+    commentId: "c1",
+    body: "hey @[Bob](u-bob) look",
+  };
+
+  it("never notifies the author about their own mention", async () => {
+    await notificationService.notifyMentions({ ...baseArgs, mentionUids: ["author"] });
+    expect(addDoc).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("writes an in-app notification per recipient and pushes to those who opt in", async () => {
+    getDoc
+      .mockResolvedValueOnce(
+        makeDocSnap("u-bob", { pushToken: "ExpoTok[bob]", notificationPref: { pushOnMention: true } })
+      )
+      .mockResolvedValueOnce(
+        makeDocSnap("u-cara", { pushToken: "ExpoTok[cara]", notificationPref: { pushOnMention: false } })
+      );
+
+    await notificationService.notifyMentions({
+      ...baseArgs,
+      mentionUids: ["u-bob", "u-cara", "author"],
+    });
+
+    expect(addDoc).toHaveBeenCalledTimes(2);
+    const payloads = addDoc.mock.calls.map((c) => c[1]);
+    expect(payloads.every((p) => p.type === "mention" && p.actorId === "author")).toBe(true);
+    expect(payloads.map((p) => p.recipientId).sort()).toEqual(["u-bob", "u-cara"]);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.map((m: any) => m.to)).toEqual(["ExpoTok[bob]"]);
+    expect(body[0].data).toEqual({ type: "mention", boardId: "b1", commentId: "c1" });
+  });
+
+  it("does not push when no recipient has push enabled", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("u-bob", { pushToken: "tok", notificationPref: { pushOnMention: false } })
+    );
+    await notificationService.notifyMentions({ ...baseArgs, mentionUids: ["u-bob"] });
+    expect(addDoc).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("in-app notification read state", () => {
+  it("markNotificationRead flips read on the addressed doc", async () => {
+    await notificationService.markNotificationRead("u1", "n1");
+    expect((fs.doc as jest.Mock).mock.calls.at(-1)).toEqual([
+      {},
+      "users",
+      "u1",
+      "notifications",
+      "n1",
+    ]);
+    expect(updateDoc.mock.calls[0][1]).toEqual({ read: true });
+  });
+
+  it("markAllNotificationsRead only updates the unread docs", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["n1", { read: false }],
+        ["n2", { read: true }],
+        ["n3", { read: false }],
+      ])
+    );
+    const batch = { update: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+
+    await notificationService.markAllNotificationsRead("u1");
+
+    expect(batch.update).toHaveBeenCalledTimes(2);
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("addMentionTapListener fires on a cold-start mention tap", async () => {
+    mockNotifications.getLastNotificationResponseAsync.mockResolvedValueOnce({
+      notification: {
+        request: { content: { data: { type: "mention", boardId: "b9", commentId: "c9" } } },
+      },
+    });
+    const onTap = jest.fn();
+    await notificationService.addMentionTapListener(onTap);
+    expect(onTap).toHaveBeenCalledWith({ type: "mention", boardId: "b9", commentId: "c9" });
   });
 });
