@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuth } from "../../src/hooks/useAuth";
+import { GoogleSignInButton } from "../../src/components/GoogleSignInButton";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -72,6 +73,8 @@ export default function LoginScreen() {
             {loading ? "Signing In..." : "Sign In"}
           </Text>
         </TouchableOpacity>
+
+        <GoogleSignInButton />
 
         <TouchableOpacity
           style={styles.forgotButton}

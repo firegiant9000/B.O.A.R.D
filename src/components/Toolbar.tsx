@@ -1,6 +1,7 @@
 import React from "react";
 import {
   View,
+  Text,
   TouchableOpacity,
   StyleSheet,
   Alert,
@@ -8,13 +9,24 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand";
+type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment";
 
 interface ToolbarProps {
   activeTool: Tool;
   activeColor: string;
   activeStrokeWidth: number;
   isAdmin: boolean;
+  /**
+   * Whether the viewer may edit canvas content (Phase 6 effective editor). When
+   * false, editing tools are hidden and only navigation (select/hand) remains;
+   * the security rules enforce read-only server-side regardless.
+   */
+  canEdit?: boolean;
+  /**
+   * Whether the viewer may comment (Phase 7 commenter+). The comment tool shows
+   * for editors and commenters; a pure viewer never sees it.
+   */
+  canComment?: boolean;
   onToolChange: (tool: Tool) => void;
   onColorChange: (color: string) => void;
   onStrokeWidthChange: (width: number) => void;
@@ -49,6 +61,8 @@ export default function Toolbar({
   activeColor,
   activeStrokeWidth,
   isAdmin,
+  canEdit = true,
+  canComment = true,
   onToolChange,
   onColorChange,
   onStrokeWidthChange,
@@ -69,6 +83,40 @@ export default function Toolbar({
       ]
     );
   };
+
+  // Read-only viewers/commenters (Phase 6): navigation only, no editing tools.
+  if (!canEdit) {
+    return (
+      <View style={styles.container}>
+        <View style={[styles.scrollContent, styles.readOnlyRow]}>
+          <View style={styles.group}>
+            <ToolButton
+              icon="resize-outline"
+              active={activeTool === "select"}
+              onPress={() => onToolChange("select")}
+            />
+            <ToolButton
+              icon="hand-left-outline"
+              active={activeTool === "hand"}
+              onPress={() => onToolChange("hand")}
+            />
+            {canComment && (
+              <ToolButton
+                icon="chatbubble-outline"
+                active={activeTool === "comment"}
+                onPress={() => onToolChange("comment")}
+              />
+            )}
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.viewOnlyPill}>
+            <Ionicons name={canComment ? "chatbubble-outline" : "eye-outline"} size={14} color="#6b7280" />
+            <Text style={styles.viewOnlyText}>{canComment ? "Comment only" : "View only"}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -109,6 +157,13 @@ export default function Toolbar({
             active={activeTool === "hand"}
             onPress={() => onToolChange("hand")}
           />
+          {canComment && (
+            <ToolButton
+              icon="chatbubble-outline"
+              active={activeTool === "comment"}
+              onPress={() => onToolChange("comment")}
+            />
+          )}
           <ToolButton
             icon="image-outline"
             active={false}
@@ -219,6 +274,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 8,
+  },
+  readOnlyRow: {
+    justifyContent: "center",
+  },
+  viewOnlyPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  viewOnlyText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#6b7280",
   },
   group: {
     flexDirection: "row",

@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -25,3 +25,27 @@ jobs:
 
       - name: Test
         run: npm run test:coverage -- --ci
+
+  # Hard CI gate for Month 3 (multi-tenancy): cross-workspace isolation must hold.
+  rules-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      # Firestore emulator runs on the JVM.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # firebase-tools v15+ (the Firestore emulator runtime) requires JDK 21+.
+          java-version: 21
+
+      - run: npm ci
+
+      - name: Firestore rules tests
+        run: npm run test:rules

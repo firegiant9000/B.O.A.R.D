@@ -12,9 +12,34 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    // Phase 2 (multi-tenancy). Membership in a workspace, resolved with a single
+    // get(). Guarded by exists() so a dangling/typo workspaceId denies rather
+    // than erroring. This is the read that the M1 Android time-to-first-paint
+    // perf gate watches — keep it to one get() per check.
+    function isMemberOfWorkspace(wsId) {
+      return wsId != null && wsId != '' &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/workspaces/$(wsId)).data.members;
+    }
+
+    // Board access resolves through the parent workspace: a board's members are a
+    // subset of its workspace's members. Migration-tolerant — a legacy board with
+    // no workspaceId falls back to the board-only gate so existing testers don't
+    // 403 mid-migration.
+    // TODO(phase-9-cutover): remove the `board.workspaceId == null` fallback once
+    // the migration has stamped every board and the staging soak closes.
+    // `.get(key, null)` so a legacy doc that lacks the field reads as null instead
+    // of erroring (reading a missing map property is a hard error in rules).
+    function inBoardWorkspace(board) {
+      return board.get('workspaceId', null) == null ||
+        isMemberOfWorkspace(board.get('workspaceId', null));
+    }
+
     function isBoardMember(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId)).data;
       return isSignedIn() &&
-        request.auth.uid in get(/databases/$(database)/documents/boards/$(boardId)).data.members;
+        request.auth.uid in board.members &&
+        inBoardWorkspace(board);
     }
 
     function isBoardAdmin(boardId) {
@@ -22,7 +47,89 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.uid == board.ownerId ||
         request.auth.uid == board.adminId
+      ) && inBoardWorkspace(board);
+    }
+
+    // Phase 6 (per-board roles). A member's role in the board's workspace, or null
+    // when the workspace is missing or the user isn't a member of it. `.get(uid,
+    // null)` on the members map so a non-member reads as null rather than erroring.
+    function workspaceRoleOf(wsId, uid) {
+      return wsId != null && wsId != '' &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) ?
+        get(/databases/$(database)/documents/workspaces/$(wsId)).data.members.get(uid, null) :
+        null;
+    }
+
+    // Effective-editor check, mirroring boardService.effectiveBoardRole. Editor =
+    // an explicit 'editor' override, OR (no override AND a workspace owner/admin/
+    // member). The floor rule is enforced by the `wsRole != 'viewer'` guard: a
+    // workspace viewer is never an editor, even with an 'editor' override.
+    function isEffectiveEditor(board, uid) {
+      let wsRole = workspaceRoleOf(board.workspaceId, uid);
+      let override = board.get('roles', {}).get(uid, null);
+      return wsRole != null && wsRole != 'viewer' && (
+        override == 'editor' ||
+        (override == null && wsRole in ['owner', 'admin', 'member'])
       );
+    }
+
+    // Whether the caller may write canvas content on a board (Phase 6). The board
+    // owner and members of a legacy (no-workspace) board edit unconditionally,
+    // preserving pre-Phase-6 behavior during the migration window.
+    // TODO(phase-9-cutover): drop the `workspaceId == null` legacy-editor clause.
+    function isBoardEditor(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId)).data;
+      return isSignedIn() &&
+        request.auth.uid in board.members &&
+        inBoardWorkspace(board) && (
+          request.auth.uid == board.ownerId ||
+          board.get('workspaceId', null) == null ||
+          isEffectiveEditor(board, request.auth.uid)
+        );
+    }
+
+    // Effective-commenter check (Phase 7), mirroring boardService.canCommentBoardRole
+    // composed with effectiveBoardRole. Commenter+ = an explicit editor/commenter
+    // override, OR (no override AND a workspace owner/admin/member). A workspace
+    // viewer with no override resolves to viewer and CANNOT comment; a workspace
+    // viewer with a commenter/editor override is floor-capped to commenter and CAN.
+    function isEffectiveCommenter(board, uid) {
+      let wsRole = workspaceRoleOf(board.workspaceId, uid);
+      let override = board.get('roles', {}).get(uid, null);
+      return wsRole != null && (
+        override == 'editor' || override == 'commenter' ||
+        (override == null && wsRole in ['owner', 'admin', 'member'])
+      );
+    }
+
+    // Whether the caller may comment on a board (Phase 7 — comments require the
+    // commenter role, a strict superset of editors). Owner + legacy-board members
+    // comment unconditionally, mirroring isBoardEditor's migration tolerance.
+    // TODO(phase-9-cutover): drop the `workspaceId == null` legacy clause.
+    function isBoardCommenter(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId)).data;
+      return isSignedIn() &&
+        request.auth.uid in board.members &&
+        inBoardWorkspace(board) && (
+          request.auth.uid == board.ownerId ||
+          board.get('workspaceId', null) == null ||
+          isEffectiveCommenter(board, request.auth.uid)
+        );
+    }
+
+    // Phase 10 anti-spam. A mention notification may be written to a user's inbox
+    // only when BOTH the actor (caller) and the recipient belong to the workspace of
+    // the board the mention is on. Mention candidates are sourced from workspace
+    // members (the board-screen autocomplete reads `workspace.members`), so this
+    // matches every legitimate mention exactly while denying a signed-in user the
+    // ability to plant notifications in arbitrary inboxes across tenants. A legacy
+    // board (no workspaceId) resolves to null and is denied — consistent with the
+    // client never generating mentions on a workspace-less board.
+    function notifBoardWorkspaceShared(boardId, recipientUid) {
+      let wsId = exists(/databases/$(database)/documents/boards/$(boardId))
+        ? get(/databases/$(database)/documents/boards/$(boardId)).data.get('workspaceId', null)
+        : null;
+      return isMemberOfWorkspace(wsId) && workspaceRoleOf(wsId, recipientUid) != null;
     }
 
     // ── users ─────────────────────────────────────────────────────────────────
@@ -36,24 +143,91 @@ service cloud.firestore {
       match /private/{doc} {
         allow read, write: if isOwner(uid);
       }
+
+      // In-app notifications (Phase 10). Only the owner reads their inbox. A mention
+      // notification is written by the actor (any signed-in user), so create is gated
+      // on the actor being pinned to the caller and the recipient matching the path
+      // owner — mirroring the friendRequests trust model (any signed-in user may
+      // address one to another, but can't forge the sender). The owner may only flip
+      // `read` (mark-as-read); the immutable mention payload can't be edited. Delete
+      // is the owner's (dismiss). No one else writes.
+      match /notifications/{notificationId} {
+        allow read:   if isOwner(uid);
+        allow create: if isSignedIn() &&
+                        request.resource.data.actorId == request.auth.uid &&
+                        request.resource.data.recipientId == uid &&
+                        notifBoardWorkspaceShared(request.resource.data.boardId, uid);
+        allow update: if isOwner(uid) &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+        allow delete: if isOwner(uid);
+      }
+    }
+
+    // ── workspaces ──────────────────────────────────────────────────────────────
+    // Phase 1 (multi-tenancy). Membership is the role map keyed by uid; reads/writes
+    // gate on membership and resolve from resource.data (no get() — keeps the board
+    // time-to-first-paint perf gate clear). Role/membership changes are owner/admin
+    // only; ordinary members may rename the workspace. Boards bind to a workspace in
+    // Phase 2, where this becomes the root of board access.
+    match /workspaces/{workspaceId} {
+      allow read:   if isSignedIn() && request.auth.uid in resource.data.members;
+      allow create: if isSignedIn() &&
+                      request.resource.data.ownerId == request.auth.uid &&
+                      request.resource.data.members[request.auth.uid] == 'owner';
+      allow update: if isSignedIn() && (
+                      resource.data.members[request.auth.uid] in ['owner', 'admin'] ||
+                      (request.auth.uid in resource.data.members &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']))
+                    );
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.ownerId;
+
+      // Activity feed (Phase 8). Append-only log of workspace/board mutations.
+      // Read = workspace membership (resolved from the parent doc, no extra get()
+      // for members already loading the workspace). Create requires membership AND
+      // the actor pinned to the caller; the event's own workspaceId must match the
+      // path so an event can't be planted under a workspace it claims to belong to.
+      // No update/delete, ever — the log is immutable (the M5 version-history
+      // substrate). This is the "append-only enforced in rules" gate the tests assert.
+      match /activity/{eventId} {
+        allow read:   if isSignedIn() &&
+                        request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members;
+        allow create: if isSignedIn() &&
+                        request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members &&
+                        request.resource.data.actorId == request.auth.uid &&
+                        request.resource.data.workspaceId == workspaceId;
+        allow update, delete: if false;
+      }
     }
 
     // ── boards ────────────────────────────────────────────────────────────────
     match /boards/{boardId} {
-      // Members + owner can always read; anyone signed-in can read a board that
-      // has an inviteCode (needed for the join-by-code lookup query).
+      // Members + owner can read, but only while they're still in the board's
+      // workspace (Phase 2 — board access ⊆ workspace membership); legacy boards
+      // with no workspaceId keep the board-only gate. Anyone signed-in can still
+      // read a board that has an inviteCode (needed for the join-by-code lookup
+      // query) — that public-lookup path is intentionally not workspace-gated.
       allow read:   if isSignedIn() && (
-                      request.auth.uid == resource.data.ownerId ||
-                      request.auth.uid in resource.data.members ||
+                      (request.auth.uid == resource.data.ownerId && inBoardWorkspace(resource.data)) ||
+                      (request.auth.uid in resource.data.members && inBoardWorkspace(resource.data)) ||
                       resource.data.inviteCode != null
                     );
-      allow create: if isSignedIn() && request.auth.uid == request.resource.data.ownerId;
-      // Admin can change anything; existing members can touch members/updatedAt
-      // and the shared backgroundTemplate (Phase 12); a non-member can self-join
-      // via invite code (mirrors the sessions rule).
+      // Creator must own the new board AND belong to the workspace it's stamped
+      // into (can't plant a board in someone else's workspace). Legacy/no-ws
+      // creates still allowed during the migration window.
+      allow create: if isSignedIn() &&
+                      request.auth.uid == request.resource.data.ownerId &&
+                      (request.resource.data.get('workspaceId', null) == null ||
+                       isMemberOfWorkspace(request.resource.data.get('workspaceId', null)));
+      // Admin can change anything (incl. the per-board `roles` map — Phase 6);
+      // an effective editor can change the shared backgroundTemplate (Phase 12);
+      // any member can still touch members/updatedAt (leave/self-join bookkeeping)
+      // so a viewer can leave a board; a non-member can self-join via invite code
+      // (mirrors the sessions rule).
       allow update: if isBoardAdmin(boardId) ||
-                      (isBoardMember(boardId) &&
+                      (isBoardEditor(boardId) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt', 'backgroundTemplate'])) ||
+                      (isBoardMember(boardId) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt'])) ||
                       (
                         resource.data.inviteCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']) &&
@@ -63,31 +237,53 @@ service cloud.firestore {
                       );
       allow delete: if isBoardAdmin(boardId);
 
-      // paths, notes, textElements — any board member can read/write/delete
+      // Canvas content (paths, notes, textElements, shapes, images, snapshots):
+      // any board member reads; only an effective editor writes (Phase 6 —
+      // viewer/commenter are read-only on the canvas). This is the "viewer write
+      // denied" gate the rules tests assert.
       match /paths/{pathId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
       match /notes/{noteId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
       match /textElements/{elementId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
-      // shapes, images (Phase 7 / 9) — any board member can read/write/delete
       match /shapes/{shapeId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
       match /images/{imageId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
-      // snapshots — compacted checkpoints of the paths (Phase 7); any member reads/writes
       match /snapshots/{snapshotId} {
-        allow read, write: if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId);
+        allow write: if isBoardEditor(boardId);
+      }
+
+      // Comments (Phase 7) anchored to canvas elements. Read follows board access
+      // (any member); creating a comment or appending a reply/resolve requires the
+      // commenter role (a viewer is read-only here too). The author is pinned to the
+      // caller on create. Delete is the comment's author or a board admin (moderation).
+      // create/update share isBoardCommenter; the author-pin only applies on create.
+      match /comments/{commentId} {
+        allow read:   if isBoardMember(boardId);
+        allow create: if isBoardCommenter(boardId) &&
+                        request.resource.data.authorId == request.auth.uid;
+        allow update: if isBoardCommenter(boardId);
+        allow delete: if isBoardAdmin(boardId) ||
+                        (isBoardCommenter(boardId) &&
+                         resource.data.authorId == request.auth.uid);
       }
 
       // presence — each user manages only their own presence doc
@@ -98,13 +294,25 @@ service cloud.firestore {
     }
 
     // ── sessions ──────────────────────────────────────────────────────────────
+    // Phase 4 (multi-tenancy). Sessions inherit a workspaceId from their board.
+    // A workspace member can read sessions in their workspace; the creator and
+    // participants still read directly, and the joinCode public-lookup path is
+    // unchanged (needed for join-by-code). Create can't plant a session in a
+    // workspace the user doesn't belong to. Migration-tolerant: a legacy session
+    // with no workspaceId keeps the pre-Phase-4 behavior.
+    // TODO(phase-9-cutover): remove the `workspaceId == null` tolerance once the
+    // migration has stamped every session and the staging soak closes.
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       request.auth.uid in resource.data.participantIds ||
+                      isMemberOfWorkspace(resource.data.get('workspaceId', null)) ||
                       resource.data.joinCode != null
                     );
-      allow create: if isSignedIn() && request.auth.uid == request.resource.data.createdById;
+      allow create: if isSignedIn() &&
+                      request.auth.uid == request.resource.data.createdById &&
+                      (request.resource.data.get('workspaceId', '') == '' ||
+                       isMemberOfWorkspace(request.resource.data.get('workspaceId', '')));
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       (

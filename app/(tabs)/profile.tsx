@@ -10,13 +10,19 @@ import {
   TextInput,
   ActivityIndicator,
   RefreshControl,
+  Switch,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
-import { FriendRequest } from "../../src/types";
+import { FriendRequest, NotificationPref } from "../../src/types";
 import * as friendService from "../../src/services/friendService";
 import * as aiService from "../../src/services/aiService";
+import {
+  getNotificationPref,
+  updateNotificationPref,
+  DEFAULT_NOTIFICATION_PREF,
+} from "../../src/services/notificationService";
 import { showAlert } from "../../src/utils/alerts";
 
 export default function ProfileScreen() {
@@ -36,6 +42,9 @@ export default function ProfileScreen() {
   // AI settings
   const [aiKey, setAiKey] = useState("");
   const [aiKeySaved, setAiKeySaved] = useState(false);
+
+  // Notification preferences (Phase 10)
+  const [notifPref, setNotifPref] = useState<NotificationPref>(DEFAULT_NOTIFICATION_PREF);
 
   // Dismissible error banner
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -75,6 +84,25 @@ export default function ProfileScreen() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (user) getNotificationPref(user.uid).then(setNotifPref).catch(() => {});
+  }, [user?.uid]);
+
+  // Optimistic toggle: flip locally, persist the merged pref. On a write failure we
+  // revert the local flag so the UI never drifts from what's stored.
+  const handleTogglePref = async (key: keyof NotificationPref, value: boolean) => {
+    if (!user) return;
+    const prev = notifPref;
+    const next = { ...prev, [key]: value };
+    setNotifPref(next);
+    try {
+      await updateNotificationPref(user.uid, { [key]: value });
+    } catch {
+      setNotifPref(prev);
+      showAlert("Error", "Failed to update notification preferences.");
+    }
+  };
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -305,6 +333,39 @@ export default function ProfileScreen() {
             );
           })
         )}
+      </View>
+
+      {/* ── Notifications section (Phase 10) ── */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Notifications</Text>
+        </View>
+        <View style={styles.prefRow}>
+          <View style={styles.prefInfo}>
+            <Text style={styles.prefLabel}>Push on @mention</Text>
+            <Text style={styles.prefHint}>
+              Get a push notification when someone mentions you in a comment.
+            </Text>
+          </View>
+          <Switch
+            value={notifPref.pushOnMention}
+            onValueChange={(v) => handleTogglePref("pushOnMention", v)}
+            trackColor={{ true: "#2563eb", false: "#d1d5db" }}
+          />
+        </View>
+        <View style={styles.prefRow}>
+          <View style={styles.prefInfo}>
+            <Text style={styles.prefLabel}>Daily email digest</Text>
+            <Text style={styles.prefHint}>
+              A once-a-day email summary of your mentions. Rolling out soon.
+            </Text>
+          </View>
+          <Switch
+            value={notifPref.emailDigest}
+            onValueChange={(v) => handleTogglePref("emailDigest", v)}
+            trackColor={{ true: "#2563eb", false: "#d1d5db" }}
+          />
+        </View>
       </View>
 
       {/* ── AI Settings section ── */}
@@ -618,6 +679,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#6b7280",
   },
+  // ── Notification preferences ──
+  prefRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#f1f5f9",
+  },
+  prefInfo: { flex: 1 },
+  prefLabel: { fontSize: 14, fontWeight: "600", color: "#111827" },
+  prefHint: { fontSize: 12, color: "#6b7280", marginTop: 2, lineHeight: 16 },
   // ── AI Settings ──
   aiBadge: {
     flexDirection: "row",

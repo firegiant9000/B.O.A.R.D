@@ -5,6 +5,7 @@ import * as fs from "firebase/firestore";
 import { auth } from "../../config/firebase";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
 import * as boardService from "../boardService";
+import * as quotaService from "../quotaService";
 
 const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
@@ -17,20 +18,31 @@ beforeEach(() => {
 });
 
 describe("createBoard", () => {
-  it("creates the board with owner as sole member and a BORD- invite code", async () => {
+  it("creates the board with owner as sole member, the workspaceId, and a BORD- invite code", async () => {
     addDoc.mockResolvedValueOnce({ id: "board-1" });
 
-    const id = await boardService.createBoard("My Board", "owner-1");
+    const id = await boardService.createBoard("My Board", "owner-1", "ws-1");
 
     expect(id).toBe("board-1");
     const payload = addDoc.mock.calls[0][1];
     expect(payload).toMatchObject({
+      workspaceId: "ws-1",
       title: "My Board",
       ownerId: "owner-1",
       adminId: "owner-1",
       members: ["owner-1"],
     });
     expect(payload.inviteCode).toMatch(/^BORD-[A-Z0-9]{6}$/);
+  });
+
+  it("invokes the quota choke point for the board's workspace (Phase 5)", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    addDoc.mockResolvedValueOnce({ id: "board-1" });
+
+    await boardService.createBoard("My Board", "owner-1", "ws-1");
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "board");
+    spy.mockRestore();
   });
 });
 
@@ -48,6 +60,50 @@ describe("getMemberBoards", () => {
     const boards = await boardService.getMemberBoards("u1");
 
     expect(boards.map((b) => b.id)).toEqual(["b", "a"]);
+  });
+
+  it("scopes to the active workspace but keeps legacy (unscoped) boards visible", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["active", { title: "Active", workspaceId: "ws-1", updatedAt: ts(new Date("2026-03-01")) }],
+        ["other", { title: "Other", workspaceId: "ws-2", updatedAt: ts(new Date("2026-02-01")) }],
+        ["legacy", { title: "Legacy", updatedAt: ts(new Date("2026-01-01")) }],
+      ])
+    );
+
+    const boards = await boardService.getMemberBoards("u1", "ws-1");
+
+    // ws-2 filtered out; ws-1 and the legacy (no workspaceId) board remain.
+    expect(boards.map((b) => b.id)).toEqual(["active", "legacy"]);
+  });
+
+  it("returns all member boards when no workspace is given (backward compatible)", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["active", { title: "Active", workspaceId: "ws-1", updatedAt: ts(new Date("2026-03-01")) }],
+        ["other", { title: "Other", workspaceId: "ws-2", updatedAt: ts(new Date("2026-02-01")) }],
+      ])
+    );
+
+    const boards = await boardService.getMemberBoards("u1");
+
+    expect(boards.map((b) => b.id).sort()).toEqual(["active", "other"]);
+  });
+});
+
+describe("getUserBoards", () => {
+  it("scopes owned boards to the active workspace, keeping legacy boards", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["a", { title: "A", workspaceId: "ws-1" }],
+        ["b", { title: "B", workspaceId: "ws-2" }],
+        ["c", { title: "C" }],
+      ])
+    );
+
+    const boards = await boardService.getUserBoards("u1", "ws-1");
+
+    expect(boards.map((b) => b.id).sort()).toEqual(["a", "c"]);
   });
 });
 
@@ -194,12 +250,91 @@ describe("getBoardByInviteCode", () => {
   });
 });
 
+// ── Phase 6: per-board role resolution ────────────────────────────────────────
+describe("effectiveBoardRole", () => {
+  const ws = {
+    members: { o: "owner", a: "admin", m: "member", v: "viewer" } as const,
+  };
+  const board = (over: Partial<Parameters<typeof boardService.effectiveBoardRole>[0]> = {}) => ({
+    workspaceId: "ws-1",
+    ownerId: "o",
+    members: ["o", "a", "m", "v", "ext"],
+    roles: {},
+    ...over,
+  });
+
+  it("returns undefined for a non-member", () => {
+    expect(boardService.effectiveBoardRole(board(), ws, "stranger")).toBeUndefined();
+  });
+
+  it("the board owner is always an editor", () => {
+    expect(boardService.effectiveBoardRole(board(), ws, "o")).toBe("editor");
+  });
+
+  it("workspace member/admin default to editor", () => {
+    expect(boardService.effectiveBoardRole(board(), ws, "a")).toBe("editor");
+    expect(boardService.effectiveBoardRole(board(), ws, "m")).toBe("editor");
+  });
+
+  it("workspace viewer defaults to viewer", () => {
+    expect(boardService.effectiveBoardRole(board(), ws, "v")).toBe("viewer");
+  });
+
+  it("an explicit override demotes a member below their default", () => {
+    expect(
+      boardService.effectiveBoardRole(board({ roles: { m: "commenter" } }), ws, "m")
+    ).toBe("commenter");
+  });
+
+  it("floor rule: a workspace viewer cannot be promoted past commenter", () => {
+    // even an explicit editor override is capped at commenter for a ws viewer
+    expect(
+      boardService.effectiveBoardRole(board({ roles: { v: "editor" } }), ws, "v")
+    ).toBe("commenter");
+    expect(
+      boardService.effectiveBoardRole(board({ roles: { v: "commenter" } }), ws, "v")
+    ).toBe("commenter");
+  });
+
+  it("a legacy board (no workspaceId) treats every member as an editor", () => {
+    const legacy = board({ workspaceId: "", roles: { v: "viewer" } });
+    expect(boardService.effectiveBoardRole(legacy, null, "v")).toBe("editor");
+  });
+
+  it("canEdit/canComment helpers reflect rank", () => {
+    expect(boardService.canEditBoardRole("editor")).toBe(true);
+    expect(boardService.canEditBoardRole("commenter")).toBe(false);
+    expect(boardService.canEditBoardRole(undefined)).toBe(false);
+    expect(boardService.canCommentBoardRole("commenter")).toBe(true);
+    expect(boardService.canCommentBoardRole("viewer")).toBe(false);
+  });
+});
+
+describe("setBoardRole / removeBoardRole / removeMemberById", () => {
+  it("setBoardRole writes the dotted roles key", async () => {
+    await boardService.setBoardRole("board-1", "u2", "commenter");
+    expect(updateDoc.mock.calls[0][1]["roles.u2"]).toBe("commenter");
+  });
+
+  it("removeBoardRole deletes the override", async () => {
+    await boardService.removeBoardRole("board-1", "u2");
+    expect(updateDoc.mock.calls[0][1]["roles.u2"]).toBe("__deleteField__");
+  });
+
+  it("removeMemberById drops the member and clears their override in one write", async () => {
+    await boardService.removeMemberById("board-1", "u2");
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.members).toEqual({ __type: "arrayRemove", values: ["u2"] });
+    expect(update["roles.u2"]).toBe("__deleteField__");
+  });
+});
+
 describe("deleteBoard", () => {
   it("clears every subcollection then deletes the board doc", async () => {
-    // getDocs is called once per subcollection (paths, notes, presence, textElements)
+    // getDocs is called once per subcollection (paths, notes, presence, textElements, comments)
     getDocs.mockResolvedValue(makeQuerySnap([]));
     await boardService.deleteBoard("board-1");
-    expect(getDocs).toHaveBeenCalledTimes(4);
+    expect(getDocs).toHaveBeenCalledTimes(5);
     expect(fs.deleteDoc).toHaveBeenCalledTimes(1);
   });
 });

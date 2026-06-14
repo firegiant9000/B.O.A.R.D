@@ -22,6 +22,8 @@ import { showAlert } from "../utils/alerts";
 interface StartSessionModalProps {
   visible: boolean;
   boardId: string;
+  // Phase 4: the board's workspace, stamped onto the session so it inherits tenancy.
+  workspaceId: string;
   boardTitle: string;
   adminId: string;
   adminName: string;
@@ -39,6 +41,7 @@ interface SelectableUser {
 export default function StartSessionModal({
   visible,
   boardId,
+  workspaceId,
   boardTitle,
   adminId,
   adminName,
@@ -130,6 +133,7 @@ export default function StartSessionModal({
 
       const sessionId = await sessionService.createSession({
         boardId,
+        workspaceId,
         boardTitle,
         title: title.trim(),
         description: "",

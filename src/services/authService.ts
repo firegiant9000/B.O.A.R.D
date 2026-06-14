@@ -6,9 +6,42 @@ import {
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   updateProfile,
+  User,
 } from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
+import { ensurePersonalWorkspace } from "./workspaceService";
+
+/**
+ * Idempotently provisions everything a usable account needs beyond the Firebase
+ * Auth record: a `users/{uid}` profile doc and a personal workspace. Both steps
+ * are create-if-absent, so this is safe to call on every sign-in — which is the
+ * point: social first-sign-in (Phase 11) has no separate "signup" step, so the
+ * Google flow calls this to get the same personal-workspace auto-create that email
+ * signup gets. Personal-workspace creation is best-effort and never blocks sign-in.
+ */
+export async function ensureUserProvisioned(
+  user: User,
+  displayName?: string
+): Promise<void> {
+  const ref = doc(db, "users", user.uid);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) {
+    await setDoc(ref, {
+      email: user.email,
+      displayName: displayName ?? user.displayName ?? "",
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  // Resilient: a lagging or failed workspace write must not block sign-in — the
+  // app reconciles the personal workspace lazily on the next load.
+  try {
+    await ensurePersonalWorkspace(user.uid);
+  } catch {
+    // swallow — personal workspace is reconciled lazily client-side.
+  }
+}
 
 export async function signUp(
   email: string,
@@ -24,11 +57,8 @@ export async function signUp(
 
   await updateProfile(user, { displayName });
 
-  await setDoc(doc(db, "users", user.uid), {
-    email: user.email,
-    displayName,
-    createdAt: serverTimestamp(),
-  });
+  // Profile doc + personal workspace auto-create (Phase 1).
+  await ensureUserProvisioned(user, displayName);
 
   // Kick off email verification at signup (Phase 6). Non-fatal: if the send
   // fails (rate limit, transient), the account is still created and the user

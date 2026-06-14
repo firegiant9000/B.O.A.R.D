@@ -27,6 +27,10 @@ import ShapeOptionsBar from "../../src/components/ShapeOptionsBar";
 import OfflineBanner from "../../src/components/OfflineBanner";
 import ShortcutsCheatSheet from "../../src/components/ShortcutsCheatSheet";
 import BackgroundPicker from "../../src/components/BackgroundPicker";
+import CommentPinLayer, { CommentPin } from "../../src/components/CommentPinLayer";
+import CommentThreadPanel from "../../src/components/CommentThreadPanel";
+import BoardHistoryPanel from "../../src/components/BoardHistoryPanel";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "../../src/hooks/useAuth";
 import { useShortcuts } from "../../src/hooks/useShortcuts";
 import { ShortcutAction } from "../../src/lib/shortcuts";
@@ -90,6 +94,10 @@ import * as snapshotService from "../../src/services/snapshotService";
 import * as presenceService from "../../src/services/presenceService";
 import * as friendService from "../../src/services/friendService";
 import * as sessionService from "../../src/services/sessionService";
+import * as commentService from "../../src/services/commentService";
+import * as activityService from "../../src/services/activityService";
+import { notifyMentions } from "../../src/services/notificationService";
+import { MentionMember, extractMentionUids } from "../../src/lib/mentions";
 import { captureSvgAsPng } from "../../src/utils/canvasCapture";
 import { captureException } from "../../src/lib/errorReporting";
 import { reportSyncState } from "../../src/lib/connectivity";
@@ -105,9 +113,14 @@ import {
   ArrowheadStyle,
   ImageElement,
   BackgroundTemplate,
+  BoardRole,
+  Workspace,
+  Comment,
+  CommentAnchorKind,
 } from "../../src/types";
+import { getWorkspace } from "../../src/services/workspaceService";
 
-type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand";
+type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment";
 
 const ARROWHEAD_CYCLE: ArrowheadStyle[] = ["classic", "dot", "circle", "open", "none"];
 const SNAP_CYCLE = [0, ...GRID_SIZES];
@@ -212,6 +225,14 @@ export default function BoardScreen() {
 
   // Board state
   const [board, setBoard] = useState<Board | null>(null);
+  // Phase 8: per-board activity history sidebar visibility.
+  const [historyVisible, setHistoryVisible] = useState(false);
+  // Phase 6 — the board's workspace, fetched for per-board role resolution (the
+  // role floor). Null for legacy boards or while loading.
+  const [boardWorkspace, setBoardWorkspace] = useState<Workspace | null>(null);
+  // Phase 10 — workspace members resolved to {uid, displayName} for @-mention
+  // autocomplete in the comment composer. Empty for legacy/no-workspace boards.
+  const [mentionMembers, setMentionMembers] = useState<MentionMember[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Drawing state
@@ -308,6 +329,22 @@ export default function BoardScreen() {
 
   // Share modal
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
+
+  // Phase 7 — comments. The realtime thread set, the currently-open thread (or a
+  // pending new-comment anchor), and a busy flag for in-flight writes. Unread is
+  // client-side: a comment is unread when its latest activity is newer than the
+  // viewer's last-seen baseline (persisted per board to AsyncStorage) and the
+  // activity isn't the viewer's own.
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [pendingAnchor, setPendingAnchor] = useState<{
+    anchorElementId: string;
+    anchorKind: CommentAnchorKind;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
+  const [commentBusy, setCommentBusy] = useState(false);
+  const [commentsViewedAt, setCommentsViewedAt] = useState(0);
 
   // Redo stack — stores path data to re-save on redo
   const [redoStack, setRedoStack] = useState<Omit<DrawPath, "id" | "createdAt">[]>([]);
@@ -410,6 +447,16 @@ export default function BoardScreen() {
 
   // Derived
   const isAdmin = !!user && !!board && user.uid === board.adminId;
+  // Phase 6 — effective per-board role. Editors write canvas content; viewers/
+  // commenters are read-only (the toolbar editing tools are hidden for them, and
+  // the security rules enforce it server-side regardless).
+  const effectiveRole: BoardRole | undefined =
+    user && board
+      ? boardService.effectiveBoardRole(board, boardWorkspace, user.uid)
+      : undefined;
+  const canEdit = boardService.canEditBoardRole(effectiveRole);
+  // Phase 7 — commenters (and editors) may comment; pure viewers cannot.
+  const canComment = boardService.canCommentBoardRole(effectiveRole);
 
   // Board-space bounds of all content, for fit-to-content.
   const contentBounds = (): Bounds | null =>
@@ -573,6 +620,25 @@ export default function BoardScreen() {
     return imageService.subscribeToBoardImages(id, setImages);
   }, [id]);
 
+  // Phase 7 — realtime comments + the per-board unread baseline (AsyncStorage).
+  useEffect(() => {
+    if (!id) return;
+    return commentService.subscribeToBoardComments(id, setComments);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    AsyncStorage.getItem(`comments-viewed:${id}`)
+      .then((v) => {
+        if (!cancelled) setCommentsViewedAt(v ? Number(v) || 0 : 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   useEffect(() => {
     if (!id) return;
     return pathService.subscribeToBoardTextElements(id, (incoming) => {
@@ -607,6 +673,38 @@ export default function BoardScreen() {
       }
 
       setBoard(boardData);
+
+      // Phase 6 — resolve the board's workspace for per-board role math. Best-effort:
+      // a failure (or a legacy board with no workspaceId) leaves the floor unset and
+      // the resolver falls back to the legacy "any member edits" behavior.
+      if (boardData.workspaceId) {
+        getWorkspace(boardData.workspaceId)
+          .then((ws) => {
+            setBoardWorkspace(ws);
+            // Phase 10 — resolve workspace member uids to display names for the
+            // @-mention autocomplete. Best-effort: a failure just leaves the list
+            // empty (no autocomplete), it never blocks the board.
+            if (ws) {
+              friendService
+                .getUsersByIds(Object.keys(ws.members))
+                .then((users) =>
+                  setMentionMembers(
+                    users.map((u) => ({ uid: u.uid, displayName: u.displayName }))
+                  )
+                )
+                .catch(() => setMentionMembers([]));
+            } else {
+              setMentionMembers([]);
+            }
+          })
+          .catch(() => {
+            setBoardWorkspace(null);
+            setMentionMembers([]);
+          });
+      } else {
+        setBoardWorkspace(null);
+        setMentionMembers([]);
+      }
 
       // Deep-link gate: if the viewer isn't a member yet, prompt them to join
       if (user && !boardData.members.includes(user.uid)) {
@@ -679,6 +777,17 @@ export default function BoardScreen() {
         }
       }
       await sessionService.updateSessionStatus(activeSession.id, "ended");
+      // Phase 8: record the session end in the workspace activity feed
+      // (fire-and-forget; logging never blocks ending the session).
+      activityService.logSessionEnded({
+        workspaceId: activeSession.workspaceId || board?.workspaceId || "",
+        boardId: activeSession.boardId,
+        sessionId: activeSession.id,
+        actorId: user?.uid ?? "",
+        actorName: userProfile?.displayName ?? user?.email ?? "User",
+        participantCount: activeSession.participantIds.length,
+        title: activeSession.title,
+      });
       setActiveSession(null);
       showSaveToast();
     } catch {
@@ -1549,6 +1658,25 @@ export default function BoardScreen() {
       // Shapes require a drag to size them; a stray tap does nothing.
       return;
     }
+    if (activeTool === "comment") {
+      // Anchor a new comment to the topmost element under the tap. A tap on empty
+      // canvas does nothing — comments must attach to an element (Phase 7).
+      const hit = hitTestAny(point);
+      if (!hit) {
+        setErrorMessage("Tap an element to anchor a comment to it.");
+        return;
+      }
+      const box = boxOfElement(hit.id, hit.kind);
+      if (!box) return;
+      setActiveCommentId(null);
+      setPendingAnchor({
+        anchorElementId: hit.id,
+        anchorKind: hit.kind as CommentAnchorKind,
+        offsetX: point.x - box.minX,
+        offsetY: point.y - box.minY,
+      });
+      return;
+    }
     if (activeTool === "select") {
       selectAtPoint(point, shiftHeldRef.current);
       return;
@@ -1739,12 +1867,15 @@ export default function BoardScreen() {
         pathService.clearBoardTextElements(id!),
         shapeService.clearBoardShapes(id!),
         imageService.clearBoardImages(id!),
+        commentService.clearBoardComments(id!),
       ]);
       setPaths([]);
       setNotes([]);
       setTextElements([]);
       setShapes([]);
       setImages([]);
+      setComments([]);
+      closeCommentPanel();
       setEditingTextId(null);
       selection.clear();
       setRedoStack([]);
@@ -1933,6 +2064,132 @@ export default function BoardScreen() {
     setBoard((prev) => (prev ? { ...prev, adminId: newAdminId } : prev));
   };
 
+  // --- Phase 7: comment handlers ---
+
+  const authorName = userProfile?.displayName ?? user?.email ?? "User";
+
+  // Persist the unread baseline to "now" so currently-visible activity reads as
+  // seen. Coarse but cheap (no per-comment write): opening any thread clears the
+  // board's unread markers.
+  const markCommentsViewed = useCallback(() => {
+    const now = Date.now();
+    setCommentsViewedAt(now);
+    AsyncStorage.setItem(`comments-viewed:${id}`, String(now)).catch(() => {});
+  }, [id]);
+
+  const openCommentThread = (commentId: string) => {
+    setPendingAnchor(null);
+    setActiveCommentId(commentId);
+    markCommentsViewed();
+  };
+
+  const closeCommentPanel = () => {
+    setActiveCommentId(null);
+    setPendingAnchor(null);
+  };
+
+  const handleCreateComment = async (body: string) => {
+    if (!pendingAnchor || !user) return;
+    setCommentBusy(true);
+    try {
+      const newId = await commentService.addComment(id!, {
+        ...pendingAnchor,
+        authorId: user.uid,
+        authorName,
+        body,
+      });
+      // Phase 8: log the new comment to the workspace activity feed (fire-and-forget).
+      activityService.logCommentCreated({
+        workspaceId: board?.workspaceId ?? "",
+        boardId: id!,
+        commentId: newId,
+        actorId: user.uid,
+        actorName: authorName,
+        anchorElementId: pendingAnchor.anchorElementId,
+      });
+      // Phase 10: fan @-mentions out to push + in-app notifications (fire-and-forget).
+      const mentionUids = extractMentionUids(body);
+      if (mentionUids.length > 0) {
+        notifyMentions({
+          mentionUids,
+          actorId: user.uid,
+          actorName: authorName,
+          boardId: id!,
+          boardTitle: board?.title ?? "a board",
+          commentId: newId,
+          body,
+        });
+      }
+      setPendingAnchor(null);
+      setActiveCommentId(newId);
+      markCommentsViewed();
+    } catch (e) {
+      captureException(e, { op: "board.addComment" });
+      setErrorMessage("Failed to add comment.");
+    } finally {
+      setCommentBusy(false);
+    }
+  };
+
+  const handleReplyComment = async (body: string) => {
+    if (!activeCommentId || !user) return;
+    setCommentBusy(true);
+    try {
+      await commentService.addReply(id!, activeCommentId, {
+        authorId: user.uid,
+        authorName,
+        body,
+        createdAtMs: Date.now(),
+      });
+      // Phase 10: fan @-mentions in the reply out to notifications (fire-and-forget).
+      const mentionUids = extractMentionUids(body);
+      if (mentionUids.length > 0) {
+        notifyMentions({
+          mentionUids,
+          actorId: user.uid,
+          actorName: authorName,
+          boardId: id!,
+          boardTitle: board?.title ?? "a board",
+          commentId: activeCommentId,
+          body,
+        });
+      }
+      markCommentsViewed();
+    } catch (e) {
+      captureException(e, { op: "board.replyComment" });
+      setErrorMessage("Failed to add reply.");
+    } finally {
+      setCommentBusy(false);
+    }
+  };
+
+  const handleToggleResolve = async () => {
+    if (!activeComment) return;
+    setCommentBusy(true);
+    try {
+      await commentService.setResolved(id!, activeComment.id, !activeComment.resolved);
+    } catch (e) {
+      captureException(e, { op: "board.resolveComment" });
+      setErrorMessage("Failed to update comment.");
+    } finally {
+      setCommentBusy(false);
+    }
+  };
+
+  const handleDeleteComment = async () => {
+    if (!activeComment) return;
+    setCommentBusy(true);
+    try {
+      await commentService.deleteComment(id!, activeComment.id);
+      closeCommentPanel();
+    } catch (e) {
+      captureException(e, { op: "board.deleteComment" });
+      setErrorMessage("Failed to delete comment.");
+    } finally {
+      setCommentBusy(false);
+    }
+  };
+
   // Filter out blocked users' content, then order by z (Phase 8 z-order) so the
   // render order — and the newest-first hit-test that walks from the end — both
   // reflect the layer stack. Docs predating `z` read as 0 and keep their
@@ -1971,6 +2228,62 @@ export default function BoardScreen() {
   });
   const shapeBox = (s: ShapeElement): Bounds => s.bbox ?? shapeBbox(s);
   const imgBox = (img: ImageElement): Bounds => img.bbox ?? imageBbox(img);
+
+  // Phase 7 — current board-space box of an element by id, across every kind, used
+  // to resolve a comment pin's live position from its anchor. Returns null when the
+  // element no longer exists (the comment is "detached").
+  const boxOfElement = (elId: string, kind?: string): Bounds | null => {
+    if (!kind || kind === "path") {
+      const p = visiblePaths.find((x) => x.id === elId);
+      if (p) return pathBox(p);
+    }
+    if (!kind || kind === "shape") {
+      const s = visibleShapes.find((x) => x.id === elId);
+      if (s) return shapeBox(s);
+    }
+    if (!kind || kind === "text") {
+      const t = visibleTextElements.find((x) => x.id === elId);
+      if (t) return textBox(t);
+    }
+    if (!kind || kind === "image") {
+      const im = visibleImages.find((x) => x.id === elId);
+      if (im) return imgBox(im);
+    }
+    if (!kind || kind === "note") {
+      const n = visibleNotes.find((x) => x.id === elId);
+      if (n) return { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y };
+    }
+    return null;
+  };
+
+  // Resolve every comment to a screen pin at its anchored element. Detached
+  // comments (anchor deleted) get no pin. Numbering is creation order over the
+  // full set so it stays stable as pins appear/disappear. Memoized over the
+  // element sets + comments so panning (cullViewport) doesn't recompute pins.
+  const commentPins = useMemo<CommentPin[]>(() => {
+    const out: CommentPin[] = [];
+    comments.forEach((c, i) => {
+      const box = boxOfElement(c.anchorElementId, c.anchorKind);
+      if (!box) return;
+      const last = commentService.lastActivityMs(c);
+      out.push({
+        id: c.id,
+        x: box.minX + c.offsetX,
+        y: box.minY + c.offsetY,
+        number: i + 1,
+        resolved: c.resolved,
+        unread: last > commentsViewedAt && c.authorId !== user?.uid,
+      });
+    });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comments, visiblePaths, visibleShapes, visibleTextElements, visibleImages, visibleNotes, commentsViewedAt, user]);
+
+  const activeComment = activeCommentId
+    ? comments.find((c) => c.id === activeCommentId) ?? null
+    : null;
+  const activeCommentDetached =
+    !!activeComment && boxOfElement(activeComment.anchorElementId, activeComment.anchorKind) === null;
 
   // Keep the synchronous hit-test source (eraser/select) current.
   useEffect(() => {
@@ -2330,8 +2643,22 @@ export default function BoardScreen() {
         inviteCode={board?.inviteCode ?? ""}
         members={board?.members ?? []}
         currentUserId={user?.uid ?? ""}
+        workspaceId={board?.workspaceId ?? ""}
+        ownerId={board?.ownerId ?? ""}
+        roles={board?.roles ?? {}}
+        isAdmin={isAdmin}
         onClose={() => setShareBoardModalVisible(false)}
         onMemberAdded={handleMemberAdded}
+        onAccessChanged={({ members, roles }) =>
+          setBoard((prev) => (prev ? { ...prev, members, roles } : prev))
+        }
+      />
+
+      <BoardHistoryPanel
+        visible={historyVisible}
+        workspaceId={board?.workspaceId ?? ""}
+        boardId={id!}
+        onClose={() => setHistoryVisible(false)}
       />
 
       {/* Header */}
@@ -2370,6 +2697,13 @@ export default function BoardScreen() {
             hitSlop={8}
           >
             <Ionicons name="grid-outline" size={20} color="#2563eb" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setHistoryVisible(true)}
+            style={styles.iconBtn}
+            hitSlop={8}
+          >
+            <Ionicons name="time-outline" size={20} color="#2563eb" />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={handleShare}
@@ -2525,6 +2859,16 @@ export default function BoardScreen() {
                 onTransformEnd={handleTransformEnd}
               />
             )}
+            {/* Phase 7 — comment pins, in the same board-space overlay so they
+                track the canvas. Hidden during a group transform to avoid clutter. */}
+            {!dragOffset && !transformPreview && (
+              <CommentPinLayer
+                pins={commentPins}
+                scale={viewport.scale}
+                activeId={activeCommentId}
+                onPressPin={openCommentThread}
+              />
+            )}
           </View>
         </View>
         {ENABLE_PAN_ZOOM && (
@@ -2560,6 +2904,8 @@ export default function BoardScreen() {
         activeColor={activeColor}
         activeStrokeWidth={activeStrokeWidth}
         isAdmin={isAdmin}
+        canEdit={canEdit}
+        canComment={canComment}
         onToolChange={setActiveTool}
         onColorChange={handleColorChange}
         onStrokeWidthChange={handleStrokeWidthChange}
@@ -2585,10 +2931,28 @@ export default function BoardScreen() {
         onClose={() => setBgPickerVisible(false)}
       />
 
+      {/* Comment thread / new-comment composer (Phase 7) */}
+      <CommentThreadPanel
+        visible={!!activeComment || !!pendingAnchor}
+        comment={activeComment}
+        currentUserId={user?.uid ?? ""}
+        isAdmin={isAdmin}
+        canComment={canComment}
+        busy={commentBusy}
+        detached={activeCommentDetached}
+        members={mentionMembers}
+        onCreate={handleCreateComment}
+        onReply={handleReplyComment}
+        onToggleResolve={handleToggleResolve}
+        onDelete={handleDeleteComment}
+        onClose={closeCommentPanel}
+      />
+
       {isAdmin && (
         <StartSessionModal
           visible={sessionModalVisible}
           boardId={id!}
+          workspaceId={board?.workspaceId ?? ""}
           boardTitle={board?.title ?? "Board"}
           adminId={user?.uid ?? ""}
           adminName={currentUserInfo.displayName}

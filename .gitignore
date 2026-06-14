@@ -40,6 +40,12 @@ yarn-error.*
 # tests
 /coverage
 
+# firebase emulator (rules + migration tests)
+firestore-debug.log
+firebase-debug.log
+ui-debug.log
+/scripts/*-service-account.json
+
 # generated native folders
 /ios
 /android
