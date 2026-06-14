@@ -12,6 +12,7 @@ import {
 import { useRouter } from "expo-router";
 import { useAuth } from "../../src/hooks/useAuth";
 import { showAlert } from "../../src/utils/alerts";
+import { GoogleSignInButton } from "../../src/components/GoogleSignInButton";
 
 export default function RegisterScreen() {
   const [displayName, setDisplayName] = useState("");
@@ -106,6 +107,8 @@ export default function RegisterScreen() {
             {loading ? "Creating Account..." : "Create Account"}
           </Text>
         </TouchableOpacity>
+
+        <GoogleSignInButton />
 
         <TouchableOpacity
           style={styles.linkButton}
