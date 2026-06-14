@@ -25,3 +25,26 @@ jobs:
 
       - name: Test
         run: npm run test:coverage -- --ci
+
+  # Hard CI gate for Month 3 (multi-tenancy): cross-workspace isolation must hold.
+  rules-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Firestore emulator runs on the JVM.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - run: npm ci
+
+      - name: Firestore rules tests
+        run: npm run test:rules

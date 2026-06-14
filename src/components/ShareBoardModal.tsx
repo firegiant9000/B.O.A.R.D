@@ -13,8 +13,12 @@ import {
   KeyboardAvoidingView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../config/firebase";
 import * as boardService from "../services/boardService";
 import * as friendService from "../services/friendService";
+import { getWorkspace } from "../services/workspaceService";
+import { BoardRole, WorkspaceRole } from "../types";
 import { captureException } from "../lib/errorReporting";
 
 interface Friend {
@@ -23,14 +27,34 @@ interface Friend {
   email: string;
 }
 
+interface Profile {
+  displayName: string;
+  email: string;
+}
+
+// Phase 6. The roles a board admin can assign in the permissions list, widest first.
+const ROLE_OPTIONS: { role: BoardRole; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { role: "editor", label: "Editor", icon: "create-outline" },
+  { role: "commenter", label: "Commenter", icon: "chatbubble-outline" },
+  { role: "viewer", label: "Viewer", icon: "eye-outline" },
+];
+
 interface ShareBoardModalProps {
   visible: boolean;
   boardId: string;
   inviteCode: string;
   members: string[];
   currentUserId: string;
+  // Phase 6 — Share & permissions. Drives the "Who has access" section and gates
+  // role/revoke controls to board admins. `workspaceId` resolves the role floor.
+  workspaceId: string;
+  ownerId: string;
+  roles: Record<string, BoardRole>;
+  isAdmin: boolean;
   onClose: () => void;
   onMemberAdded: (uid: string) => void;
+  /** Board access (members and/or per-board role overrides) changed. */
+  onAccessChanged: (next: { members: string[]; roles: Record<string, BoardRole> }) => void;
 }
 
 export default function ShareBoardModal({
@@ -39,8 +63,13 @@ export default function ShareBoardModal({
   inviteCode,
   members,
   currentUserId,
+  workspaceId,
+  ownerId,
+  roles,
+  isAdmin,
   onClose,
   onMemberAdded,
+  onAccessChanged,
 }: ShareBoardModalProps) {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(false);
@@ -50,11 +79,51 @@ export default function ShareBoardModal({
   const [emailStatus, setEmailStatus] = useState<{ type: "error" | "success"; msg: string } | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
   const [localMembers, setLocalMembers] = useState<string[]>(members);
+  // Phase 6 — Share & permissions state.
+  const [localRoles, setLocalRoles] = useState<Record<string, BoardRole>>(roles);
+  const [wsMembers, setWsMembers] = useState<Record<string, WorkspaceRole>>({});
+  const [profiles, setProfiles] = useState<Record<string, Profile>>({});
+  const [roleBusyUid, setRoleBusyUid] = useState<string | null>(null);
 
-  // Sync member list when prop changes
+  // Sync member/role lists when props change
   useEffect(() => {
     setLocalMembers(members);
   }, [members]);
+  useEffect(() => {
+    setLocalRoles(roles);
+  }, [roles]);
+
+  // Load the board's workspace role map (for the role floor) when the modal opens.
+  useEffect(() => {
+    if (!visible || !workspaceId) {
+      setWsMembers({});
+      return;
+    }
+    getWorkspace(workspaceId)
+      .then((ws) => setWsMembers(ws?.members ?? {}))
+      .catch((e) => captureException(e, { op: "ShareBoardModal.getWorkspace" }));
+  }, [visible, workspaceId]);
+
+  // Resolve display names/emails for every current member of the access list.
+  const memberKey = localMembers.join(",");
+  useEffect(() => {
+    if (!visible || localMembers.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      localMembers.map(async (uid) => {
+        const snap = await getDoc(doc(db, "users", uid));
+        const data = snap.exists() ? snap.data() : {};
+        return [uid, { displayName: data.displayName ?? data.email ?? "User", email: data.email ?? "" }] as const;
+      })
+    )
+      .then((entries) => {
+        if (!cancelled) setProfiles(Object.fromEntries(entries));
+      })
+      .catch((e) => captureException(e, { op: "ShareBoardModal.getProfiles" }));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, memberKey]);
 
   // Load friends when modal opens
   useEffect(() => {
@@ -130,6 +199,57 @@ export default function ShareBoardModal({
     }
   };
 
+  // The role a member would have with no per-board override (the workspace floor).
+  const workspaceDefault = (uid: string): BoardRole =>
+    wsMembers[uid] && wsMembers[uid] !== "viewer" ? "editor" : "viewer";
+
+  // Effective role shown in the access list, via the shared resolver.
+  const effectiveRoleOf = (uid: string): BoardRole | undefined =>
+    boardService.effectiveBoardRole(
+      { workspaceId, ownerId, members: localMembers, roles: localRoles },
+      { members: wsMembers },
+      uid
+    );
+
+  const handleSetRole = async (uid: string, role: BoardRole) => {
+    setRoleBusyUid(uid);
+    try {
+      // Clear the override when the choice matches the workspace default; keep the
+      // `roles` map free of redundant entries (mirrors removeBoardRole semantics).
+      const next = { ...localRoles };
+      if (role === workspaceDefault(uid)) {
+        await boardService.removeBoardRole(boardId, uid);
+        delete next[uid];
+      } else {
+        await boardService.setBoardRole(boardId, uid, role);
+        next[uid] = role;
+      }
+      setLocalRoles(next);
+      onAccessChanged({ members: localMembers, roles: next });
+    } catch (e) {
+      captureException(e, { op: "ShareBoardModal.setRole" });
+    } finally {
+      setRoleBusyUid(null);
+    }
+  };
+
+  const handleRevoke = async (uid: string) => {
+    setRoleBusyUid(uid);
+    try {
+      await boardService.removeMemberById(boardId, uid);
+      const nextMembers = localMembers.filter((m) => m !== uid);
+      const nextRoles = { ...localRoles };
+      delete nextRoles[uid];
+      setLocalMembers(nextMembers);
+      setLocalRoles(nextRoles);
+      onAccessChanged({ members: nextMembers, roles: nextRoles });
+    } catch (e) {
+      captureException(e, { op: "ShareBoardModal.revoke" });
+    } finally {
+      setRoleBusyUid(null);
+    }
+  };
+
   const handleClose = () => {
     setEmail("");
     setEmailStatus(null);
@@ -161,7 +281,7 @@ export default function ShareBoardModal({
             <View style={styles.iconWrap}>
               <Ionicons name="people-outline" size={20} color="#2563eb" />
             </View>
-            <Text style={styles.title}>Share Board</Text>
+            <Text style={styles.title}>Share &amp; Permissions</Text>
             <TouchableOpacity onPress={handleClose} hitSlop={8}>
               <Ionicons name="close" size={22} color="#666" />
             </TouchableOpacity>
@@ -191,6 +311,82 @@ export default function ShareBoardModal({
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
+            {/* Who has access (Phase 6) */}
+            <Text style={styles.label}>Who Has Access</Text>
+            {localMembers.map((uid) => {
+              const isOwnerRow = uid === ownerId;
+              const isSelf = uid === currentUserId;
+              const role = effectiveRoleOf(uid) ?? "viewer";
+              const wsViewer = wsMembers[uid] === "viewer";
+              const profile = profiles[uid];
+              const name = profile?.displayName ?? "…";
+              // Owners are always editors and can't be revoked. Admins manage
+              // everyone else; non-admins see a read-only role chip.
+              const editable = isAdmin && !isOwnerRow;
+              return (
+                <View key={uid} style={styles.accessRow}>
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{name.charAt(0).toUpperCase()}</Text>
+                  </View>
+                  <View style={styles.friendInfo}>
+                    <Text style={styles.friendName} numberOfLines={1}>
+                      {name}
+                      {isSelf ? " (you)" : ""}
+                      {isOwnerRow ? " · Owner" : ""}
+                    </Text>
+                    {!!profile?.email && (
+                      <Text style={styles.friendEmail} numberOfLines={1}>{profile.email}</Text>
+                    )}
+                    {editable ? (
+                      <View style={styles.roleChips}>
+                        {ROLE_OPTIONS.map((opt) => {
+                          // Floor rule: a workspace viewer can't be made an editor.
+                          const blocked = opt.role === "editor" && wsViewer;
+                          const selected = role === opt.role;
+                          return (
+                            <TouchableOpacity
+                              key={opt.role}
+                              style={[
+                                styles.roleChip,
+                                selected && styles.roleChipActive,
+                                blocked && styles.roleChipBlocked,
+                              ]}
+                              disabled={blocked || roleBusyUid === uid}
+                              onPress={() => handleSetRole(uid, opt.role)}
+                            >
+                              <Text style={[styles.roleChipText, selected && styles.roleChipTextActive]}>
+                                {opt.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ) : (
+                      <View style={styles.roleBadge}>
+                        <Text style={styles.roleBadgeText}>
+                          {role.charAt(0).toUpperCase() + role.slice(1)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  {editable && (
+                    roleBusyUid === uid ? (
+                      <ActivityIndicator size="small" color="#2563eb" />
+                    ) : (
+                      <TouchableOpacity onPress={() => handleRevoke(uid)} hitSlop={8}>
+                        <Ionicons name="person-remove-outline" size={18} color="#ef4444" />
+                      </TouchableOpacity>
+                    )
+                  )}
+                </View>
+              );
+            })}
+            {wsMembers && Object.keys(wsMembers).length > 0 && (
+              <Text style={styles.hint}>
+                Workspace viewers are limited to Commenter on any board.
+              </Text>
+            )}
+
             {/* Add by email */}
             <Text style={styles.label}>Add by Email</Text>
             <View style={styles.inputRow}>
@@ -475,6 +671,55 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
     borderColor: "#e5e7eb",
+  },
+  accessRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    gap: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#eef0f3",
+  },
+  roleChips: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 6,
+  },
+  roleChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    backgroundColor: "#fff",
+  },
+  roleChipActive: {
+    backgroundColor: "#2563eb",
+    borderColor: "#2563eb",
+  },
+  roleChipBlocked: {
+    opacity: 0.35,
+  },
+  roleChipText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#444",
+  },
+  roleChipTextActive: {
+    color: "#fff",
+  },
+  roleBadge: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "#eef2ff",
+  },
+  roleBadgeText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#4338ca",
   },
   friendRowAdded: {
     backgroundColor: "#f0fdf4",

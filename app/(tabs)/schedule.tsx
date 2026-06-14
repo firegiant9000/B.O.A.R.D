@@ -14,6 +14,7 @@ import {
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
+import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
 import { Session } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
@@ -387,9 +388,10 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Screen header */}
+      {/* Screen header — workspace switcher as the title (Phase 3), consistent
+          with the Boards tab top bar. */}
       <View style={styles.screenHeader}>
-        <Text style={styles.screenTitle}>Schedule</Text>
+        <WorkspaceSwitcher />
         <TouchableOpacity
           style={styles.joinCodeBtn}
           onPress={() => setJoinModalVisible(true)}

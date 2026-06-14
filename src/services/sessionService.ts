@@ -16,6 +16,7 @@ import {
 import { db } from "../config/firebase";
 import { Session } from "../types";
 import { randomCode } from "../lib/secureRandom";
+import { assertQuota } from "./quotaService";
 
 const sessionsRef = collection(db, "sessions");
 
@@ -29,6 +30,9 @@ function generateJoinCode(): string {
 function mapSession(id: string, data: any): Session {
   return {
     id,
+    // "" marks a legacy/unmigrated session (see Session.workspaceId); readers below
+    // treat it as belonging to the active workspace during the migration window.
+    workspaceId: data.workspaceId ?? "",
     boardId: data.boardId,
     boardTitle: data.boardTitle ?? "",
     title: data.title,
@@ -49,6 +53,7 @@ function mapSession(id: string, data: any): Session {
 export async function createSession(
   data: Omit<Session, "id" | "createdAt">
 ): Promise<string> {
+  await assertQuota(data.workspaceId, "session");
   const { summary, joinCode: _jc, ...rest } = data;
   const payload: Record<string, any> = {
     ...rest,
@@ -130,8 +135,23 @@ export async function getSessionsForUser(userId: string): Promise<Session[]> {
 /** Alias used by week-6 schedule screen. */
 export const getUserSessions = getSessionsForUser;
 
-/** Returns upcoming sessions (scheduledAt >= now) for the given user. Used by the boards index. */
-export async function getUpcomingSessions(userId: string): Promise<Session[]> {
+// Migration-tolerant workspace scoping (Phase 4), mirroring boardService.inWorkspace.
+// A session matches when it's in the active workspace OR is still unscoped (legacy,
+// pre-Phase-9-backfill). Filtering client-side rather than adding a compound
+// `where('workspaceId','==',ws)` avoids silently dropping legacy sessions before the
+// backfill runs and avoids a new composite index mid-migration. Access itself is
+// enforced by the security rules; this filter is list scoping only.
+// TODO(phase-9-cutover): drop the `!s.workspaceId` legacy clause once the migration
+// has backfilled every session and the soak window closes.
+function inWorkspace(workspaceId: string | undefined) {
+  return (s: Session) => !workspaceId || s.workspaceId === workspaceId || !s.workspaceId;
+}
+
+/** Returns upcoming sessions (scheduledAt >= now) for the given user, optionally scoped to a workspace. Used by the boards index. */
+export async function getUpcomingSessions(
+  userId: string,
+  workspaceId?: string
+): Promise<Session[]> {
   const now = Timestamp.fromDate(new Date());
 
   const [createdQuery, participantQuery] = await Promise.all([
@@ -163,9 +183,9 @@ export async function getUpcomingSessions(userId: string): Promise<Session[]> {
     }
   }
 
-  return Array.from(sessionMap.values()).sort(
-    (a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime()
-  );
+  return Array.from(sessionMap.values())
+    .filter(inWorkspace(workspaceId))
+    .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
 }
 
 export async function updateSession(

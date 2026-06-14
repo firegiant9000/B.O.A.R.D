@@ -7,6 +7,7 @@ import {
   useShareIntentContext,
 } from "expo-share-intent";
 import { AuthProvider } from "../src/contexts/AuthContext";
+import { WorkspaceProvider } from "../src/contexts/WorkspaceContext";
 import { useAuth } from "../src/hooks/useAuth";
 import LoadingScreen from "../src/components/LoadingScreen";
 import ErrorBoundary from "../src/components/ErrorBoundary";
@@ -19,6 +20,7 @@ import {
   registerForPushNotifications,
   configureForegroundHandler,
   addSessionTapListener,
+  addMentionTapListener,
 } from "../src/services/notificationService";
 import { loadOpenAIKey } from "../src/services/aiService";
 
@@ -100,6 +102,17 @@ function RootNavigator() {
     return () => unsubscribe();
   }, [router]);
 
+  // Deep-link a tapped mention notification to the board it lives on (Phase 10).
+  useEffect(() => {
+    let unsubscribe = () => {};
+    addMentionTapListener((data) => {
+      if (data.boardId) router.push(`/board/${data.boardId}`);
+    }).then((fn) => {
+      unsubscribe = fn;
+    });
+    return () => unsubscribe();
+  }, [router]);
+
   useEffect(() => {
     if (loading) return;
 
@@ -127,6 +140,8 @@ function RootNavigator() {
       <Stack.Screen name="share" options={{ presentation: "modal" }} />
       <Stack.Screen name="session/create" options={{ presentation: "modal" }} />
       <Stack.Screen name="session/[id]" options={{ presentation: "modal" }} />
+      {/* In-app notifications inbox (Phase 10). */}
+      <Stack.Screen name="notifications" options={{ presentation: "modal" }} />
     </Stack>
   );
 }
@@ -139,9 +154,14 @@ function RootLayout() {
       <GestureHandlerRootView style={{ flex: 1 }}>
         <ErrorBoundary>
           <AuthProvider>
-            <RootNavigator />
-            {/* Web-only PWA install banner; renders null on native (Phase 5). */}
-            <PWAInstallPrompt />
+            {/* WorkspaceProvider sits under AuthProvider (it reads the signed-in
+                user) and above the navigator so the active-workspace switcher and
+                workspace-scoped reads are available everywhere (Phase 3). */}
+            <WorkspaceProvider>
+              <RootNavigator />
+              {/* Web-only PWA install banner; renders null on native (Phase 5). */}
+              <PWAInstallPrompt />
+            </WorkspaceProvider>
           </AuthProvider>
         </ErrorBoundary>
       </GestureHandlerRootView>

@@ -120,6 +120,7 @@ export default function CreateSessionScreen() {
         await sessionService.createSession({
           title: title.trim(),
           description: description.trim(),
+          workspaceId: selectedBoard.workspaceId,
           boardId: selectedBoard.id,
           boardTitle: selectedBoard.title,
           scheduledAt: date,

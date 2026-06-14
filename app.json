@@ -15,7 +15,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.adaptivesoftware.board",
-      "associatedDomains": ["applinks:boardapp.example.com"]
+      "associatedDomains": [
+        "applinks:boardapp.example.com"
+      ]
     },
     "android": {
       "package": "com.adaptivesoftware.board",
@@ -78,10 +80,16 @@
             "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
             "NSExtensionActivationSupportsText": true
           },
-          "androidIntentFilters": ["image/*", "text/*"],
-          "androidMultiIntentFilters": ["image/*"]
+          "androidIntentFilters": [
+            "image/*",
+            "text/*"
+          ],
+          "androidMultiIntentFilters": [
+            "image/*"
+          ]
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "firebase": {

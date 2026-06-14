@@ -12,11 +12,16 @@ jest.mock("../../config/firebase", () => ({
   db: {},
   auth: { __type: "auth", currentUser: null },
 }));
+jest.mock("../workspaceService", () => ({
+  ensurePersonalWorkspace: jest.fn(async () => "ws-1"),
+}));
 
 import * as fbAuth from "firebase/auth";
 import * as fs from "firebase/firestore";
+import { makeDocSnap } from "../../test-utils/firestoreMock";
 import { auth } from "../../config/firebase";
 import * as authService from "../authService";
+import { ensurePersonalWorkspace } from "../workspaceService";
 
 const createUser = fbAuth.createUserWithEmailAndPassword as jest.Mock;
 const signInFb = fbAuth.signInWithEmailAndPassword as jest.Mock;
@@ -25,10 +30,14 @@ const sendEmailVerification = fbAuth.sendEmailVerification as jest.Mock;
 const sendPasswordResetEmail = fbAuth.sendPasswordResetEmail as jest.Mock;
 const reload = fbAuth.reload as jest.Mock;
 const setDoc = fs.setDoc as jest.Mock;
+const getDoc = fs.getDoc as jest.Mock;
+const ensurePersonalWorkspaceMock = ensurePersonalWorkspace as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   (auth as any).currentUser = null;
+  // Default: no profile doc yet, so provisioning writes one.
+  getDoc.mockResolvedValue(makeDocSnap("u1", null));
 });
 
 describe("signUp", () => {
@@ -47,12 +56,75 @@ describe("signUp", () => {
     expect(data.createdAt).toBe("__serverTimestamp__");
   });
 
+  it("auto-creates the new user's personal workspace", async () => {
+    const user = { uid: "u1", email: "a@x.z" };
+    createUser.mockResolvedValueOnce({ user });
+
+    await authService.signUp("a@x.z", "pw", "Arlo");
+
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledTimes(1);
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith("u1");
+  });
+
   it("still resolves when the verification email fails to send", async () => {
     const user = { uid: "u1", email: "a@x.z" };
     createUser.mockResolvedValueOnce({ user });
     sendEmailVerification.mockRejectedValueOnce(new Error("rate limited"));
 
     await expect(authService.signUp("a@x.z", "pw", "Arlo")).resolves.toBe(user);
+  });
+
+  it("still resolves when the personal-workspace write fails", async () => {
+    const user = { uid: "u1", email: "a@x.z" };
+    createUser.mockResolvedValueOnce({ user });
+    ensurePersonalWorkspaceMock.mockRejectedValueOnce(
+      new Error("ws write lagged")
+    );
+
+    await expect(authService.signUp("a@x.z", "pw", "Arlo")).resolves.toBe(user);
+  });
+});
+
+describe("ensureUserProvisioned", () => {
+  it("writes the profile doc and personal workspace when the doc is absent", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+    const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+    await authService.ensureUserProvisioned(user as any);
+
+    const [ref, data] = setDoc.mock.calls[0];
+    expect(ref.path).toEqual(["users", "u1"]);
+    expect(data).toMatchObject({ email: "g@x.z", displayName: "Gina" });
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith("u1");
+  });
+
+  it("does not overwrite an existing profile doc but still ensures the workspace", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { email: "g@x.z" }));
+    const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+    await authService.ensureUserProvisioned(user as any);
+
+    expect(setDoc).not.toHaveBeenCalled();
+    expect(ensurePersonalWorkspaceMock).toHaveBeenCalledWith("u1");
+  });
+
+  it("prefers an explicit displayName over the auth record's", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+    const user = { uid: "u1", email: "g@x.z", displayName: "stale" };
+
+    await authService.ensureUserProvisioned(user as any, "Override");
+
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ displayName: "Override" });
+  });
+
+  it("resolves even when the workspace write fails", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+    ensurePersonalWorkspaceMock.mockRejectedValueOnce(new Error("lagged"));
+    const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+    await expect(
+      authService.ensureUserProvisioned(user as any)
+    ).resolves.toBeUndefined();
   });
 });
 

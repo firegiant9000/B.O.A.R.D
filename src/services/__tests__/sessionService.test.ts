@@ -4,6 +4,7 @@ jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
 import * as sessionService from "../sessionService";
+import * as quotaService from "../quotaService";
 import { Session } from "../../types";
 
 const addDoc = fs.addDoc as jest.Mock;
@@ -12,6 +13,7 @@ const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
 
 const baseSession: Omit<Session, "id" | "createdAt"> = {
+  workspaceId: "ws-1",
   boardId: "board-1",
   boardTitle: "Board",
   title: "Study",
@@ -45,6 +47,22 @@ describe("createSession", () => {
     addDoc.mockResolvedValueOnce({ id: "sess-1" });
     await sessionService.createSession(baseSession);
     expect(addDoc.mock.calls[0][1]).not.toHaveProperty("summary");
+  });
+
+  it("stamps the inherited workspaceId onto the session (Phase 4)", async () => {
+    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+    await sessionService.createSession(baseSession);
+    expect(addDoc.mock.calls[0][1].workspaceId).toBe("ws-1");
+  });
+
+  it("invokes the quota choke point with the inherited workspace (Phase 5)", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+
+    await sessionService.createSession(baseSession);
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "session");
+    spy.mockRestore();
   });
 });
 
@@ -109,6 +127,25 @@ describe("getUpcomingSessions", () => {
     const sessions = await sessionService.getUpcomingSessions("u1");
 
     expect(sessions.map((s) => s.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("scopes to the active workspace but keeps legacy (unscoped) sessions (Phase 4)", async () => {
+    const t1 = new Date("2026-07-01");
+    const t2 = new Date("2026-08-01");
+    const t3 = new Date("2026-09-01");
+    getDocs
+      .mockResolvedValueOnce(
+        makeQuerySnap([
+          ["s1", { scheduledAt: ts(t1), createdById: "u1", workspaceId: "ws-1" }],
+          ["s2", { scheduledAt: ts(t2), createdById: "u1", workspaceId: "ws-2" }], // other ws
+          ["s3", { scheduledAt: ts(t3), createdById: "u1" }], // legacy, no workspaceId
+        ])
+      )
+      .mockResolvedValueOnce(makeQuerySnap([]));
+
+    const sessions = await sessionService.getUpcomingSessions("u1", "ws-1");
+
+    expect(sessions.map((s) => s.id)).toEqual(["s1", "s3"]);
   });
 });
 
