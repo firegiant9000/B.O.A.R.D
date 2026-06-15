@@ -1,4 +1,5 @@
 node_modules/
-lib/
+# Anchor to the functions root: only ignore the compiled-output dir, not src/lib/.
+/lib/
 *.log
 .runtimeconfig.json
