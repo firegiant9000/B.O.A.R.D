@@ -49,3 +49,30 @@ jobs:
 
       - name: Firestore rules tests
         run: npm run test:rules
+
+  # Month 4 (Phase 1): the Cloud Functions AI gateway is a second test + build
+  # surface. Builds the TS (catches type errors the root tsc skips via exclude)
+  # and runs the gateway unit tests (prompt assembly, rate-limit math, handler guards).
+  functions:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: functions
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - run: npm ci
+
+      - name: Type check + build
+        run: npm run build
+
+      - name: Test
+        run: npm test

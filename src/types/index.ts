@@ -10,7 +10,17 @@ export interface UserProfile {
   // user doc. Optional / migration-tolerant: absent ⇒ DEFAULT_NOTIFICATION_PREF
   // (push on mention, daily email digest opted-in). See notificationService.
   notificationPref?: NotificationPref;
+  // Month 4 Phase 9 (roadmap item 8). How auto-perfect treats a freehand stroke
+  // the geometry classifier recognizes as a clean primitive. Optional /
+  // migration-tolerant: absent ⇒ DEFAULT_SHAPE_RECOGNITION_MODE ("ask"). See
+  // shapeRecognitionService.
+  shapeRecognitionPref?: ShapeRecognitionMode;
 }
+
+// Month 4 Phase 9. Per-user auto-perfect behavior: "always" silently swaps the
+// stroke for the clean primitive, "ask" offers a discreet "perfect it?" prompt,
+// "never" disables recognition (no geometry runs on stroke end).
+export type ShapeRecognitionMode = "always" | "ask" | "never";
 
 // Phase 10 (roadmap item 9). Notification preferences. `pushOnMention` gates the
 // Expo push fired when someone @-mentions the user in a comment; `emailDigest` is
@@ -151,6 +161,29 @@ export interface BoardPresence {
   lastSeen: Date;
 }
 
+// Live cursor (Month 4, Phase 6). An ephemeral pointer broadcast on the
+// boards/{id}/cursors/{uid} side channel — never persisted alongside canvas
+// content, so cursor churn stays off the element-tree listeners (Appendix A.4).
+export interface CursorPresence {
+  userId: string;
+  displayName: string;
+  // Board-space pointer position.
+  x: number;
+  y: number;
+  // Active tool, for the per-cursor icon.
+  tool: string;
+  // Client epoch ms of the last update — drives staleness filtering on read
+  // (Firestore has no RTDB-style onDisconnect to clear an abandoned cursor).
+  updatedAt: number;
+  // Phase 7 (follow mode). The author's current viewport, broadcast on the same
+  // side channel so a follower's camera can mirror their pan/zoom. Absent until
+  // the author moves a pan/zoom-capable client.
+  viewport?: { x: number; y: number; scale: number };
+  // The userId this author is currently following, or null. Broadcast so peers
+  // can break a follow cycle (A follows B while B follows A).
+  following?: string | null;
+}
+
 export interface Session {
   id: string;
   // Phase 4 (multi-tenancy). The workspace this session belongs to, inherited from
@@ -170,9 +203,45 @@ export interface Session {
   participantIds: string[];
   status: "scheduled" | "active" | "ended";
   joinCode?: string;
-  summary?: string;
+  // Phase 3 (Month 4): the AI summary is a structured artifact. Sessions
+  // summarized before Phase 3 carry a plain string on disk, so readers must
+  // tolerate both forms (schema-version tolerance — no destructive migration).
+  summary?: string | SessionSummary;
   canvasSnapshot?: string;
+  // Phase 4 (Month 4) session lifecycle. All optional / migration-tolerant — a
+  // session created before this phase simply lacks them on disk:
+  //  - `agenda`: free-text plan editable in the lobby (pre-session).
+  //  - `startedAt`: stamped when the session transitions scheduled → active
+  //    (also at create time for sessions started directly). Anchors the
+  //    in-session elapsed timer; readers fall back to `scheduledAt` when absent.
+  //  - `endedAt`: stamped at active → ended. With `startedAt` it yields the
+  //    real elapsed duration on the recap; absent ⇒ fall back to durationMinutes.
+  //  - `participants`: a frozen name/email snapshot of who was in the session,
+  //    captured at end so the recap renders without a live user lookup and is
+  //    stable even if profiles later change. Includes the creator.
+  agenda?: string;
+  startedAt?: Date;
+  endedAt?: Date;
+  participants?: ParticipantSnapshot[];
   createdAt: Date;
+}
+
+/** Phase 4: a frozen, denormalized record of one session participant, captured at
+ *  end time so the recap doesn't depend on a live profile read (and stays correct
+ *  if the user later renames). */
+export interface ParticipantSnapshot {
+  uid: string;
+  displayName: string;
+  email: string;
+}
+
+/** Structured AI session summary (Appendix B.2). Mirrors the Cloud Function
+ *  shape in `functions/src/ai/summaryPrompt.ts`. */
+export interface SessionSummary {
+  tldr: string;
+  actionItems: string[];
+  decisions: string[];
+  openQuestions: string[];
 }
 
 export interface TextNote {
@@ -363,3 +432,8 @@ export interface AppNotification {
   read: boolean;
   createdAt: Date;
 }
+
+// Embeddable boards (Month 4, Phase 8). The scope an embed token grants. Phase 8
+// ships read-only ('view'); 'edit' is reserved for M5/M6 host integrations and is
+// not yet mintable client-side.
+export type EmbedScope = "view" | "edit";
