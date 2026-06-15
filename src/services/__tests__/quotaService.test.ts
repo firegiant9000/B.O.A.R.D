@@ -5,7 +5,7 @@ import {
   QuotaResource,
 } from "../quotaService";
 
-const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary"];
+const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary", "aiCall"];
 
 describe("checkQuota (Phase 5 contract: allows everyone today)", () => {
   it.each(RESOURCES)("returns true for resource %s", async (resource) => {
