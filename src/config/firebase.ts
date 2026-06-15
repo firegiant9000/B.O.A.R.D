@@ -7,6 +7,7 @@ import {
   persistentMultipleTabManager,
 } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { getFunctions } from "firebase/functions";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
@@ -95,3 +96,11 @@ export const db = createDb();
  * Firebase config above, so it follows the same dev/prod env swap.
  */
 export const storage = getStorage(app);
+
+/**
+ * Cloud Functions (Month 4, Phase 1 — AI gateway). Region must match the
+ * functions' `setGlobalOptions({ region })` so the callable resolves the right
+ * endpoint. The AI key now lives only in the function runtime; the client calls
+ * `generateSummary` through this handle instead of hitting OpenAI directly.
+ */
+export const functions = getFunctions(app, "us-central1");

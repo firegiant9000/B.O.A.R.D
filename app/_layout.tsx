@@ -83,13 +83,20 @@ function RootNavigator() {
 
   useIncomingShare(!!user);
 
+  // Embed route (Phase 8) drives its own scoped, read-only sign-in and must not
+  // be hijacked by the normal auth flow — no login redirect, no push-permission
+  // prompt for the anonymous embed identity.
+  const inEmbed = segments[0] === "embed";
+
   // Register for push notifications and load remote API key once authenticated
+  // (skipped for an embed identity — it has no API key and shouldn't be prompted
+  // for notification permission inside a host iframe).
   useEffect(() => {
-    if (user) {
+    if (user && !inEmbed) {
       registerForPushNotifications(user.uid);
       loadOpenAIKey();
     }
-  }, [user?.uid]);
+  }, [user?.uid, inEmbed]);
 
   // Deep-link a tapped session notification straight to that session.
   useEffect(() => {
@@ -116,6 +123,10 @@ function RootNavigator() {
   useEffect(() => {
     if (loading) return;
 
+    // Embed pages are exempt from the auth gate: an unauthenticated visitor must
+    // reach the route so it can exchange its token for a scoped identity.
+    if (inEmbed) return;
+
     const inAuthGroup = segments[0] === "(auth)";
 
     if (!user && !inAuthGroup) {
@@ -123,7 +134,7 @@ function RootNavigator() {
     } else if (user && inAuthGroup) {
       router.replace("/(tabs)");
     }
-  }, [user, loading, segments]);
+  }, [user, loading, segments, inEmbed]);
 
   if (loading) {
     return <LoadingScreen />;
@@ -135,6 +146,8 @@ function RootNavigator() {
       <Stack.Screen name="(tabs)" />
       {/* Universal/App Link landing: https://<domain>/b/{inviteCode} (Phase 4). */}
       <Stack.Screen name="b/[code]" />
+      {/* Embeddable read-only board: https://<domain>/embed/b/{boardId}?token=… (Phase 8). */}
+      <Stack.Screen name="embed/b/[id]" />
       <Stack.Screen name="board/[id]" options={{ presentation: "modal" }} />
       {/* Share-target board picker for an inbound image share (Phase 4). */}
       <Stack.Screen name="share" options={{ presentation: "modal" }} />
@@ -142,6 +155,8 @@ function RootNavigator() {
       <Stack.Screen name="session/[id]" options={{ presentation: "modal" }} />
       {/* In-app notifications inbox (Phase 10). */}
       <Stack.Screen name="notifications" options={{ presentation: "modal" }} />
+      {/* Read-only AI usage / cost telemetry page (Month 4, Phase 2). */}
+      <Stack.Screen name="ai-usage" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

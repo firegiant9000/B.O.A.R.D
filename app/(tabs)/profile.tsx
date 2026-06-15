@@ -12,7 +12,7 @@ import {
   RefreshControl,
   Switch,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { FriendRequest, NotificationPref } from "../../src/types";
@@ -27,6 +27,7 @@ import { showAlert } from "../../src/utils/alerts";
 
 export default function ProfileScreen() {
   const { userProfile, user, signOut } = useAuth();
+  const router = useRouter();
 
   const [pendingRequests, setPendingRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<FriendRequest[]>([]);
@@ -413,6 +414,14 @@ export default function ProfileScreen() {
             <Ionicons name="checkmark" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
+
+        {/* AI usage / cost telemetry (Month 4, Phase 2). Owner/admin gate is
+            enforced on the page itself + in firestore.rules. */}
+        <TouchableOpacity style={styles.linkRow} onPress={() => router.push("/ai-usage")}>
+          <Ionicons name="stats-chart-outline" size={18} color="#2563eb" />
+          <Text style={styles.linkRowText}>View AI usage & cost</Text>
+          <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+        </TouchableOpacity>
       </View>
 
       {/* ── Blocked Users section ── */}
@@ -722,6 +731,21 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     marginBottom: 12,
     lineHeight: 18,
+  },
+  linkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#f1f5f9",
+  },
+  linkRowText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2563eb",
   },
   // ── Error banner ──
   errorBanner: {

@@ -346,6 +346,53 @@ This is the foundation for everything in Phase 2 and 3. **Do not skip it. Do not
 
 **Goal:** Make the session experience the reason someone chooses B.O.A.R.D over Excalidraw.
 
+**Status:** Code-complete on `feature/month-4-sessions-ai`; remaining work is
+deploy + on-device verification, not implementation. Phase-by-phase plan lives in
+[`docs/month-4-phases.md`](docs/month-4-phases.md). All 12 scope items have shipped
+code across 7 commits; app `tsc` is clean and the suites are green (app: 44 suites /
+512 tests; functions: 10 suites / 109 tests). The exit criteria are **not yet met** —
+they depend on a Cloud Functions deploy, prod flag cutover, and a real Android device.
+
+**Implementation status (this branch):**
+- ✅ **Code-complete (all 12 scope items):** Cloud Functions AI gateway (1), AI quota
+  gate + cost telemetry (12), structured summary v2 + cross-platform capture (3),
+  session lifecycle UX (2), session history (4), embeddable boards via signed JWT (5),
+  live cursors (6), follow-user mode (7), client-side shape recognition (8), OCR (9),
+  explain selection (10), text→diagram (11). All AI features ride the gateway behind
+  build-time flags that **default OFF** for a safe cutover.
+- ⏸️ **Deferred by design:** real-time **voice/AV → M5** (the meeting-app integration
+  is the A/V story). **True `connector` element type → later** (text→diagram v1 emits
+  `line`/`arrow` shapes; roadmap stretch). **Quota enforcement → M5** (`checkQuota`
+  stays a soft allow-all this month; the meter and call sites are live).
+
+**Remaining to close Month 4 (deploy + verification — nothing code-blocked on a dev machine):**
+1. **Deploy `functions/`** to staging then prod. Requires **Firebase Blaze**
+   (one month earlier than the §5 budget line) and three secrets set via
+   `defineSecret`: `OPENAI_API_KEY`, `GOOGLE_VISION_API_KEY`, `EMBED_JWT_SECRET`.
+   Runbook: [`docs/functions-deploy-runbook.md`](docs/functions-deploy-runbook.md).
+2. **Set hard spend caps** (OpenAI + Google Cloud dashboards) *before* first deploy,
+   per §5 cost guardrails.
+3. **Flip the gateway flags in prod** (`EXPO_PUBLIC_AI_GATEWAY`, `_OCR`, `_EXPLAIN`,
+   `_DIAGRAM`) and verify each AI path end-to-end against a real workspace.
+4. **Legacy OpenAI-key removal (follow-up PR, gated on step 3).** The client key path
+   + `users/{uid}/private/apiKeys` + the key UI in `profile.tsx` are still present and
+   are the default until the flags flip. Exit criterion *"OpenAI key fully removed from
+   client"* is **not met** until this cleanup ships.
+5. **Mobile snapshot capture — verify on a real Android (highest technical risk).**
+   Phase 3 uses `react-native-svg`'s `toDataURL` instead of `react-native-view-shot`
+   (no new dependency). Confirm the native snapshot is legible and that **image
+   elements (`<Image href>`) actually render** in it; if not, revisit `view-shot`
+   (needs dependency approval).
+6. **Confirm `test:rules` is green in CI** — covers the embed-token read path (the
+   named embed security risk). Not yet run locally (emulator port conflict).
+7. **Mobile-parity + perf gate (non-negotiable):** exercise every new surface on a
+   real mid-range Android, run the perf check vs `docs/perf-baseline.md`, attach a
+   screenshot to the PR. Watch the **live-cursor layer** specifically — verify the
+   no-element-tree-re-render rule holds at 20Hz and the Firestore cursor-write volume
+   stays within budget (drop in the Ably/Liveblocks fallback if it doesn't).
+8. **Run the roadmap exit validation:** 5+ real sessions by non-team users, summary
+   cost < $0.02/session avg (via the Phase 2 cost log), quality ≥ 3.5/5.
+
 **Scope:**
 1. **Cloud Function for AI**
    - Move OpenAI calls to a Firebase Cloud Function. The function holds the API key, is rate-limited per workspace, and writes the summary back to the session doc.

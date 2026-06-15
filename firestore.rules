@@ -132,6 +132,20 @@ service cloud.firestore {
       return isMemberOfWorkspace(wsId) && workspaceRoleOf(wsId, recipientUid) != null;
     }
 
+    // Month 4, Phase 8 — embed identity. An embed viewer is a visitor with no
+    // account who exchanged a short-lived signed embed token for a Firebase custom
+    // token carrying these claims (functions/src/callable/exchangeEmbedToken.ts).
+    // The claim is board-scoped: it grants READ to exactly the one board it names
+    // and that board's canvas — never another board, and (since the identity is
+    // neither owner nor member) never any write. This is the token-scoped embed
+    // read path the roadmap requires be explicitly rules-tested. `.get(..,default)`
+    // so a normal user's token (no embed claims) reads as false, not an error.
+    function isEmbedViewer(boardId) {
+      return isSignedIn() &&
+        request.auth.token.get('embed', false) == true &&
+        request.auth.token.get('embedBoardId', '') == boardId;
+    }
+
     // ── users ─────────────────────────────────────────────────────────────────
     match /users/{uid} {
       allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
@@ -197,6 +211,26 @@ service cloud.firestore {
                         request.resource.data.workspaceId == workspaceId;
         allow update, delete: if false;
       }
+
+      // AI cost telemetry + rate-limit state (Month 4, Phase 1). Written ONLY by
+      // Cloud Functions via the Admin SDK (which bypasses these rules) — so every
+      // client write is denied here. `aiUsage`/`aiLog` are readable by workspace
+      // owner/admins for the usage page (Phase 2); the `aiRate` token bucket is an
+      // internal limiter doc no client needs to read. This is the "aiLog/aiUsage
+      // reject client writes" gate the rules tests assert.
+      match /aiUsage/{period} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
+      match /aiLog/{callId} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
+      match /aiRate/{bucketId} {
+        allow read, write: if false;
+      }
     }
 
     // ── boards ────────────────────────────────────────────────────────────────
@@ -206,11 +240,13 @@ service cloud.firestore {
       // with no workspaceId keep the board-only gate. Anyone signed-in can still
       // read a board that has an inviteCode (needed for the join-by-code lookup
       // query) — that public-lookup path is intentionally not workspace-gated.
-      allow read:   if isSignedIn() && (
+      allow read:   if (isSignedIn() && (
                       (request.auth.uid == resource.data.ownerId && inBoardWorkspace(resource.data)) ||
                       (request.auth.uid in resource.data.members && inBoardWorkspace(resource.data)) ||
                       resource.data.inviteCode != null
-                    );
+                    )) ||
+                    // Phase 8 — a board-scoped embed token grants read-only access.
+                    isEmbedViewer(boardId);
       // Creator must own the new board AND belong to the workspace it's stamped
       // into (can't plant a board in someone else's workspace). Legacy/no-ws
       // creates still allowed during the migration window.
@@ -242,33 +278,43 @@ service cloud.firestore {
       // viewer/commenter are read-only on the canvas). This is the "viewer write
       // denied" gate the rules tests assert.
       match /paths/{pathId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
       match /notes/{noteId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
       match /textElements/{elementId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
       match /shapes/{shapeId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
       match /images/{imageId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
       match /snapshots/{snapshotId} {
-        allow read:  if isBoardMember(boardId);
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
+      }
+
+      // OCR memoization cache (Month 4, Phase 10). The handwriting-OCR function
+      // keys a result by a hash of the selected stroke ids so a re-run is free.
+      // Written ONLY by the Cloud Function via the Admin SDK (which bypasses these
+      // rules); a client write is denied here, like aiUsage/aiLog. Any board
+      // member may read so the client can surface a cached result.
+      match /ocrCache/{hash} {
+        allow read:  if isBoardMember(boardId);
+        allow write: if false;
       }
 
       // Comments (Phase 7) anchored to canvas elements. Read follows board access
@@ -288,6 +334,15 @@ service cloud.firestore {
 
       // presence — each user manages only their own presence doc
       match /presence/{userId} {
+        allow read:   if isBoardMember(boardId);
+        allow write:  if isBoardMember(boardId) && isOwner(userId);
+      }
+
+      // Live cursors (Month 4, Phase 6) — ephemeral pointer side channel. Any
+      // board member reads; each user writes only their own cursor doc. Kept off
+      // the paths/* collections so cursor jitter never touches the persisted-
+      // state listeners (Appendix A.4). Same own-uid trust model as presence.
+      match /cursors/{userId} {
         allow read:   if isBoardMember(boardId);
         allow write:  if isBoardMember(boardId) && isOwner(userId);
       }

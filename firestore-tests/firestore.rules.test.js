@@ -92,6 +92,7 @@ beforeEach(async () => {
       members: [ALICE, EVIL],
       inviteCode: null,
     });
+    await setDoc(doc(db, "boards/boardPrivate/paths/pP"), { userId: ALICE });
 
     await setDoc(doc(db, "boards/boardLegacy"), {
       // no workspaceId — a board created before the Phase 2 migration
@@ -157,6 +158,17 @@ beforeEach(async () => {
       workspaceId: "wsA",
       boardId: "boardPrivate",
       meta: { title: "Private" },
+    });
+
+    // Month 4 Phase 1 — AI telemetry docs (written by Functions in prod). Seeded
+    // here with rules bypassed to test client read/write access against them.
+    await setDoc(doc(db, "workspaces/wsA/aiUsage/2026-06"), { calls: 3, tokens: 900, costUsd: 0.01 });
+    await setDoc(doc(db, "workspaces/wsA/aiLog/call1"), { uid: ALICE, model: "gpt-3.5-turbo", tokens: 300 });
+    await setDoc(doc(db, "workspaces/wsA/aiRate/bucket"), { tokens: 30, updatedAt: 0 });
+
+    // Phase 10 — an OCR cache entry the function would have written.
+    await setDoc(doc(db, "boards/boardCoded/ocrCache/hash1"), {
+      text: "Hi", confidence: 0.9, source: "vision", model: "google-vision", createdAt: 0,
     });
 
     // Phase 10 — a seeded in-app notification for alice, authored by dave.
@@ -475,6 +487,46 @@ describe("comments", () => {
   });
 });
 
+// ── Month 4 Phase 6: live cursors (member read, own-uid write) ─────────────────
+describe("live cursors", () => {
+  const cursor = (userId) => ({ userId, x: 1, y: 2, tool: "pen", updatedAt: 0 });
+
+  it("a board member reads cursors", async () => {
+    await assertSucceeds(getDoc(doc(db(DAVE), "boards/boardWrite/cursors/alice")));
+  });
+
+  it("a member writes their own cursor doc", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(DAVE), "boards/boardWrite/cursors/dave"), cursor(DAVE))
+    );
+  });
+
+  it("a member cannot write another user's cursor", async () => {
+    await assertFails(
+      setDoc(doc(db(DAVE), "boards/boardWrite/cursors/alice"), cursor(ALICE))
+    );
+  });
+
+  it("a non-member cannot write a cursor", async () => {
+    await assertFails(
+      setDoc(doc(db(BOB), "boards/boardWrite/cursors/bob"), cursor(BOB))
+    );
+  });
+
+  it("a board member outside the workspace cannot read cursors (cross-workspace)", async () => {
+    // evil is in boardPrivate.members but NOT in wsA — the workspace gate denies.
+    await assertFails(getDoc(doc(db(EVIL), "boards/boardPrivate/cursors/alice")));
+  });
+
+  it("a viewer-role member may still write their own cursor (cursors aren't canvas content)", async () => {
+    // frank is demoted to 'viewer' on boardWrite but is still a board member, so
+    // he can broadcast a cursor even though he can't write paths.
+    await assertSucceeds(
+      setDoc(doc(db(FRANK), "boards/boardWrite/cursors/frank"), cursor(FRANK))
+    );
+  });
+});
+
 // ── Phase 8: activity feed (read = workspace member, append-only) ──────────────
 describe("activity feed", () => {
   const event = (actorId, workspaceId) => ({
@@ -610,5 +662,111 @@ describe("in-app notifications", () => {
   it("the owner can dismiss (delete) their notification; others cannot", async () => {
     await assertFails(deleteDoc(doc(db(DAVE), "users/alice/notifications/n1")));
     await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/notifications/n1")));
+  });
+});
+
+// ── Month 4 Phase 1: AI telemetry is Functions-only-write, admin-read ──────────
+// These docs are written by Cloud Functions via the Admin SDK (which bypasses
+// rules); every client write must be denied, and reads are limited to workspace
+// owner/admins. This is the hard gate for the AI-gateway cutover.
+describe("AI telemetry (aiUsage / aiLog / aiRate)", () => {
+  it("the workspace owner reads aiUsage and aiLog", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "workspaces/wsA/aiUsage/2026-06")));
+    await assertSucceeds(getDoc(doc(db(ALICE), "workspaces/wsA/aiLog/call1")));
+  });
+
+  it("a non-admin member cannot read aiUsage or aiLog", async () => {
+    // dave is a plain workspace member, not owner/admin.
+    await assertFails(getDoc(doc(db(DAVE), "workspaces/wsA/aiUsage/2026-06")));
+    await assertFails(getDoc(doc(db(DAVE), "workspaces/wsA/aiLog/call1")));
+  });
+
+  it("a non-member cannot read aiUsage or aiLog", async () => {
+    await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/aiUsage/2026-06")));
+    await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/aiLog/call1")));
+  });
+
+  it("no client can write aiUsage — even the owner", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "workspaces/wsA/aiUsage/2026-07"), { calls: 1 })
+    );
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA/aiUsage/2026-06"), { calls: 99 })
+    );
+  });
+
+  it("no client can write aiLog — even the owner", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "workspaces/wsA/aiLog/forged"), { uid: ALICE, tokens: 1 })
+    );
+  });
+
+  it("the aiRate bucket is fully opaque to clients (no read, no write)", async () => {
+    await assertFails(getDoc(doc(db(ALICE), "workspaces/wsA/aiRate/bucket")));
+    await assertFails(
+      setDoc(doc(db(ALICE), "workspaces/wsA/aiRate/bucket"), { tokens: 999, updatedAt: 0 })
+    );
+  });
+});
+
+// ── Phase 10: OCR cache is member-read, Functions-only-write ───────────────────
+describe("OCR cache (ocrCache)", () => {
+  it("a board member reads a cached OCR result", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "boards/boardCoded/ocrCache/hash1")));
+  });
+
+  it("a non-member cannot read the OCR cache", async () => {
+    await assertFails(getDoc(doc(db(BOB), "boards/boardCoded/ocrCache/hash1")));
+  });
+
+  it("no client can write the OCR cache — even a board member", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "boards/boardCoded/ocrCache/forged"), {
+        text: "x", confidence: 1, source: "vision", model: "google-vision", createdAt: 0,
+      })
+    );
+  });
+});
+
+// ── Phase 8: embed token read path ────────────────────────────────────────────
+// An embed viewer is a custom-token identity carrying { embed, embedBoardId }
+// claims (minted by exchangeEmbedToken after verifying a signed link token). The
+// claim is board-scoped: read-only access to exactly one board + its canvas.
+// `embed:<id>` is the deterministic embed uid (see exchangeEmbedToken.embedUid).
+function embedDb(boardId) {
+  return testEnv
+    .authenticatedContext(`embed:${boardId}`, { embed: true, embedBoardId: boardId, embedScope: "view" })
+    .firestore();
+}
+
+describe("embed token read path", () => {
+  it("an embed viewer reads the board it is scoped to", async () => {
+    await assertSucceeds(getDoc(doc(embedDb("boardPrivate"), "boards/boardPrivate")));
+  });
+
+  it("an embed viewer reads that board's canvas content", async () => {
+    await assertSucceeds(getDoc(doc(embedDb("boardPrivate"), "boards/boardPrivate/paths/pP")));
+  });
+
+  it("an embed viewer cannot write canvas content (read-only)", async () => {
+    await assertFails(
+      setDoc(doc(embedDb("boardPrivate"), "boards/boardPrivate/paths/forged"), { userId: "embed:boardPrivate" })
+    );
+  });
+
+  it("an embed viewer cannot read a different board (board-scoped claim)", async () => {
+    await assertFails(getDoc(doc(embedDb("boardPrivate"), "boards/boardLegacy")));
+    await assertFails(getDoc(doc(embedDb("boardPrivate"), "boards/boardLegacy/paths/p1")));
+  });
+
+  it("an embed viewer cannot edit the board doc or join as a member", async () => {
+    await assertFails(
+      updateDoc(doc(embedDb("boardPrivate"), "boards/boardPrivate"), { title: "hijacked" })
+    );
+  });
+
+  it("a signed-in non-member with no embed claim is still denied (claim is required)", async () => {
+    // BOB is in a different workspace and holds no embed claim — the ordinary gate.
+    await assertFails(getDoc(doc(db(BOB), "boards/boardPrivate")));
   });
 });

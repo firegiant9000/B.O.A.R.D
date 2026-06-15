@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { BoardPresence } from "../types";
 import * as friendService from "../services/friendService";
 import * as boardService from "../services/boardService";
+import { userColor } from "../lib/userColor";
 
 interface BoardUserBarProps {
   presence: BoardPresence[];
@@ -23,12 +24,13 @@ interface BoardUserBarProps {
   adminId?: string;
   boardId?: string;
   onAdminChanged?: (newAdminId: string) => void;
+  // Phase 7 — follow mode. The user currently being followed (if any) and the
+  // toggle callback; when undefined the Follow action is hidden.
+  followingId?: string | null;
+  onFollow?: (userId: string) => void;
 }
 
 type FriendStatus = "idle" | "loading" | "sent" | "friends" | "incoming";
-
-// Distinct colors for guest avatars so they stand out
-const AVATAR_COLORS = ["#7c3aed", "#db2777", "#059669", "#d97706", "#dc2626"];
 
 function formatLastSeen(date: Date): string {
   const diffMs = Date.now() - date.getTime();
@@ -38,12 +40,6 @@ function formatLastSeen(date: Date): string {
   const diffHrs = Math.floor(diffMins / 60);
   if (diffHrs < 24) return `Active ${diffHrs}h ago`;
   return "Active over a day ago";
-}
-
-function avatarColor(userId: string): string {
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) hash = userId.charCodeAt(i) + ((hash << 5) - hash);
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
 export default function BoardUserBar({
@@ -56,6 +52,8 @@ export default function BoardUserBar({
   adminId,
   boardId,
   onAdminChanged,
+  followingId,
+  onFollow,
 }: BoardUserBarProps) {
   const [selectedUser, setSelectedUser] = useState<BoardPresence | null>(null);
   const [friendStatus, setFriendStatus] = useState<FriendStatus>("idle");
@@ -104,6 +102,12 @@ export default function BoardUserBar({
       setFriendStatus("idle");
       Alert.alert("Error", "Failed to send friend request.");
     }
+  };
+
+  const handleFollow = () => {
+    if (!selectedUser || !onFollow) return;
+    onFollow(selectedUser.userId);
+    setSelectedUser(null);
   };
 
   const handleBlock = () => {
@@ -162,7 +166,7 @@ export default function BoardUserBar({
         {visible.map((u) => (
           <TouchableOpacity
             key={u.userId}
-            style={[styles.avatar, { backgroundColor: avatarColor(u.userId) }]}
+            style={[styles.avatar, { backgroundColor: userColor(u.userId) }]}
             onPress={() => handleSelectUser(u)}
           >
             <Text style={styles.avatarText}>{u.displayName.charAt(0).toUpperCase()}</Text>
@@ -189,7 +193,7 @@ export default function BoardUserBar({
             <View
               style={[
                 styles.cardAvatar,
-                { backgroundColor: selectedUser ? avatarColor(selectedUser.userId) : "#7c3aed" },
+                { backgroundColor: selectedUser ? userColor(selectedUser.userId) : "#7c3aed" },
               ]}
             >
               <Text style={styles.cardAvatarText}>
@@ -231,6 +235,19 @@ export default function BoardUserBar({
                 <TouchableOpacity style={styles.primaryBtn} onPress={handleSendFriendRequest}>
                   <Ionicons name="person-add-outline" size={16} color="#fff" />
                   <Text style={styles.primaryBtnText}>Add Friend</Text>
+                </TouchableOpacity>
+              )}
+
+              {onFollow && selectedUser && (
+                <TouchableOpacity style={styles.followBtn} onPress={handleFollow}>
+                  <Ionicons
+                    name={followingId === selectedUser.userId ? "eye-off-outline" : "eye-outline"}
+                    size={16}
+                    color="#7c3aed"
+                  />
+                  <Text style={styles.followBtnText}>
+                    {followingId === selectedUser.userId ? "Stop Following" : "Follow"}
+                  </Text>
                 </TouchableOpacity>
               )}
 
@@ -378,6 +395,23 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: {
     color: "#fff",
+    fontWeight: "600",
+    fontSize: 15,
+  },
+  followBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1.5,
+    borderColor: "#ddd6fe",
+    paddingVertical: 11,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    width: "100%",
+  },
+  followBtnText: {
+    color: "#7c3aed",
     fontWeight: "600",
     fontSize: 15,
   },

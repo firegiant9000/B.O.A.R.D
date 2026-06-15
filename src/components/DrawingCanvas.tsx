@@ -61,6 +61,9 @@ interface DrawingCanvasProps {
   onStrokeEnd: () => void;
   /** A stationary tap, in board-space (text placement / dot). */
   onTap: (point: Point) => void;
+  /** Phase 6: pointer moved (hover on web, drag on native), in board-space.
+   *  Side-channel only — must not trigger an element-tree re-render. */
+  onPointerMove?: (point: Point) => void;
   onPanBy: (dx: number, dy: number) => void;
   onZoomAtPoint: (factor: number, focal: Point) => void;
   onFling: (vx: number, vy: number) => void;
@@ -316,6 +319,7 @@ function DrawingCanvas(
     onStrokeMove,
     onStrokeEnd,
     onTap,
+    onPointerMove,
     onPanBy,
     onZoomAtPoint,
     onFling,
@@ -330,14 +334,14 @@ function DrawingCanvas(
   const disabledRef = useRef(disabled);
   const enablePanZoomRef = useRef(enablePanZoom);
   const panModeRef = useRef(panMode);
-  const cbRef = useRef({ onStrokeStart, onStrokeMove, onStrokeEnd, onTap, onPanBy, onZoomAtPoint, onFling, onGestureStart });
+  const cbRef = useRef({ onStrokeStart, onStrokeMove, onStrokeEnd, onTap, onPointerMove, onPanBy, onZoomAtPoint, onFling, onGestureStart });
   useEffect(() => {
     viewportRef.current = viewport;
     toolRef.current = tool;
     disabledRef.current = disabled;
     enablePanZoomRef.current = enablePanZoom;
     panModeRef.current = panMode;
-    cbRef.current = { onStrokeStart, onStrokeMove, onStrokeEnd, onTap, onPanBy, onZoomAtPoint, onFling, onGestureStart };
+    cbRef.current = { onStrokeStart, onStrokeMove, onStrokeEnd, onTap, onPointerMove, onPanBy, onZoomAtPoint, onFling, onGestureStart };
   });
 
   const toBoard = useCallback((x: number, y: number): Point => screenToBoard(viewportRef.current, { x, y }), []);
@@ -366,6 +370,10 @@ function DrawingCanvas(
         cbRef.current.onStrokeMove(toBoard(e.x, e.y));
       })
       .onUpdate((e) => {
+        // Broadcast the pointer regardless of mode (native has no hover, so a
+        // drag is the only cursor signal). Side-channel only — publishing is
+        // throttled downstream and never sets state here.
+        cbRef.current.onPointerMove?.(toBoard(e.x, e.y));
         if (panModeRef.current) {
           cbRef.current.onPanBy(e.x - panLast.x, e.y - panLast.y);
           panLast = { x: e.x, y: e.y };
@@ -442,6 +450,25 @@ function DrawingCanvas(
     node.addEventListener("wheel", onWheel, { passive: false });
     return () => node.removeEventListener("wheel", onWheel);
   }, []);
+
+  // Web: broadcast the live pointer on hover/move for the cursor side channel
+  // (Phase 6). Side-channel only — onPointerMove is throttled downstream and
+  // never re-renders the element tree. Native gets the signal from the gesture
+  // above (no hover events on touch).
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const node: HTMLElement | null = containerRef.current;
+    if (!node || typeof node.addEventListener !== "function") return;
+    const onMove = (e: PointerEvent) => {
+      if (disabledRef.current) return;
+      const rect = node.getBoundingClientRect();
+      cbRef.current.onPointerMove?.(
+        toBoard(e.clientX - rect.left, e.clientY - rect.top)
+      );
+    };
+    node.addEventListener("pointermove", onMove);
+    return () => node.removeEventListener("pointermove", onMove);
+  }, [toBoard]);
 
   const win = Dimensions.get("window");
   const svgW = width ?? win.width;

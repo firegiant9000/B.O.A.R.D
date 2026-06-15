@@ -24,11 +24,23 @@ export interface ViewportController {
   fling: (vx: number, vy: number) => void;
   /** Cancel any in-flight inertia (e.g. on a new touch down). */
   stopFling: () => void;
+  /**
+   * Ease the camera toward an absolute viewport (Phase 7 follow mode). Each call
+   * re-bases the ease from the current viewport, so repeated calls toward a
+   * moving target track smoothly without a hard snap.
+   */
+  animateTo: (target: Viewport, durationMs?: number) => void;
 }
+
+const FOLLOW_EASE_MS = 250; // easeOutCubic glide for follow-mode camera moves
 
 export function useViewport(initial: Viewport = IDENTITY_VIEWPORT): ViewportController {
   const [viewport, setViewport] = useState<Viewport>(initial);
   const rafRef = useRef<number | null>(null);
+  // Latest viewport for ref-based reads inside animateTo (so it eases from the
+  // current camera without listing `viewport` as a dependency).
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   const stopFling = useCallback(() => {
     if (rafRef.current !== null) {
@@ -87,5 +99,25 @@ export function useViewport(initial: Viewport = IDENTITY_VIEWPORT): ViewportCont
     [stopFling]
   );
 
-  return { viewport, panBy, zoomAtPoint, zoomToScale, reset, fit, fling, stopFling };
+  const animateTo = useCallback(
+    (target: Viewport, durationMs: number = FOLLOW_EASE_MS) => {
+      stopFling();
+      const from = viewportRef.current;
+      const t0 = performance.now();
+      const step = (now: number) => {
+        const t = Math.min(1, (now - t0) / durationMs);
+        const e = 1 - Math.pow(1 - t, 3); // easeOutCubic — avoids motion sickness
+        setViewport({
+          x: from.x + (target.x - from.x) * e,
+          y: from.y + (target.y - from.y) * e,
+          scale: from.scale + (target.scale - from.scale) * e,
+        });
+        rafRef.current = t < 1 ? requestAnimationFrame(step) : null;
+      };
+      rafRef.current = requestAnimationFrame(step);
+    },
+    [stopFling]
+  );
+
+  return { viewport, panBy, zoomAtPoint, zoomToScale, reset, fit, fling, stopFling, animateTo };
 }

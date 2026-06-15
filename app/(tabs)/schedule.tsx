@@ -15,9 +15,11 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
+import SummaryCard from "../../src/components/SummaryCard";
 import { Session } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
+import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 
@@ -118,7 +120,7 @@ export default function ScheduleScreen() {
       confirmText: "Start",
       onConfirm: async () => {
         try {
-          await sessionService.updateSessionStatus(session.id, "active");
+          await sessionService.startSession(session.id);
           setSessions((prev) =>
             prev.map((s) => (s.id === session.id ? { ...s, status: "active" } : s))
           );
@@ -139,7 +141,7 @@ export default function ScheduleScreen() {
     });
   };
 
-  const handleMarkEnded = (sessionId: string) => {
+  const handleMarkEnded = (session: Session) => {
     confirmAlert({
       title: "End Session",
       message: "Mark this session as ended?",
@@ -147,9 +149,27 @@ export default function ScheduleScreen() {
       destructive: true,
       onConfirm: async () => {
         try {
-          await sessionService.updateSessionStatus(sessionId, "ended");
+          // Freeze the participant snapshot + stamp endedAt via the lifecycle
+          // transition (no canvas ref here, so no snapshot — that's captured from
+          // the board's End Session button). Mirror the board screen's activity log
+          // so ending from either surface records the same event.
+          const frozen = await sessionService.resolveParticipantSnapshot(session);
+          await sessionService.endSession(session.id, { participants: frozen });
+          activityService.logSessionEnded({
+            workspaceId: session.workspaceId,
+            boardId: session.boardId,
+            sessionId: session.id,
+            actorId: user?.uid ?? "",
+            actorName: userProfile?.displayName ?? user?.email ?? "User",
+            participantCount: session.participantIds.length,
+            title: session.title,
+          });
           setSessions((prev) =>
-            prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s))
+            prev.map((s) =>
+              s.id === session.id
+                ? { ...s, status: "ended", endedAt: new Date(), participants: frozen }
+                : s
+            )
           );
         } catch {
           showAlert("Error", "Failed to update session.");
@@ -179,7 +199,7 @@ export default function ScheduleScreen() {
   };
 
   const handleGenerateSummary = async (session: Session) => {
-    if (!aiService.getOpenAIKey()) {
+    if (!aiService.isSummaryConfigured()) {
       showAlert(
         "API Key Required",
         "To generate AI summaries, add your OpenAI API key in the Profile tab under Settings.",
@@ -292,16 +312,8 @@ export default function ScheduleScreen() {
           {isCreator(item) ? "You started this session" : `Started by ${item.createdByName}`}
         </Text>
 
-        {/* AI Summary (for ended sessions) */}
-        {tab === "past" && item.summary && (
-          <View style={styles.summaryBox}>
-            <View style={styles.summaryHeader}>
-              <Ionicons name="sparkles" size={14} color="#7c3aed" />
-              <Text style={styles.summaryLabel}>AI Summary</Text>
-            </View>
-            <Text style={styles.summaryText}>{item.summary}</Text>
-          </View>
-        )}
+        {/* AI Summary (for ended sessions) — structured card, legacy-tolerant */}
+        {tab === "past" && item.summary && <SummaryCard summary={item.summary} />}
 
         {/* Admin actions */}
         {isCreator(item) && (
@@ -327,7 +339,7 @@ export default function ScheduleScreen() {
                 {tab === "active" && (
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.actionBtnDanger]}
-                    onPress={() => handleMarkEnded(item.id)}
+                    onPress={() => handleMarkEnded(item)}
                   >
                     <Ionicons name="stop-circle-outline" size={14} color="#ef4444" />
                     <Text style={[styles.actionBtnText, { color: "#ef4444" }]}>End Session</Text>
@@ -695,33 +707,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#2563eb",
-  },
-  // ── Summary ──
-  summaryBox: {
-    backgroundColor: "#f5f3ff",
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#ddd6fe",
-  },
-  summaryHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginBottom: 6,
-  },
-  summaryLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#7c3aed",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  summaryText: {
-    fontSize: 14,
-    color: "#374151",
-    lineHeight: 20,
   },
   // ── Error banner ──
   errorBanner: {

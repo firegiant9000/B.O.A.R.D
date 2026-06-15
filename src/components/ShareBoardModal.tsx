@@ -17,6 +17,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { db } from "../config/firebase";
 import * as boardService from "../services/boardService";
 import * as friendService from "../services/friendService";
+import { createEmbedLink } from "../services/embedService";
 import { getWorkspace } from "../services/workspaceService";
 import { BoardRole, WorkspaceRole } from "../types";
 import { captureException } from "../lib/errorReporting";
@@ -78,6 +79,10 @@ export default function ShareBoardModal({
   const [addingEmail, setAddingEmail] = useState(false);
   const [emailStatus, setEmailStatus] = useState<{ type: "error" | "success"; msg: string } | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
+  // Phase 8 — embed-link minting state (web-only).
+  const [embedBusy, setEmbedBusy] = useState(false);
+  const [embedCopied, setEmbedCopied] = useState(false);
+  const [embedError, setEmbedError] = useState<string | null>(null);
   const [localMembers, setLocalMembers] = useState<string[]>(members);
   // Phase 6 — Share & permissions state.
   const [localRoles, setLocalRoles] = useState<Record<string, BoardRole>>(roles);
@@ -156,6 +161,25 @@ export default function ShareBoardModal({
       // On native the code is displayed; the user can long-press to copy
       setCodeCopied(true);
       setTimeout(() => setCodeCopied(false), 2000);
+    }
+  };
+
+  // Phase 8 — mint a short-lived read-only embed link and copy it. Web-only (the
+  // embed route is a web/iframe surface). The link expires; the host re-mints by
+  // generating a fresh one, so there's nothing to persist here.
+  const handleCopyEmbed = async () => {
+    setEmbedError(null);
+    setEmbedBusy(true);
+    try {
+      const { url } = await createEmbedLink(boardId);
+      if (navigator?.clipboard) await navigator.clipboard.writeText(url);
+      setEmbedCopied(true);
+      setTimeout(() => setEmbedCopied(false), 2000);
+    } catch (e: any) {
+      captureException(e, { op: "ShareBoardModal.copyEmbed" });
+      setEmbedError(e?.message ?? "Couldn't create an embed link.");
+    } finally {
+      setEmbedBusy(false);
     }
   };
 
@@ -305,6 +329,40 @@ export default function ShareBoardModal({
           <Text style={styles.hint}>
             Anyone with this code can join the board.
           </Text>
+
+          {/* Embed link (Phase 8) — web-only read-only iframe link. */}
+          {Platform.OS === "web" && (
+            <>
+              <Text style={styles.label}>Embed (read-only)</Text>
+              <View style={styles.codeRow}>
+                <Text style={styles.codeText} numberOfLines={1}>
+                  Read-only board link for an iframe
+                </Text>
+                <TouchableOpacity
+                  style={styles.copyBtn}
+                  onPress={handleCopyEmbed}
+                  disabled={embedBusy}
+                >
+                  {embedBusy ? (
+                    <ActivityIndicator size="small" color="#2563eb" />
+                  ) : (
+                    <Ionicons
+                      name={embedCopied ? "checkmark" : "code-slash-outline"}
+                      size={16}
+                      color={embedCopied ? "#16a34a" : "#2563eb"}
+                    />
+                  )}
+                  <Text style={[styles.copyBtnText, embedCopied && styles.copiedText]}>
+                    {embedCopied ? "Copied!" : "Copy link"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.hint}>
+                {embedError ??
+                  "Generates a short-lived, read-only link to embed this board in another site."}
+              </Text>
+            </>
+          )}
 
           <ScrollView
             style={styles.scroll}
