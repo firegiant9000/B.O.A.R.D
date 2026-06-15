@@ -21,6 +21,7 @@ import JoinBoardModal from "../../src/components/JoinBoardModal";
 import ShareBoardModal from "../../src/components/ShareBoardModal";
 import BoardUserBar from "../../src/components/BoardUserBar";
 import StartSessionModal from "../../src/components/StartSessionModal";
+import DiagramPromptModal from "../../src/components/DiagramPromptModal";
 import ZoomControls from "../../src/components/ZoomControls";
 import SelectionOverlay from "../../src/components/SelectionOverlay";
 import ShapeOptionsBar from "../../src/components/ShapeOptionsBar";
@@ -30,6 +31,7 @@ import BackgroundPicker from "../../src/components/BackgroundPicker";
 import CommentPinLayer, { CommentPin } from "../../src/components/CommentPinLayer";
 import CommentThreadPanel from "../../src/components/CommentThreadPanel";
 import BoardHistoryPanel from "../../src/components/BoardHistoryPanel";
+import CursorLayer from "../../src/components/CursorLayer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "../../src/hooks/useAuth";
 import { useShortcuts } from "../../src/hooks/useShortcuts";
@@ -38,7 +40,8 @@ import { getClipboardImage } from "../../src/lib/osClipboard";
 import { useViewport } from "../../src/hooks/useViewport";
 import { useThrottledValue } from "../../src/hooks/useThrottledValue";
 import { useSelection } from "../../src/hooks/useSelection";
-import { Point, Bounds, boundsOfPoints, unionBounds, inflateBounds, screenToBoard } from "../../src/lib/viewport";
+import { Point, Bounds, boundsOfPoints, unionBounds, inflateBounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
+import { toggleFollow, wouldCreateCycle, type FollowMap } from "../../src/lib/followMode";
 import { viewportBounds, boundsIntersect } from "../../src/lib/culling";
 import { pointNearPolyline, boundsContainPoint, distanceToSegment } from "../../src/lib/hitTest";
 import { rdpSimplify } from "../../src/lib/simplify";
@@ -92,13 +95,24 @@ import * as shapeService from "../../src/services/shapeService";
 import * as imageService from "../../src/services/imageService";
 import * as snapshotService from "../../src/services/snapshotService";
 import * as presenceService from "../../src/services/presenceService";
+import * as cursorService from "../../src/services/cursorService";
 import * as friendService from "../../src/services/friendService";
 import * as sessionService from "../../src/services/sessionService";
 import * as commentService from "../../src/services/commentService";
 import * as activityService from "../../src/services/activityService";
 import { notifyMentions } from "../../src/services/notificationService";
 import { MentionMember, extractMentionUids } from "../../src/lib/mentions";
-import { captureSvgAsPng } from "../../src/utils/canvasCapture";
+import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
+import {
+  recognizeHandwriting,
+  isOcrConfigured,
+  OCR_CONFIDENCE_THRESHOLD,
+  explainSelection,
+  isExplainConfigured,
+  textToDiagram,
+  isDiagramConfigured,
+} from "../../src/services/aiService";
+import { mermaidToBoard, EmptyDiagramError } from "../../src/lib/mermaid-to-board";
 import { captureException } from "../../src/lib/errorReporting";
 import { reportSyncState } from "../../src/lib/connectivity";
 import {
@@ -117,8 +131,12 @@ import {
   Workspace,
   Comment,
   CommentAnchorKind,
+  ShapeRecognitionMode,
 } from "../../src/types";
 import { getWorkspace } from "../../src/services/workspaceService";
+import * as shapeRecognitionService from "../../src/services/shapeRecognitionService";
+import { recognizeShape, RecognizedShape } from "../../src/lib/shapeRecognition";
+import PenOptionsBar from "../../src/components/PenOptionsBar";
 
 type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment";
 
@@ -207,7 +225,15 @@ const RDP_TOLERANCE = 2.5;
 const CULL_THROTTLE_MS = 50;
 const CULL_MARGIN_PX = 200;
 
-export default function BoardScreen() {
+/**
+ * Phase 8 — `embedMode` renders the board chrome-stripped and read-only for an
+ * embeddable iframe (the embed route at app/embed/b/[id].tsx passes it). The board
+ * reads the same `id` route param either way. Editing is already gated by role
+ * (an embed identity is not a board member, so `canEdit` is false), but embed mode
+ * additionally hides the header + toolbar and suppresses presence/cursor writes
+ * and the join prompt, which an embed viewer has no rights to.
+ */
+export default function BoardScreen({ embedMode = false }: { embedMode?: boolean } = {}) {
   const { id, session } = useLocalSearchParams<{ id: string; session?: string }>();
   const router = useRouter();
   const { user, userProfile } = useAuth();
@@ -264,6 +290,32 @@ export default function BoardScreen() {
   const [shapeDashed, setShapeDashed] = useState(false);
   const [shapeArrowheadEnd, setShapeArrowheadEnd] = useState<ArrowheadStyle>("classic");
   const [snapGrid, setSnapGrid] = useState(0);
+  // Phase 9 — auto-perfect. The per-user mode (loaded from the user doc on mount)
+  // and, in "ask" mode, the pending candidate: the just-saved freehand stroke's
+  // id plus the clean primitive it resembles, surfaced as a "perfect it?" prompt.
+  const [shapeRecMode, setShapeRecMode] = useState<ShapeRecognitionMode>("ask");
+  const [perfectCandidate, setPerfectCandidate] = useState<{
+    pathId: string;
+    shape: RecognizedShape;
+    color: string;
+    strokeWidth: number;
+  } | null>(null);
+  // Phase 10 — handwriting OCR. `ocrBusy` gates the in-flight call (button spinner);
+  // `ocrCandidate` holds a low-confidence (<70%) result pending a confirm step
+  // (Appendix B.7) — the board-space position is where the text element lands.
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrCandidate, setOcrCandidate] = useState<{
+    text: string;
+    position: Point;
+    confidence: number;
+  } | null>(null);
+  // Phase 11 — explain selection. Gates the in-flight call (button spinner).
+  const [explainBusy, setExplainBusy] = useState(false);
+  // Phase 12 — text → diagram. The prompt panel's open state + draft text, and an
+  // in-flight gate for the generate call (spinner + disabled submit).
+  const [diagramOpen, setDiagramOpen] = useState(false);
+  const [diagramPrompt, setDiagramPrompt] = useState("");
+  const [diagramBusy, setDiagramBusy] = useState(false);
   // First corner of the in-progress shape drag, and the live draft (ref mirror of
   // state so the gesture's onEnd reads the latest without a stale closure).
   const shapeStartRef = useRef<Point | null>(null);
@@ -296,6 +348,35 @@ export default function BoardScreen() {
     };
   });
 
+  // Phase 9 — load the user's auto-perfect mode once (AuthContext doesn't hydrate
+  // it). Failure falls back to the service default inside the service itself.
+  useEffect(() => {
+    if (!user?.uid) return;
+    let cancelled = false;
+    shapeRecognitionService.getShapeRecognitionMode(user.uid).then((m) => {
+      if (!cancelled) setShapeRecMode(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
+  // Cycle the auto-perfect mode (Ask → Always → Off) and persist it. Clears any
+  // pending prompt when switching off.
+  const cycleShapeRecMode = useCallback(() => {
+    setShapeRecMode((cur) => {
+      const next: ShapeRecognitionMode =
+        cur === "ask" ? "always" : cur === "always" ? "never" : "ask";
+      if (next === "never") setPerfectCandidate(null);
+      if (user?.uid) {
+        shapeRecognitionService
+          .setShapeRecognitionMode(user.uid, next)
+          .catch((e) => captureException(e, { op: "board.setShapeRecMode" }));
+      }
+      return next;
+    });
+  }, [user?.uid]);
+
   // Image element state (Phase 9). Mirrors the shape/path arrays: a state array,
   // a synchronous ref for gesture-time hit-testing, and an inserting flag so the
   // image button shows progress while the upload is in flight.
@@ -312,6 +393,15 @@ export default function BoardScreen() {
   // Presence & friends state
   const [presence, setPresence] = useState<BoardPresence[]>([]);
   const [blockedIds, setBlockedIds] = useState<string[]>([]);
+
+  // Phase 7 — follow mode. The presence user whose camera we're mirroring (or
+  // null). `lastPointerRef` holds the latest board-space pointer so a viewport
+  // broadcast can re-send the cursor position even when only the camera moved.
+  const [followingId, setFollowingId] = useState<string | null>(null);
+  const lastPointerRef = useRef<Point>({ x: 0, y: 0 });
+  // Gates the viewport broadcast until the pointer has actually moved once, so a
+  // user who only opens the board doesn't publish a phantom cursor at (0,0).
+  const hasPointerRef = useRef(false);
 
   // Deep-link join modal
   const [joinModalVisible, setJoinModalVisible] = useState(false);
@@ -482,9 +572,11 @@ export default function BoardScreen() {
     x: canvasSize.width / 2,
     y: canvasSize.height / 2,
   });
-  const handleZoomIn = () => viewportCtl.zoomAtPoint(1.25, canvasCenter());
-  const handleZoomOut = () => viewportCtl.zoomAtPoint(0.8, canvasCenter());
-  const handleFitToContent = () => viewportCtl.fit(contentBounds(), canvasSize);
+  // Manual camera commands take back control from follow mode (Phase 7).
+  const handleZoomIn = () => { setFollowingId(null); viewportCtl.zoomAtPoint(1.25, canvasCenter()); };
+  const handleZoomOut = () => { setFollowingId(null); viewportCtl.zoomAtPoint(0.8, canvasCenter()); };
+  const handleFitToContent = () => { setFollowingId(null); viewportCtl.fit(contentBounds(), canvasSize); };
+  const handleResetViewport = () => { setFollowingId(null); viewportCtl.reset(); };
 
   // Safe navigation: fall back to Boards tab when there is no history to pop
   const goBack = () => {
@@ -506,9 +598,10 @@ export default function BoardScreen() {
     loadBoard();
   }, [id]);
 
-  // Presence: join on mount, subscribe to updates, leave on unmount
+  // Presence: join on mount, subscribe to updates, leave on unmount. Skipped in
+  // embed mode — the read-only embed identity has no write rights to presence.
   useEffect(() => {
-    if (!id || !user) return;
+    if (!id || !user || embedMode) return;
 
     const displayName = userProfile?.displayName ?? user.email ?? "User";
     const email = userProfile?.email ?? user.email ?? "";
@@ -524,8 +617,99 @@ export default function BoardScreen() {
       presenceService
         .leaveBoard(id, user.uid)
         .catch((e) => captureException(e, { op: "board.leavePresence" }));
+      // Phase 6: clear the ephemeral cursor doc on leave so it doesn't linger
+      // (Firestore has no onDisconnect; stale cursors are also filtered on read).
+      cursorService
+        .removeCursor(id, user.uid)
+        .catch((e) => captureException(e, { op: "board.removeCursor" }));
     };
   }, [id, user]);
+
+  // Phase 6: publish the local pointer to the cursor side channel. Throttled
+  // inside cursorService (~20Hz) and side-effect-only — it never sets state, so
+  // a pointer move never re-renders the element tree (Appendix A.4 hard rule).
+  const handlePointerMove = useCallback(
+    (p: Point) => {
+      if (!id || !user || embedMode) return;
+      lastPointerRef.current = p;
+      hasPointerRef.current = true;
+      cursorService.publishCursor(id, user.uid, {
+        displayName: userProfile?.displayName ?? user.email ?? "User",
+        x: p.x,
+        y: p.y,
+        tool: activeTool,
+        // Don't broadcast a viewport while following — ours is just a mirror of
+        // the leader's, and re-broadcasting it is what would sustain an A↔B
+        // oscillation (Phase 7 cycle guard, primary layer).
+        viewport: followingId ? undefined : viewport,
+        following: followingId,
+      });
+    },
+    [id, user, userProfile?.displayName, activeTool, viewport, followingId, embedMode]
+  );
+
+  // Phase 7 — broadcast our viewport when it changes from our own pan/zoom, so
+  // followers track moves that aren't pointer-driven (pinch, fling, zoom buttons).
+  // Suppressed while following: that viewport is a mirror, not our intent.
+  useEffect(() => {
+    if (!id || !user || embedMode || followingId || !hasPointerRef.current) return;
+    cursorService.publishCursor(id, user.uid, {
+      displayName: userProfile?.displayName ?? user.email ?? "User",
+      x: lastPointerRef.current.x,
+      y: lastPointerRef.current.y,
+      tool: activeTool,
+      viewport,
+      following: null,
+    });
+  }, [viewport, id, user, userProfile?.displayName, activeTool, followingId, embedMode]);
+
+  // Stop following (own gesture, leader left, etc.). Stable so it can be wired
+  // into the canvas gesture/tap and zoom-control handlers without re-creating.
+  const exitFollow = useCallback(() => setFollowingId(null), []);
+
+  // Avatar tap → toggle follow on that user (the subscription's cycle guard
+  // catches the A↔B case once both viewports are visible).
+  const handleFollowUser = useCallback(
+    (targetId: string) => {
+      setFollowingId((cur) => toggleFollow(cur, targetId, user?.uid ?? ""));
+    },
+    [user?.uid]
+  );
+
+  // Any of the follower's own camera commands take back control and exit follow.
+  const handleGestureStart = useCallback(() => {
+    setFollowingId(null);
+    viewportCtl.stopFling();
+  }, [viewportCtl]);
+
+  // Phase 7 — while following, open a transient cursor subscription that drives
+  // the camera toward the leader's broadcast viewport. It's the only extra
+  // listener and lives only for the duration of the follow (within the A.6
+  // listener budget). Cursor jitter still never touches the element tree —
+  // this re-renders only via the viewport, exactly as a manual pan/zoom does.
+  useEffect(() => {
+    if (!id || !followingId || !user) return;
+    const unsub = cursorService.subscribeToCursors(id, (cursors) => {
+      const leader = cursors.find((c) => c.userId === followingId);
+      if (!leader) return;
+      // Secondary cycle guard: if the leader (transitively) follows us, break the
+      // follow so the two cameras can't chase each other.
+      const followMap: FollowMap = {};
+      for (const c of cursors) followMap[c.userId] = c.following ?? null;
+      if (wouldCreateCycle(followMap, user.uid, followingId)) {
+        setFollowingId(null);
+        return;
+      }
+      if (leader.viewport) viewportCtl.animateTo(leader.viewport);
+    });
+    return unsub;
+  }, [id, followingId, user, viewportCtl]);
+
+  // Stop following if the leader drops out of presence (left the board).
+  useEffect(() => {
+    if (!followingId) return;
+    if (!presence.some((p) => p.userId === followingId)) setFollowingId(null);
+  }, [presence, followingId]);
 
   // Load blocked IDs on mount
   useEffect(() => {
@@ -706,8 +890,10 @@ export default function BoardScreen() {
         setMentionMembers([]);
       }
 
-      // Deep-link gate: if the viewer isn't a member yet, prompt them to join
-      if (user && !boardData.members.includes(user.uid)) {
+      // Deep-link gate: if the viewer isn't a member yet, prompt them to join.
+      // Never in embed mode — an embed viewer is intentionally a non-member and
+      // has no join path; the prompt would be a dead end.
+      if (!embedMode && user && !boardData.members.includes(user.uid)) {
         setDeepLinkCode(boardData.inviteCode);
         setJoinModalVisible(true);
       }
@@ -744,39 +930,17 @@ export default function BoardScreen() {
     if (!activeSession) return;
     setEndingSession(true);
     try {
-      let svgEl: SVGSVGElement | null = null;
-      const ref: any = canvasSvgRef.current;
-      if (ref) {
-        // react-native-svg on web exposes the DOM node in different shapes by version
-        if (ref.tagName === "svg") svgEl = ref;
-        else if (ref.elementRef?.current?.tagName === "svg")
-          svgEl = ref.elementRef.current;
-        else if (ref._touchableNode?.tagName === "svg") svgEl = ref._touchableNode;
-        else if (typeof ref.querySelector === "function")
-          svgEl = ref.querySelector("svg");
-      }
-      if (!svgEl && Platform.OS === "web" && typeof document !== "undefined") {
-        // Last-ditch: there should only be one SVG inside the canvas container
-        svgEl = document.querySelector(
-          ".canvas-container svg, [data-canvas] svg, svg"
-        ) as SVGSVGElement | null;
-      }
-      const snapshot = await captureSvgAsPng(svgEl);
+      // Phase 3: unified capture — web rasterizes the DOM <svg>, native uses
+      // react-native-svg's toDataURL. Both go through captureBoardImage.
+      const snapshot = await captureBoardImage(canvasSvgRef.current);
       console.log(
-        "[end-session] svgEl=",
-        svgEl?.tagName,
-        "snapshot=",
+        "[end-session] snapshot=",
         snapshot ? `${Math.round(snapshot.length / 1024)}KB` : "null"
       );
-      if (snapshot) {
-        try {
-          await sessionService.updateSessionSnapshot(activeSession.id, snapshot);
-          console.log("[end-session] snapshot saved to", activeSession.id);
-        } catch (err) {
-          console.warn("[end-session] snapshot upload failed:", err);
-        }
-      }
-      await sessionService.updateSessionStatus(activeSession.id, "ended");
+      // Phase 4: a single lifecycle transition stamps endedAt, freezes the
+      // participant snapshot, and persists the final canvas image together.
+      const participants = await sessionService.resolveParticipantSnapshot(activeSession);
+      await sessionService.endSession(activeSession.id, { participants, snapshot });
       // Phase 8: record the session end in the workspace activity feed
       // (fire-and-forget; logging never blocks ending the session).
       activityService.logSessionEnded({
@@ -1037,15 +1201,291 @@ export default function BoardScreen() {
       tool: "pen",
     };
 
+    // Phase 9 — auto-perfect runs off the hot draw path, on stroke end only. Done
+    // before the write so we can recognize against the full-fidelity stroke; the
+    // pen color/width are captured now since state may change before the prompt.
+    const recognized =
+      shapeRecMode !== "never" ? recognizeShape(currentPoints) : null;
+    const recColor = activeColor;
+    const recWidth = activeStrokeWidth;
+
     try {
-      await pathService.savePath(id!, newPath);
+      const pathId = await pathService.savePath(id!, newPath);
       setRedoStack([]);
       scheduleSave();
+      if (recognized) {
+        if (shapeRecMode === "always") {
+          await replaceStrokeWithShape(pathId, recognized, recColor, recWidth);
+        } else {
+          // "ask": leave the stroke in place and offer a discreet prompt.
+          setPerfectCandidate({ pathId, shape: recognized, color: recColor, strokeWidth: recWidth });
+        }
+      }
     } catch {
       Alert.alert("Error", "Failed to save stroke");
     }
 
     setCurrentPoints(null);
+  };
+
+  // Phase 9 — swap a freehand stroke for the clean primitive the classifier
+  // recognized: create the ShapeElement, then delete the originating path. The
+  // shape inherits the stroke's color/width; fill stays off and rect/ellipse/
+  // triangle use the recognized axis-aligned box (line keeps its start + vector).
+  const replaceStrokeWithShape = async (
+    pathId: string,
+    rec: RecognizedShape,
+    color: string,
+    strokeWidth: number
+  ) => {
+    const shape: Omit<ShapeElement, "id" | "createdAt" | "bbox"> = {
+      boardId: id!,
+      userId: user?.uid ?? "",
+      shape: rec.kind,
+      x: rec.x,
+      y: rec.y,
+      width: rec.width,
+      height: rec.height,
+      rotation: 0,
+      fill: "none",
+      stroke: color,
+      strokeWidth,
+      dashed: false,
+      arrowheadStart: "none",
+      arrowheadEnd: "none",
+    };
+    try {
+      await shapeService.saveShape(id!, shape);
+      // Optimistic local removal keeps the swap instant; the subscription confirms.
+      setPaths((prev) => prev.filter((p) => p.id !== pathId));
+      await pathService.deletePath(id!, pathId);
+      scheduleSave();
+    } catch (e) {
+      captureException(e, { op: "board.perfectShape" });
+      setErrorMessage("Couldn't perfect the shape.");
+    }
+  };
+
+  // "ask"-mode prompt actions: accept swaps the stroke; dismiss just drops the
+  // candidate, leaving the freehand stroke untouched.
+  const acceptPerfect = async () => {
+    const c = perfectCandidate;
+    setPerfectCandidate(null);
+    if (c) await replaceStrokeWithShape(c.pathId, c.shape, c.color, c.strokeWidth);
+  };
+  const dismissPerfect = () => setPerfectCandidate(null);
+
+  // --- Phase 10: handwriting OCR (selection → text element) ---
+
+  // Place the recognized text as a new TextElement at the selection's top-left
+  // (board space), then select it so it can be edited/moved immediately.
+  const placeOcrText = async (text: string, position: Point) => {
+    const newEl: Omit<TextElement, "id" | "createdAt"> = {
+      boardId: id!,
+      userId: user?.uid ?? "",
+      text,
+      position,
+      width: 240,
+      height: 96,
+      fontSize: 20,
+      color: activeColor,
+    };
+    const elId = await pathService.saveTextElement(id!, newEl);
+    setActiveTool("select");
+    selection.select(elId);
+    setEditingTextId(elId);
+    scheduleSave();
+  };
+
+  // Capture the selected region → OCR via the Cloud Function → place the text.
+  // Low-confidence results route through a confirm prompt instead of landing
+  // directly (Appendix B.7). The selected stroke ids are the cache key, so a
+  // re-run on the same selection is a free server-side cache hit.
+  const handleRecognizeText = async () => {
+    if (ocrBusy) return;
+    const u = selectionUnion;
+    if (!u) return;
+    const pathIds = visiblePaths.filter((p) => selection.isSelected(p.id)).map((p) => p.id);
+    setOcrBusy(true);
+    try {
+      const tl = boardToScreen(viewport, { x: u.minX, y: u.minY });
+      const br = boardToScreen(viewport, { x: u.maxX, y: u.maxY });
+      const pad = 12;
+      const rect = {
+        x: tl.x - pad,
+        y: tl.y - pad,
+        width: br.x - tl.x + pad * 2,
+        height: br.y - tl.y + pad * 2,
+      };
+      const image = await captureSelectionImage(canvasSvgRef.current, rect, canvasSize);
+      if (!image) {
+        setErrorMessage("Couldn't capture the selection for OCR.");
+        return;
+      }
+      const result = await recognizeHandwriting(id!, image, pathIds);
+      const position = { x: u.minX, y: u.minY };
+      if (result.confidence < OCR_CONFIDENCE_THRESHOLD) {
+        setOcrCandidate({ text: result.text, position, confidence: result.confidence });
+      } else {
+        await placeOcrText(result.text, position);
+      }
+    } catch (e: any) {
+      captureException(e, { op: "board.ocr" });
+      setErrorMessage(e?.message ?? "Couldn't recognize the handwriting.");
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
+  // Low-confidence confirm-prompt actions: accept commits the text; dismiss drops it.
+  const acceptOcr = async () => {
+    const c = ocrCandidate;
+    setOcrCandidate(null);
+    if (c) {
+      try {
+        await placeOcrText(c.text, c.position);
+      } catch (e) {
+        captureException(e, { op: "board.ocrAccept" });
+        setErrorMessage("Couldn't insert the recognized text.");
+      }
+    }
+  };
+  const dismissOcr = () => setOcrCandidate(null);
+
+  // --- Phase 11: explain selection (selection → AI → text element beside it) ---
+
+  // Capture the selected region + any selected text → explain via the Cloud
+  // Function → drop the structured explanation as a TextElement to the right of the
+  // selection. Works on any selection (strokes / text / image / mix): the image
+  // carries the visual signal and the text carries transcribed content.
+  const handleExplainSelection = async () => {
+    if (explainBusy) return;
+    const u = selectionUnion;
+    if (!u) return;
+    setExplainBusy(true);
+    try {
+      // Transcribed text from selected text elements + sticky notes (the model
+      // reads this alongside the image so it isn't guessing at legible content).
+      const selectedText = [
+        ...visibleTextElements.filter((el) => selection.isSelected(el.id)).map((el) => el.text),
+        ...visibleNotes.filter((n) => selection.isSelected(n.id)).map((n) => n.content),
+      ]
+        .map((t) => (t ?? "").trim())
+        .filter(Boolean)
+        .join("\n");
+
+      const tl = boardToScreen(viewport, { x: u.minX, y: u.minY });
+      const br = boardToScreen(viewport, { x: u.maxX, y: u.maxY });
+      const pad = 12;
+      const rect = {
+        x: tl.x - pad,
+        y: tl.y - pad,
+        width: br.x - tl.x + pad * 2,
+        height: br.y - tl.y + pad * 2,
+      };
+      const image = await captureSelectionImage(canvasSvgRef.current, rect, canvasSize);
+
+      const { text } = await explainSelection(id!, image ?? undefined, selectedText || undefined);
+
+      // Place beside (to the right of) the selection so it doesn't cover it.
+      const newEl: Omit<TextElement, "id" | "createdAt"> = {
+        boardId: id!,
+        userId: user?.uid ?? "",
+        text,
+        position: { x: u.maxX + 24, y: u.minY },
+        width: 280,
+        height: 180,
+        fontSize: 16,
+        color: activeColor,
+      };
+      const elId = await pathService.saveTextElement(id!, newEl);
+      setActiveTool("select");
+      selection.select(elId);
+      scheduleSave();
+    } catch (e: any) {
+      captureException(e, { op: "board.explain" });
+      setErrorMessage(e?.message ?? "Couldn't explain the selection.");
+    } finally {
+      setExplainBusy(false);
+    }
+  };
+
+  // --- Phase 12: text → diagram (prompt → Mermaid → native shapes/text) ---
+
+  // Send the prompt to the Cloud Function, parse the returned Mermaid into native
+  // element specs (`mermaid-to-board`), then write them as real ShapeElement/
+  // TextElement docs centered on the current viewport. Nodes inherit the active
+  // color; edges are lines/arrows. The whole batch is then selected so the user
+  // can move/tweak it as a unit.
+  const handleGenerateDiagram = async () => {
+    const prompt = diagramPrompt.trim();
+    if (diagramBusy || !prompt) return;
+    setDiagramBusy(true);
+    try {
+      const { mermaid } = await textToDiagram(id!, prompt);
+      const build = mermaidToBoard(mermaid);
+
+      // Center the diagram on the viewport: translate diagram-local (0,0)-origin
+      // coords so the diagram's center lands on the screen center in board space.
+      const center = screenToBoard(viewport, {
+        x: canvasSize.width / 2,
+        y: canvasSize.height / 2,
+      });
+      const ox = center.x - build.width / 2;
+      const oy = center.y - build.height / 2;
+      const uid = user?.uid ?? "";
+
+      const shapeIds = await Promise.all(
+        build.shapes.map((s) =>
+          shapeService.saveShape(id!, {
+            boardId: id!,
+            userId: uid,
+            shape: s.shape,
+            x: ox + s.x,
+            y: oy + s.y,
+            width: s.width,
+            height: s.height,
+            rotation: 0,
+            fill: "none",
+            stroke: activeColor,
+            strokeWidth: activeStrokeWidth,
+            dashed: s.dashed,
+            arrowheadStart: "none",
+            arrowheadEnd: s.arrowheadEnd,
+          })
+        )
+      );
+      const textIds = await Promise.all(
+        build.texts.map((t) =>
+          pathService.saveTextElement(id!, {
+            boardId: id!,
+            userId: uid,
+            text: t.text,
+            position: { x: ox + t.x, y: oy + t.y },
+            width: t.width,
+            height: t.height,
+            // Edge labels are smaller than node labels so connectors stay legible.
+            fontSize: t.role === "edge" ? 12 : 15,
+            color: activeColor,
+          })
+        )
+      );
+
+      setActiveTool("select");
+      selection.setMany([...shapeIds, ...textIds]);
+      setDiagramOpen(false);
+      setDiagramPrompt("");
+      scheduleSave();
+    } catch (e: any) {
+      captureException(e, { op: "board.diagram" });
+      setErrorMessage(
+        e instanceof EmptyDiagramError
+          ? "The AI couldn't turn that into a diagram. Try rephrasing it."
+          : e?.message ?? "Couldn't generate the diagram."
+      );
+    } finally {
+      setDiagramBusy(false);
+    }
   };
 
   // --- Eraser: board-space hit-test → delete intersected strokes ---
@@ -1650,6 +2090,12 @@ export default function BoardScreen() {
   // --- Canvas tap (point is board-space) ---
 
   const handleCanvasTap = (point: Point) => {
+    // Phase 7: a tap while following hands control back to the follower and does
+    // nothing else (the tap is consumed by exiting follow mode).
+    if (followingId) {
+      setFollowingId(null);
+      return;
+    }
     if (activeTool === "hand") {
       // The Hand tool only pans; taps do nothing.
       return;
@@ -2661,7 +3107,8 @@ export default function BoardScreen() {
         onClose={() => setHistoryVisible(false)}
       />
 
-      {/* Header */}
+      {/* Header — hidden in embed mode so the board fills the parent frame. */}
+      {!embedMode && (
       <View style={styles.header}>
         <TouchableOpacity
           onPress={goBack}
@@ -2690,6 +3137,8 @@ export default function BoardScreen() {
             adminId={board?.adminId}
             boardId={id}
             onAdminChanged={handleAdminChanged}
+            followingId={followingId}
+            onFollow={handleFollowUser}
           />
           <TouchableOpacity
             onPress={() => setBgPickerVisible(true)}
@@ -2705,6 +3154,17 @@ export default function BoardScreen() {
           >
             <Ionicons name="time-outline" size={20} color="#2563eb" />
           </TouchableOpacity>
+          {/* Phase 12 — text → diagram. Opens the prompt sheet; gated OFF until the
+              diagram flag + AI gateway are both on. */}
+          {isDiagramConfigured() && (
+            <TouchableOpacity
+              onPress={() => setDiagramOpen(true)}
+              style={styles.iconBtn}
+              hitSlop={8}
+            >
+              <Ionicons name="git-network-outline" size={20} color="#2563eb" />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             onPress={handleShare}
             style={styles.iconBtn}
@@ -2752,6 +3212,7 @@ export default function BoardScreen() {
           )}
         </View>
       </View>
+      )}
 
       {/* Save toast */}
       <Animated.View style={[styles.saveToast, { opacity: saveOpacity }]} pointerEvents="none">
@@ -2809,10 +3270,11 @@ export default function BoardScreen() {
           onStrokeMove={handleStrokeMove}
           onStrokeEnd={handleStrokeEnd}
           onTap={handleCanvasTap}
+          onPointerMove={handlePointerMove}
           onPanBy={viewportCtl.panBy}
           onZoomAtPoint={viewportCtl.zoomAtPoint}
           onFling={viewportCtl.fling}
-          onGestureStart={viewportCtl.stopFling}
+          onGestureStart={handleGestureStart}
         />
         {/* Overlay layer — shares the canvas viewport transform so text and
             notes stay locked to the strokes when panning/zooming. */}
@@ -2871,15 +3333,169 @@ export default function BoardScreen() {
             )}
           </View>
         </View>
+        {/* Phase 6 — live cursors. A separate, self-subscribing top layer so
+            remote cursor updates repaint only this overlay, never the element
+            tree (Appendix A.4). Shares the live viewport to track pan/zoom. */}
+        <CursorLayer
+          boardId={id!}
+          viewport={viewport}
+          selfId={user?.uid}
+          blockedIds={blockedIds}
+        />
+        {/* Phase 7 — follow-mode indicator. Tapping it (or the canvas) exits. */}
+        {followingId && (
+          <TouchableOpacity style={styles.followBanner} onPress={exitFollow} activeOpacity={0.85}>
+            <Ionicons name="eye-outline" size={15} color="#fff" />
+            <Text style={styles.followBannerText} numberOfLines={1}>
+              Following {presence.find((p) => p.userId === followingId)?.displayName ?? "user"}
+            </Text>
+            <Ionicons name="close" size={15} color="#fff" />
+          </TouchableOpacity>
+        )}
         {ENABLE_PAN_ZOOM && (
           <ZoomControls
             scale={viewport.scale}
             onZoomIn={handleZoomIn}
             onZoomOut={handleZoomOut}
-            onReset={viewportCtl.reset}
+            onReset={handleResetViewport}
             onFit={handleFitToContent}
           />
         )}
+        {/* Phase 9 — "perfect it?" prompt (ask mode). Anchored in screen-space
+            just above the recognized stroke; accepting swaps it for a clean
+            primitive, dismissing leaves the freehand stroke as-is. */}
+        {perfectCandidate && (() => {
+          const s = perfectCandidate.shape;
+          const anchor = boardToScreen(viewport, {
+            x: s.x + s.width / 2,
+            y: Math.min(s.y, s.y + s.height),
+          });
+          return (
+            <View
+              style={[styles.perfectPrompt, { left: anchor.x - 70, top: anchor.y - 52 }]}
+              pointerEvents="box-none"
+            >
+              <Ionicons name="sparkles-outline" size={15} color="#2563eb" />
+              <Text style={styles.perfectPromptText}>Perfect it?</Text>
+              <TouchableOpacity style={styles.perfectAccept} onPress={acceptPerfect}>
+                <Ionicons name="checkmark" size={16} color="#fff" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.perfectDismiss} onPress={dismissPerfect}>
+                <Ionicons name="close" size={16} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
+        {/* Phase 10 — OCR affordance. A "Recognize text" button below the
+            selection while strokes are selected; tapping it OCRs the region into
+            a text element. Hidden during a transform/drag and while a low-
+            confidence confirm prompt is open. */}
+        {isOcrConfigured() &&
+          activeTool === "select" &&
+          selection.count > 0 &&
+          selectionUnion &&
+          !transformPreview &&
+          !dragOffset &&
+          !ocrCandidate &&
+          (() => {
+            const u = selectionUnion;
+            const anchor = boardToScreen(viewport, {
+              x: (u.minX + u.maxX) / 2,
+              y: u.maxY,
+            });
+            return (
+              <View
+                style={[styles.ocrButton, { left: anchor.x - 74, top: anchor.y + 10 }]}
+                pointerEvents="box-none"
+              >
+                <TouchableOpacity
+                  style={styles.ocrButtonInner}
+                  onPress={handleRecognizeText}
+                  disabled={ocrBusy}
+                  activeOpacity={0.85}
+                >
+                  {ocrBusy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="text-outline" size={15} color="#fff" />
+                  )}
+                  <Text style={styles.ocrButtonText}>
+                    {ocrBusy ? "Reading…" : "Recognize text"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })()}
+        {/* Phase 11 — "Explain this" affordance. Shown below the selection for any
+            selection (strokes / text / image / mix); tapping it sends the region to
+            the AI and drops a concept/explanation/example block beside it. Stacks
+            below the OCR button when that one is also visible. */}
+        {isExplainConfigured() &&
+          activeTool === "select" &&
+          selection.count > 0 &&
+          selectionUnion &&
+          !transformPreview &&
+          !dragOffset &&
+          !ocrCandidate &&
+          (() => {
+            const u = selectionUnion;
+            const anchor = boardToScreen(viewport, {
+              x: (u.minX + u.maxX) / 2,
+              y: u.maxY,
+            });
+            const dy = isOcrConfigured() ? 52 : 10;
+            return (
+              <View
+                style={[styles.explainButton, { left: anchor.x - 60, top: anchor.y + dy }]}
+                pointerEvents="box-none"
+              >
+                <TouchableOpacity
+                  style={styles.explainButtonInner}
+                  onPress={handleExplainSelection}
+                  disabled={explainBusy}
+                  activeOpacity={0.85}
+                >
+                  {explainBusy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="bulb-outline" size={15} color="#fff" />
+                  )}
+                  <Text style={styles.explainButtonText}>
+                    {explainBusy ? "Thinking…" : "Explain this"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })()}
+        {/* Phase 10 — low-confidence confirm prompt (Appendix B.7). The OCR was
+            unsure, so the text is held back until the user accepts. */}
+        {ocrCandidate && (() => {
+          const anchor = boardToScreen(viewport, ocrCandidate.position);
+          return (
+            <View
+              style={[styles.ocrPrompt, { left: anchor.x, top: anchor.y - 92 }]}
+              pointerEvents="box-none"
+            >
+              <View style={styles.ocrPromptHeader}>
+                <Ionicons name="alert-circle-outline" size={15} color="#b45309" />
+                <Text style={styles.ocrPromptTitle}>
+                  Low confidence ({Math.round(ocrCandidate.confidence * 100)}%)
+                </Text>
+              </View>
+              <Text style={styles.ocrPromptText} numberOfLines={3}>
+                {ocrCandidate.text}
+              </Text>
+              <View style={styles.ocrPromptActions}>
+                <TouchableOpacity style={styles.ocrPromptDismiss} onPress={dismissOcr}>
+                  <Text style={styles.ocrPromptDismissText}>Discard</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.ocrPromptAccept} onPress={acceptOcr}>
+                  <Text style={styles.ocrPromptAcceptText}>Insert anyway</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })()}
       </View>
 
       {/* Contextual shape options (Phase 7) — only while the shape tool is active */}
@@ -2898,7 +3514,15 @@ export default function BoardScreen() {
         />
       )}
 
+      {/* Contextual pen options (Phase 9) — auto-perfect toggle, only while the
+          pen tool is active and the viewer can edit. Hidden in embed mode. */}
+      {activeTool === "pen" && canEdit && !embedMode && (
+        <PenOptionsBar mode={shapeRecMode} onCycleMode={cycleShapeRecMode} />
+      )}
+
       {/* Toolbar */}
+      {/* Toolbar — hidden in embed mode (read-only viewer has no editing tools). */}
+      {!embedMode && (
       <Toolbar
         activeTool={activeTool}
         activeColor={activeColor}
@@ -2916,6 +3540,7 @@ export default function BoardScreen() {
         onClear={handleClear}
         onSave={handleSave}
       />
+      )}
 
       {/* Keyboard-shortcuts cheat sheet (opened with `?`) */}
       <ShortcutsCheatSheet
@@ -2961,6 +3586,20 @@ export default function BoardScreen() {
           onSessionCreated={() => {
             setSessionModalVisible(false);
             refreshActiveSession();
+          }}
+        />
+      )}
+
+      {/* Phase 12 — text → diagram prompt sheet. */}
+      {isDiagramConfigured() && (
+        <DiagramPromptModal
+          visible={diagramOpen}
+          prompt={diagramPrompt}
+          busy={diagramBusy}
+          onChangePrompt={setDiagramPrompt}
+          onGenerate={handleGenerateDiagram}
+          onClose={() => {
+            if (!diagramBusy) setDiagramOpen(false);
           }}
         />
       )}
@@ -3063,6 +3702,174 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: "#b91c1c",
+  },
+  followBanner: {
+    position: "absolute",
+    top: 12,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    maxWidth: 240,
+    backgroundColor: "#7c3aed",
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    zIndex: 120,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  followBannerText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  perfectPrompt: {
+    position: "absolute",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    paddingVertical: 5,
+    paddingLeft: 10,
+    paddingRight: 5,
+    borderRadius: 20,
+    zIndex: 130,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  perfectPromptText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  perfectAccept: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#2563eb",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  perfectDismiss: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#f3f4f6",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  ocrButton: {
+    position: "absolute",
+    zIndex: 130,
+  },
+  ocrButtonInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#2563eb",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  ocrButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  explainButton: {
+    position: "absolute",
+    zIndex: 130,
+  },
+  explainButtonInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#7c3aed",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  explainButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  ocrPrompt: {
+    position: "absolute",
+    width: 220,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#fcd34d",
+    padding: 10,
+    borderRadius: 12,
+    gap: 6,
+    zIndex: 130,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  ocrPromptHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  ocrPromptTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#b45309",
+  },
+  ocrPromptText: {
+    fontSize: 13,
+    color: "#374151",
+  },
+  ocrPromptActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 2,
+  },
+  ocrPromptDismiss: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#f3f4f6",
+  },
+  ocrPromptDismissText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6b7280",
+  },
+  ocrPromptAccept: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#2563eb",
+  },
+  ocrPromptAcceptText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#fff",
   },
   saveToast: {
     position: "absolute",
