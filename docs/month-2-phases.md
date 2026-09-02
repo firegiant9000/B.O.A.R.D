@@ -1,7 +1,12 @@
 # Month 2 — Production Readiness + Auth Polish: Phased Implementation Plan
 
-> **Status:** Planning. Branch `feature/month-2-production-readiness` cut from
-> `main` (post-PR-#89). No prior M2 branches or PRs exist.
+> **Status:** ✅ **Delivered and merged to `main` via PR #90.** All 12 scope items
+> shipped; two were deferred by design (group/ungroup → later; Google Sign-In → M3,
+> where it shipped in `f359613`). This document is kept as the plan of record — the
+> phase contracts below describe what was built. **Month 2 is not *closed*:** the
+> exit criteria are store/device verification (signed builds, TestFlight, push on
+> real hardware, Lighthouse, link + share-intake on-device). That open list is
+> maintained in ROADMAP.md → Month 2 → "Remaining to close Month 2", not here.
 > **Roadmap source:** ROADMAP.md → Month 2 (scope items 1–12).
 > **Carry-forward folded in:** M1 §1 (real Sentry SDK), M1 §2 (selection
 > unification on text), M1 §3 (Android perf baseline numbers).
