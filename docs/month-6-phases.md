@@ -6,6 +6,13 @@
 **Source scope:** `ROADMAP.md` § Month 6 (restructured into M6a / M6b, 2026-09-01), Appendix E (education vertical), Appendix F (M7+ backlog).
 **Status:** Planning draft — sequencing + per-phase contracts, not yet implemented.
 
+> **▶ Executable form:** the M5 and M6 plans are combined into a single
+> subagent-executable task list at
+> [`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
+> (37 tasks, Tasks 21–37 are this month). **That document is what you execute.**
+> This one is the investigation and rationale behind it — read it when you need to
+> know *why* a task is shaped the way it is.
+
 > **How to read this:** Month 6 is the month the project earns a yes or a no. That
 > makes it structurally different from months 1–5: the deliverable is not a feature
 > set, it is **an attributable number**. The plan is therefore split at the launch —

@@ -507,6 +507,9 @@ Functions deploy, prod flag cutover, and a real Android device.
 **Status:** Not started. Full investigation, gap analysis, and phased plan:
 [`docs/month-5-phases.md`](docs/month-5-phases.md). **Read it before scoping the
 month** — it revises three instructions below and adds a prerequisite phase.
+**To execute:** M5 and M6 are combined into one subagent-driven task list at
+[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
+(37 tasks; Tasks 1–20 are this month).
 Headline corrections: (a) the Stripe Firebase Extension is a dead end (see item 1);
 (b) `checkQuota` cannot enforce anything where it currently sits — client-side check
 in front of a direct client write — so item 2 is an architecture change, not a
@@ -655,7 +658,9 @@ every subsequent phase serializes through merge conflicts in one file.
 
 **Status:** Not started. Full investigation, gap analysis, and phased plan:
 [`docs/month-6-phases.md`](docs/month-6-phases.md). **Read it before scoping the
-month.** Headline findings: (a) **this month is over-scoped by roughly 2×** — eight
+month.** **To execute:** combined with M5 into one subagent-driven task list at
+[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
+(37 tasks; Tasks 21–37 are this month). Headline findings: (a) **this month is over-scoped by roughly 2×** — eight
 substantial features plus an integration plus a launch plus the go/no-go decision —
 and the recommendation is to split it around the launch (M6a: analytics → templates →
 export → reactions/polls → launch; M6b: flashcards, board Q&A, integration, scanner);
