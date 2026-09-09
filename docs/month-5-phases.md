@@ -2,7 +2,7 @@
 
 **Author:** Arlo Kharod
 **Drafted:** 2026-09-01
-**Branch:** `feature/month-5-monetization` (off `main`)
+**Branch:** `feature/months-5-6-monetization-growth` (off `main`) — one branch shared with Month 6; see the executable plan's Execution Handoff.
 **Source scope:** `ROADMAP.md` § Month 5 (items 1–14, as revised 2026-09-01), Appendix C (collaboration), Appendix E (education pricing).
 **Status:** Planning draft — sequencing + per-phase contracts, not yet implemented.
 

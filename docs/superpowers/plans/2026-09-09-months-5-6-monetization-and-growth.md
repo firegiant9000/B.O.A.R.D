@@ -8,6 +8,8 @@
 
 **Tech Stack:** Expo SDK 55 / React Native 0.83 / React 19.2, `expo-router`, `react-native-svg` 15.15.3, Firebase (Firestore, Auth, Storage), Cloud Functions v2 (Node 20, TypeScript), Jest (`jest-expo`) + `@firebase/rules-unit-testing`, Stripe.
 
+**Branch:** `feature/months-5-6-monetization-growth`, off `main`. **All 37 tasks land on this one branch** — see Execution Handoff for why, and for the single clean split point if it ever has to ship in pieces.
+
 **Spec:** [`ROADMAP.md`](../../../ROADMAP.md) § Month 5 and § Month 6 (as revised 2026-09-01), with the investigation and rationale in [`docs/month-5-phases.md`](../../month-5-phases.md) and [`docs/month-6-phases.md`](../../month-6-phases.md). **Those three documents are the binding authority; this plan is their executable form.** Where this plan and the spec disagree, the spec wins and the controller records a ruling.
 
 ---
@@ -156,7 +158,9 @@ These are **out-of-band prerequisites**. A subagent cannot enable billing, creat
 | 36 | Code elements (Shiki tokenizer) | 1 | standard | |
 | 37 | Sticky-note polish | 1 | cheap | |
 
-**Critical path:** 1 → 2 → 3 → {5, 6} → 7, and 8 → 9 → 10 → 11. Task 1 gates every task that touches the board screen (14–18, 22, 25, 34–37), so it goes first and merges before anything branches off it. Tasks 19, 21, 23, 29, 31 have **no dependencies** and are the natural fillers whenever a human gate parks the monetization spine.
+**Critical path:** 1 → 2 → 3 → {5, 6} → 7, and 8 → 9 → 10 → 11. Task 1 gates every task that touches the board screen (14–18, 22, 25, 26, 34–37) — twelve tasks across three tracks — so it is dispatched first and committed before any of them start. Tasks 19, 21, 23, 29, 31 have **no dependencies** and are the natural fillers whenever a human gate parks the monetization spine.
+
+**All 37 tasks share one branch** (`feature/months-5-6-monetization-growth`), so "depends on" here means *dispatch order*, not merge order — there is nothing to merge between tasks. Four files are touched by many tasks and are the reason for the single branch: `app/board/[id].tsx` and its hooks (12 tasks), `firestore.rules` (3, 7, 19, 25, 26, 27, 31), `functions/src/index.ts` (5, 6, 8, 9, 10, 30, 32, 35), `src/types/index.ts` (10, 16, 26, 35, 36). Dispatch tasks that share a file **sequentially**, never overlapping — the skill's rule against parallel implementers exists for exactly this.
 
 **Batching note for the controller:** Tasks 22 (20 template JSON files) and 37 are same-shape mechanical work. Compose one dispatch each rather than splitting further.
 
@@ -2643,7 +2647,53 @@ Run against the spec before execution.
 2. Run the pre-flight conflict scan the skill requires, paying attention to: Tasks 5/6/7 (shared `firestore.rules` and the create path), Tasks 14/15 (shared `CursorPayload`), Tasks 2/7 (the deliberate limits duplication), and Tasks 23/24 (shared export path).
 3. Note that **Tasks 19, 21, 23, 29, 31 have no dependencies** — they are the fillers whenever a human gate parks the monetization spine, which is likely, since G3 depends on a Stripe account existing.
 
-**Suggested branch:** `feature/month-5-monetization` for Tasks 1–20, `feature/month-6-growth` for Tasks 21–37. Both already exist off `main`. Task 1 is shared infrastructure — **land it on `main` first**, or Track D/E will conflict with Track B over the board screen.
+**Branch: `feature/months-5-6-monetization-growth`, off `main`. One branch for all 37 tasks.**
+
+There is no second branch and no per-month branch. Every task commits here, in the
+order the controller dispatches them, and the branch merges once at the end via
+superpowers:finishing-a-development-branch.
+
+**Why one branch and not two.** Task 1 decomposes `app/board/[id].tsx`, and twelve
+later tasks across three tracks edit the hooks it produces (14–18, 22, 25, 26,
+34–37). Split across two branches, that file is a guaranteed conflict: the second
+branch either forks before the decomposition and re-does it, or rebases onto a
+moving target every time the first branch lands a task. The same is true of
+`firestore.rules` (Tasks 3, 7, 19, 25, 26, 27, 31), `functions/src/index.ts` (Tasks
+5, 6, 8, 9, 10, 30, 32, 35) and `src/types/index.ts` (Tasks 10, 16, 26, 35, 36).
+Four shared files, twenty-plus tasks touching them. A single serial branch turns
+every one of those into an ordinary sequential edit.
+
+**What this costs, stated plainly:** the branch will be long-lived and large — 37
+tasks is not a normal PR. Mitigate it the way the skill already prescribes rather
+than by splitting: commit per task, keep the ledger current, and treat the
+per-task reviews as the real review surface. The final whole-branch review is a
+sweep for cross-task problems, **not** the first time anyone reads the code. If the
+branch genuinely needs to ship in pieces, cut it at **Task 20** — that is the only
+clean seam, because Tasks 1–20 leave the product in a coherent state (it charges
+money and enforces limits) and nothing in 21–37 is imported by anything before it.
+Cut anywhere else and you split a dependency chain.
+
+**Setup — the branch already exists and already carries this plan:**
+
+```bash
+git checkout feature/months-5-6-monetization-growth
+git log --oneline -1     # expect the "combine M5+M6" planning commit
+```
+
+It was cut from `chore/m4-closeout-housekeeping` rather than from bare `main`,
+because that is where this plan file lives and **an executor that cannot read the
+plan cannot run it**. The practical consequence: the branch carries two planning
+commits that are not yet on `main`. When the planning PR merges, this branch's
+history already contains those commits, so the merge stays clean.
+
+If you would rather have a branch off a clean `main`, merge the planning branch
+first and re-cut — the result is identical:
+
+```bash
+git checkout main
+git merge chore/m4-closeout-housekeeping
+git branch -f feature/months-5-6-monetization-growth main
+```
 
 
 
