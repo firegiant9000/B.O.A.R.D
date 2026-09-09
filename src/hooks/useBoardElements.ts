@@ -82,6 +82,44 @@ import { useThrottledValue } from "./useThrottledValue";
  * screen stays the single composition point.
  */
 
+/*
+ * SECTION MAP  — this file is long by design (see the Task 1 report, concern 2);
+ * the sections below are the navigation. Each is marked in the source by a
+ * matching `// ──── NAME ────` banner, in this order.
+ *
+ * Adding a new element kind touches the five sections flagged ADD HERE, in order:
+ * its listener, its blocked-filter memo and sync ref, the spatial index, its
+ * culling memo, and the returned object — plus whichever write paths it needs.
+ *
+ *   121  MODULE CONSTANTS & PURE GEOMETRY HELPERS       tolerances, cull settings, handle geometry, planZOrder, box helpers
+ *   218  PUBLIC TYPES & THE BoardElements INTERFACE     start here: the contract every caller sees
+ *   426  STATE & REFS                                   element arrays, selection, gesture refs, snapshot refs
+ *   507  SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING         ADD A NEW ELEMENT KIND'S LISTENER HERE
+ *   612  BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS   ADD A NEW KIND'S visible* MEMO + SYNC REF HERE
+ *   650  SPATIAL INDEX (rbush, for marquee hit-testing) ADD A NEW KIND TO THE INDEX ENTRIES HERE
+ *   664  VIEWPORT CULLING                               ADD A NEW KIND'S culled* MEMO HERE
+ *   712  GEOMETRY & DERIVED SELECTION                   contentBounds, boxOfElement, selectedBoxes, selectionUnion
+ *   780  HIT-TESTING & SELECTION ACTIONS                hitTestShape, hitTestAny, selectAtPoint, selectAllVisible
+ *   872  WRITE PATH — ERASER                            eraseAtPointWith
+ *   905  WRITE PATH — GROUP MOVE                        commitMove
+ *   971  GESTURE — SELECT / MARQUEE DRAG                begin/move/endSelectGesture
+ *  1036  GESTURE — RESIZE / ROTATE                      begin/move/endTransform + commitResize + commitRotate
+ *  1238  WRITE PATH — STROKES                           commitStroke, drawDot, replaceStrokeWithShape
+ *  1327  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
+ *  1391  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
+ *  1499  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
+ *  1596  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, pasteExternalImage
+ *  1735  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
+ *  1771  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
+ *  1848  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
+ *  1925  WRITE PATH — STICKY NOTES (legacy)             submitNote, cancelNote, deleteNote
+ *  1962  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
+ *  2012  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
+ *  2065  RETURN                                         ADD A NEW MEMBER TO THE RETURNED OBJECT HERE
+ */
+
+// ────────── MODULE CONSTANTS & PURE GEOMETRY HELPERS ────────────────────
+
 // Phase 5 hit-testing tolerances (board units, before zoom). Selection adds a
 // generous reach around the thin stroke geometry so taps land; the eraser reach
 // is derived per-stroke from the active width.
@@ -177,6 +215,7 @@ const textBox = (el: TextElement): Bounds => ({
 const shapeBox = (s: ShapeElement): Bounds => s.bbox ?? shapeBbox(s);
 const imgBox = (img: ImageElement): Bounds => img.bbox ?? imageBbox(img);
 
+// ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
 export interface ElementHit {
   id: string;
@@ -384,6 +423,7 @@ export function useBoardElements(
   // instead, so an unauthenticated viewer never matches an empty-uid doc.
   const authorId = userId ?? "";
 
+  // ────────── STATE & REFS ──────────────────────────────────────────────
   // Drawing state
   const [paths, setPaths] = useState<DrawPath[]>([]);
   const [notes, setNotes] = useState<TextNote[]>([]);
@@ -464,6 +504,7 @@ export function useBoardElements(
   // changes ~20×/s during pan/zoom instead of every frame.
   const cullViewport = useThrottledValue(viewport, CULL_THROTTLE_MS);
 
+  // ────────── SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING ────────────────────
   // Keep editingTextIdRef in sync for use inside snapshot callbacks
   useEffect(() => {
     editingTextIdRef.current = editingTextId;
@@ -568,6 +609,7 @@ export function useBoardElements(
     });
   }, [boardId]);
 
+  // ────────── BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS ──────────────
   // Filter out blocked users' content, then order by z. Memoized so
   // culling/fit-to-content see a stable array identity.
   const visiblePaths = useMemo(
@@ -605,6 +647,7 @@ export function useBoardElements(
     visibleImagesRef.current = visibleImages;
   }, [visibleImages]);
 
+  // ────────── SPATIAL INDEX (rbush, for marquee hit-testing) ────────────
   // Rebuild the marquee spatial index whenever the visible set changes. This is
   // the rbush index-maintenance path: O(n) bulk-load on change, amortized against
   // the many O(log n) queries a single marquee drag issues.
@@ -618,6 +661,7 @@ export function useBoardElements(
     spatialIndexRef.current = buildElementIndex(entries);
   }, [visiblePaths, visibleShapes, visibleImages, visibleTextElements]);
 
+  // ────────── VIEWPORT CULLING ──────────────────────────────────────────
   // Phase 4 viewport culling — render only what overlaps the visible board rect.
   // Paths always carry a bbox (persisted on write, computed on read for legacy
   // docs); a path missing one is kept rather than risk dropping it. Notes/text
@@ -665,6 +709,7 @@ export function useBoardElements(
     return visibleImages.filter((img) => boundsIntersect(img.bbox ?? imageBbox(img), view));
   }, [visibleImages, cullViewport, canvasSize]);
 
+  // ────────── GEOMETRY & DERIVED SELECTION ──────────────────────────────
   // Board-space bounds of all content, for fit-to-content.
   const contentBounds = (): Bounds | null =>
     unionBounds([
@@ -732,6 +777,7 @@ export function useBoardElements(
   }, [selection.selectedIds, visiblePaths, visibleShapes, visibleImages, visibleTextElements]);
   const selectionUnion = useMemo(() => unionBounds(selectedBoxes), [selectedBoxes]);
 
+  // ────────── HIT-TESTING & SELECTION ACTIONS ───────────────────────────
   // --- Selection: tap a stroke to select it (topmost wins) ---
 
   // Board-space hit-test for a shape: fill-type shapes use bbox containment;
@@ -823,6 +869,7 @@ export function useBoardElements(
       .filter(Boolean)
       .join("\n");
 
+  // ────────── WRITE PATH — ERASER ───────────────────────────────────────
   // --- Eraser: board-space hit-test → delete intersected strokes ---
 
   // Delete every not-yet-erased stroke whose geometry comes within the eraser
@@ -855,6 +902,7 @@ export function useBoardElements(
     onScheduleSave();
   };
 
+  // ────────── WRITE PATH — GROUP MOVE ───────────────────────────────────
   // --- Group move ---
 
   // Resolve the per-element field deltas for a group translate and commit them
@@ -920,6 +968,7 @@ export function useBoardElements(
     }
   };
 
+  // ────────── GESTURE — SELECT / MARQUEE DRAG ───────────────────────────
   // --- Select-tool drag state machine ---
 
   const beginSelectGesture = () => {
@@ -984,6 +1033,7 @@ export function useBoardElements(
     }
   };
 
+  // ────────── GESTURE — RESIZE / ROTATE ─────────────────────────────────
   // --- Pass 2: resize / rotate handle drags ---
 
   const beginTransform = (h: HandleId) => {
@@ -1185,6 +1235,7 @@ export function useBoardElements(
     }
   };
 
+  // ────────── WRITE PATH — STROKES ──────────────────────────────────────
   // --- Strokes ---
 
   // RDP-simplify in board-space before the write: fewer points = smaller doc,
@@ -1273,6 +1324,7 @@ export function useBoardElements(
     }
   };
 
+  // ────────── WRITE PATH — SHAPES & DIAGRAMS ────────────────────────────
   // --- Shapes ---
 
   const saveShapeFromDraft = async (draft: ShapeDraft) => {
@@ -1336,6 +1388,7 @@ export function useBoardElements(
     return [...shapeIds, ...textIds];
   };
 
+  // ────────── WRITE PATH — GROUP OPERATIONS ─────────────────────────────
   // --- Group operations ---
 
   // The caller clears the selection + inline editor before calling this (the
@@ -1443,6 +1496,7 @@ export function useBoardElements(
     onError,
   ]);
 
+  // ────────── WRITE PATH — CLIPBOARD ────────────────────────────────────
   // --- Phase 10: clipboard (copy / paste) ---
 
   // Copy the current selection into the in-app clipboard store, stripping
@@ -1539,6 +1593,7 @@ export function useBoardElements(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, userId, selection.setMany, onActivateSelectTool, onEditText, onScheduleSave, onError]);
 
+  // ────────── WRITE PATH — IMAGES ───────────────────────────────────────
   // --- Images ---
 
   // Upload an already-prepared (downscaled) image, place it aspect-fitted +
@@ -1677,6 +1732,7 @@ export function useBoardElements(
     return () => document.removeEventListener("paste", onPaste);
   }, [editingTextId, pasteExternalImage, pasteClipboard]);
 
+  // ────────── WRITE PATH — Z-ORDER ──────────────────────────────────────
   // --- Z-order ---
 
   const reorderSelected = async (dir: "front" | "back") => {
@@ -1712,6 +1768,7 @@ export function useBoardElements(
   const bringToFront = () => reorderSelected("front");
   const sendToBack = () => reorderSelected("back");
 
+  // ────────── WRITE PATH — STYLE ────────────────────────────────────────
   // --- Style ---
 
   // Recolor every selected element: stroke for paths, stroke (+fill) for shapes,
@@ -1788,6 +1845,7 @@ export function useBoardElements(
       });
   };
 
+  // ────────── WRITE PATH — TEXT ELEMENTS ────────────────────────────────
   // --- Text element handlers ---
 
   const createTextElement = async (point: Point, color: string) => {
@@ -1864,6 +1922,7 @@ export function useBoardElements(
   const saveTextElement = (el: Omit<TextElement, "id" | "createdAt">) =>
     pathService.saveTextElement(boardId, el);
 
+  // ────────── WRITE PATH — STICKY NOTES (legacy) ────────────────────────
   // --- Text note handlers ---
 
   const submitNote = async (content: string) => {
@@ -1900,6 +1959,7 @@ export function useBoardElements(
     }
   };
 
+  // ────────── WRITE PATH — UNDO / REDO / CLEAR ──────────────────────────
   // --- Undo / redo / clear ---
 
   const undo = async () => {
@@ -1949,6 +2009,7 @@ export function useBoardElements(
     setRedoStack([]);
   };
 
+  // ────────── DERIVED GESTURE PREVIEW ───────────────────────────────────
   // --- Live gesture preview, derived ---
 
   // Live group-gesture preview. The selected SVG elements render through one
@@ -2001,6 +2062,7 @@ export function useBoardElements(
     return el;
   };
 
+  // ────────── RETURN ────────────────────────────────────────────────────
   return {
     paths,
     shapes,

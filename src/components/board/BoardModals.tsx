@@ -8,11 +8,9 @@ import CommentThreadPanel from "../CommentThreadPanel";
 import StartSessionModal from "../StartSessionModal";
 import DiagramPromptModal from "../DiagramPromptModal";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
-import type { BoardElements } from "../../hooks/useBoardElements";
-import type { BoardTools } from "../../hooks/useBoardTools";
-import type { BoardCollab } from "../../hooks/useBoardCollab";
-import type { BoardComments } from "../../hooks/useBoardComments";
+import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
+import type { BoardPresence } from "../../types";
 
 /**
  * The board's dialog layer (Month 5/6 Task 1 — extracted verbatim from
@@ -27,6 +25,11 @@ import type { BoardAI } from "../../hooks/useBoardAI";
  *
  * Visibility stays screen state (the header and the canvas open these), so this
  * component only renders; it holds none of it.
+ *
+ * It takes `doc`, `comments` and `ai` as composed objects because it genuinely
+ * uses most of each. Everything it needs from the element model, the tool state
+ * and collaboration is narrow enough to arrive as scalars, which keeps this layer
+ * out of those hooks' blast radius.
  */
 
 interface BoardModalsProps {
@@ -36,12 +39,15 @@ interface BoardModalsProps {
   adminName: string;
 
   doc: BoardDocument;
-  /** Only for the comment panel's "detached" check (the anchor box resolver). */
-  elements: BoardElements;
-  tools: BoardTools;
-  collab: BoardCollab;
   comments: BoardComments;
   ai: BoardAI;
+
+  /** Resolves the open comment's anchor box — null means the thread is detached. */
+  boxOfElement: ElementBoxResolver;
+  /** Presence roster offered as session invitees. */
+  presence: BoardPresence[];
+  cheatSheetVisible: boolean;
+  onCloseCheatSheet: () => void;
 
   joinVisible: boolean;
   joinInviteCode?: string;
@@ -66,11 +72,12 @@ export default function BoardModals({
   currentUserId,
   adminName,
   doc,
-  elements,
-  tools,
-  collab,
   comments,
   ai,
+  boxOfElement,
+  presence,
+  cheatSheetVisible,
+  onCloseCheatSheet,
   joinVisible,
   joinInviteCode,
   onJoined,
@@ -87,7 +94,7 @@ export default function BoardModals({
   const activeComment = comments.activeComment;
   const activeCommentDetached =
     !!activeComment &&
-    elements.boxOfElement(activeComment.anchorElementId, activeComment.anchorKind) === null;
+    boxOfElement(activeComment.anchorElementId, activeComment.anchorKind) === null;
 
   return (
     <>
@@ -122,8 +129,8 @@ export default function BoardModals({
 
       {/* Keyboard-shortcuts cheat sheet (opened with `?`) */}
       <ShortcutsCheatSheet
-        visible={tools.cheatSheetVisible}
-        onClose={tools.hideCheatSheet}
+        visible={cheatSheetVisible}
+        onClose={onCloseCheatSheet}
       />
 
       {/* Background-template picker (Phase 12) */}
@@ -159,7 +166,7 @@ export default function BoardModals({
           boardTitle={doc.board?.title ?? "Board"}
           adminId={currentUserId}
           adminName={adminName}
-          presenceUsers={collab.presence}
+          presenceUsers={presence}
           onClose={onCloseSession}
           onSessionCreated={() => {
             onCloseSession();

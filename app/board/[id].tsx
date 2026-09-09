@@ -179,13 +179,15 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     activeTool: tools.activeTool,
     viewport,
     embedMode,
-    // Deliberately a fresh closure every render. Before this refactor the follow
-    // subscription's effect listed the whole `useViewport` controller, which is a
-    // new object literal on every render, so the cursor listener was torn down
-    // and re-created each render while following. Keeping this identity unstable
-    // reproduces that exactly. The churn is a pre-existing perf bug (it thrashes
-    // a Firestore listener ~60x/s during a follow ease) — flagged, not fixed
-    // here, because this task must not change behaviour.
+    // ⚠ Deliberately a fresh closure every render — DO NOT hoist into a
+    // `useCallback` or pass `viewportCtl.animateTo` directly. Before this
+    // refactor the follow subscription's effect listed the whole `useViewport`
+    // controller, which is a new object literal on every render, so the cursor
+    // listener was torn down and re-created each render while following. Keeping
+    // this identity unstable reproduces that exactly. The churn is a pre-existing
+    // perf bug — flagged, not fixed here, because this task must not change
+    // behaviour. Full rationale (and what stabilizing it would change about the
+    // follow ease) is on the follow effect in `src/hooks/useBoardCollab.ts`.
     onLeaderViewport: (v) => viewportCtl.animateTo(v),
   });
 
@@ -512,11 +514,12 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
         currentUserId={user?.uid ?? ""}
         adminName={displayName}
         doc={doc}
-        elements={elements}
-        tools={tools}
-        collab={collab}
         comments={comments}
         ai={ai}
+        boxOfElement={elements.boxOfElement}
+        presence={collab.presence}
+        cheatSheetVisible={tools.cheatSheetVisible}
+        onCloseCheatSheet={tools.hideCheatSheet}
         joinVisible={joinModalVisible}
         joinInviteCode={deepLinkCode}
         onJoined={handleDeepLinkJoined}
