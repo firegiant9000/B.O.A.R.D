@@ -20,6 +20,30 @@ import type { Plan } from "../billing/limits";
 // (functions/src/config.ts) — this request type carries no price field at
 // all, so there is nothing for a client to smuggle a cheaper (or $0) price
 // through. See CreateCheckoutSessionRequest below.
+//
+// THE DOUBLE-CHECKOUT GUARD. `plan !== "free"` alone is not enough: `plan` is
+// written by the webhook only once a Stripe event is PROCESSED
+// (functions/src/http/stripeWebhook.ts), so a subscription can already be
+// live in Stripe — and already recorded on the subscription document — while
+// `plan` here still reads "free". Two real cases land exactly there:
+//   - `checkout.session.completed` with an unsettled async payment method
+//     writes `status: "incomplete"` and leaves `plan` unchanged
+//     (evaluateCheckoutSession) while the first session's payment is still
+//     pending.
+//   - A previously-paying subscription downgraded to "unpaid" or "paused"
+//     also reverts `plan` to "free" (REVOKE_STATUSES), but the Stripe
+//     subscription object itself still exists — it was downgraded, not
+//     deleted.
+// Reading the subscription document below closes that gap for the SEQUENTIAL
+// case: a second `createCheckoutSession` call made after the first event has
+// already been applied is refused.
+//
+// NOT CLOSED by this guard: two calls made back-to-back BEFORE either
+// checkout's payment event has reached the webhook. Both calls read the same
+// pre-payment state (no live subscription recorded yet) and both are
+// permitted — this file holds no lock across concurrent invocations, and
+// closing that race would mean changing the webhook's transaction, which is
+// out of scope for this task. See the task report for the full account.
 
 export interface CreateCheckoutSessionRequest {
   workspaceId: string;
@@ -27,6 +51,39 @@ export interface CreateCheckoutSessionRequest {
 
 export interface CreateCheckoutSessionResponse {
   url: string;
+}
+
+/** Statuses for which a Stripe subscription object is PROVABLY gone or never
+ *  came to life — the only two states excluded from "live" below. Every
+ *  other status, including one this file has never heard of, blocks a second
+ *  Checkout Session: deny-unless-provably-permitted (Global Constraints),
+ *  applied to a category instead of a number.
+ *
+ *  - "canceled": the subscription is deleted. Excluding it is the entire
+ *    point of this allowlist — a customer who cancels through the Customer
+ *    Portal must be able to start a fresh Checkout, or cancellation becomes
+ *    a one-way door out of the product.
+ *  - "incomplete_expired": the FIRST invoice's payment was never confirmed
+ *    (an abandoned 3-D Secure, say) and Stripe auto-expired the subscription
+ *    ~23h later. It never collected anything and never will; a new Checkout
+ *    Session is the only way forward.
+ *
+ *  Deliberately NOT excluded, even though the webhook's own REVOKE_STATUSES
+ *  (functions/src/http/stripeWebhook.ts) groups them with "canceled" for the
+ *  purpose of downgrading `plan`: "unpaid" and "paused" still name a live
+ *  Stripe subscription object that was downgraded, not deleted. Letting a
+ *  fresh Checkout Session through for either would leave that subscription
+ *  dangling alongside a second, genuinely duplicate one — the Customer
+ *  Portal (also this task) is the intended path to fix payment or resume. */
+const NON_LIVE_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+
+/** True unless `status` is PROVABLY one of the two terminal values above. A
+ *  missing/non-string status on an EXISTING subscription document — a
+ *  partially-written doc — also reads as live: it does not prove the
+ *  subscription is gone, so it must not be trusted to permit a second
+ *  charge (fail closed on an unreadable document, per this task's brief). */
+function isLiveSubscriptionStatus(status: unknown): boolean {
+  return !(typeof status === "string" && NON_LIVE_SUBSCRIPTION_STATUSES.has(status));
 }
 
 /** Injected so the handler unit-tests without Firestore or the Stripe SDK,
@@ -39,6 +96,15 @@ export interface CreateCheckoutSessionDeps {
   getWorkspace(
     workspaceId: string
   ): Promise<{ plan?: string; members?: Record<string, string> } | null>;
+  /** Reads `workspaces/{id}/billing/subscription` (Admin SDK; bypasses
+   *  rules). Returns `null` when the workspace has never had a subscription
+   *  document — the ordinary case for a workspace that has never paid, and
+   *  NOT grounds to refuse a checkout. Returns the raw stored `status` field
+   *  when a document exists; kept `unknown` because the document can have
+   *  been written by an older deploy (same convention as
+   *  StripeWebhookStore.readSubscription in functions/src/http/
+   *  stripeWebhook.ts). */
+  getSubscriptionStatus(workspaceId: string): Promise<{ status?: unknown } | null>;
   createSession(params: CreateCheckoutSessionParams): Promise<{ url: string }>;
 }
 
@@ -77,6 +143,18 @@ export async function handleCreateCheckoutSession(
     throw new HttpsError("failed-precondition", "This workspace already has an active plan.");
   }
 
+  // The double-checkout guard — see the header comment for exactly what this
+  // does and does not close. Absence of the subscription document (`null`)
+  // is the ordinary case and must NOT block; only a document that exists AND
+  // is provably live does.
+  const subscription = await deps.getSubscriptionStatus(workspaceId);
+  if (subscription !== null && isLiveSubscriptionStatus(subscription.status)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "This workspace already has an active subscription."
+    );
+  }
+
   return deps.createSession({ workspaceId, uid });
 }
 
@@ -90,6 +168,10 @@ export const createCheckoutSession = onCall(
         return s.exists
           ? (s.data() as { plan?: string; members?: Record<string, string> })
           : null;
+      },
+      getSubscriptionStatus: async (id) => {
+        const snap = await db.doc(`workspaces/${id}/billing/subscription`).get();
+        return snap.exists ? ((snap.data() ?? {}) as { status?: unknown }) : null;
       },
       createSession: async (params) => {
         const secretKey = STRIPE_SECRET_KEY.value();

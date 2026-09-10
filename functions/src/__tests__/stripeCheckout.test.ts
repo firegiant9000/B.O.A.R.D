@@ -11,7 +11,17 @@ function reqFor(uid: string | undefined, data: unknown) {
   return { auth: uid ? { uid } : undefined, data } as never;
 }
 
-const deps = (opts: { role?: string; plan?: unknown } = {}) => {
+const deps = (
+  opts: {
+    role?: string;
+    plan?: unknown;
+    /** The raw `workspaces/{id}/billing/subscription` doc `getSubscriptionStatus`
+     *  resolves to. `undefined` (the default) means no subscription document
+     *  exists at all — the ordinary case. Pass an object (even `{}`, an
+     *  existing doc with no `status` field) to simulate one that does. */
+    subscriptionDoc?: Record<string, unknown>;
+  } = {}
+) => {
   // `plan` is deliberately `unknown` so a test can hand in a garbage runtime
   // value (e.g. "__proto__") to exercise the fail-closed plan check; cast at
   // the boundary so the mock still satisfies CreateCheckoutSessionDeps.
@@ -21,6 +31,7 @@ const deps = (opts: { role?: string; plan?: unknown } = {}) => {
       plan,
       members: { u1: opts.role ?? "owner" },
     })),
+    getSubscriptionStatus: jest.fn(async () => opts.subscriptionDoc ?? null),
     createSession: jest.fn(async () => ({ url: "https://checkout.stripe.test/s/1" })),
   };
 };
@@ -108,6 +119,119 @@ describe("handleCreateCheckoutSession", () => {
     const d = deps({ plan: "__proto__" });
     await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
       .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleCreateCheckoutSession — the double-checkout guard", () => {
+  // `plan` alone cannot catch these: every case below keeps `plan: "free"`
+  // (the default from `deps()`), exactly the state a workspace is in before
+  // its webhook event lands, or after a downgrade — so only the subscription
+  // document read distinguishes them. See the header comment on
+  // functions/src/callable/createCheckoutSession.ts for the exact rationale.
+
+  it("blocks a second checkout while the recorded subscription is active", async () => {
+    const d = deps({ subscriptionDoc: { status: "active" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout while the recorded subscription is trialing", async () => {
+    const d = deps({ subscriptionDoc: { status: "trialing" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout while the first session's payment is still incomplete", async () => {
+    // The "unsettled async payment" case from evaluateCheckoutSession in
+    // functions/src/http/stripeWebhook.ts: `status: "incomplete"`, `plan`
+    // left unchanged (still "free"). This is the case a `plan`-only check
+    // cannot see at all.
+    const d = deps({ subscriptionDoc: { status: "incomplete" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout while the subscription is past_due", async () => {
+    const d = deps({ subscriptionDoc: { status: "past_due" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout while the subscription is unpaid (downgraded, not deleted)", async () => {
+    // Also a `plan`-only blind spot: "unpaid" is one of the webhook's
+    // REVOKE_STATUSES, so `plan` has already reverted to "free" here — but
+    // the Stripe subscription object itself still exists. The Customer
+    // Portal, not a second Checkout, is the intended fix.
+    const d = deps({ subscriptionDoc: { status: "unpaid" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout while the subscription is paused", async () => {
+    const d = deps({ subscriptionDoc: { status: "paused" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout on an unrecognized status this file has never heard of", async () => {
+    // Deny-unless-provably-permitted: a future Stripe status must not
+    // silently fall through to "permitted" just because this file's allowlist
+    // doesn't name it.
+    const d = deps({ subscriptionDoc: { status: "some_future_status" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a second checkout when the subscription document exists but its status is unreadable", async () => {
+    // Fail closed on an unreadable document (brief requirement), not on its
+    // absence: an existing-but-corrupt/partial doc must not be trusted to
+    // permit a second charge.
+    const d = deps({ subscriptionDoc: {} });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .rejects.toMatchObject({ code: "failed-precondition" });
+    expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("permits checkout when the prior subscription is canceled", async () => {
+    const d = deps({ subscriptionDoc: { status: "canceled" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .resolves.toEqual({ url: "https://checkout.stripe.test/s/1" });
+    expect(d.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("permits checkout when the prior subscription's first invoice expired unpaid", async () => {
+    const d = deps({ subscriptionDoc: { status: "incomplete_expired" } });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .resolves.toEqual({ url: "https://checkout.stripe.test/s/1" });
+    expect(d.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("permits checkout when no subscription document exists at all", async () => {
+    // The ordinary case: a workspace that has never paid. `subscriptionDoc`
+    // is omitted, so `getSubscriptionStatus` resolves `null` (see `deps()`).
+    const d = deps();
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
+      .resolves.toEqual({ url: "https://checkout.stripe.test/s/1" });
+    expect(d.getSubscriptionStatus).toHaveBeenCalledWith("ws1");
+    expect(d.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a failure to read the subscription document instead of treating it as absent", async () => {
+    // "Fail closed on an unreadable subscription document" — a thrown read
+    // must not be swallowed and defaulted to "no subscription, go ahead".
+    const d = deps();
+    d.getSubscriptionStatus.mockRejectedValueOnce(new Error("firestore unavailable"));
+    await expect(
+      handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d)
+    ).rejects.toThrow("firestore unavailable");
     expect(d.createSession).not.toHaveBeenCalled();
   });
 });

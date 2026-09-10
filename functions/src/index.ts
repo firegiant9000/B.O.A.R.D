@@ -58,6 +58,16 @@ export { createSession } from "./callable/createSession";
 // against the real Checkout API — see functions/src/billing/stripe.ts.
 export { createCheckoutSession } from "./callable/createCheckoutSession";
 
+// Month 5/6 — mints a Stripe Customer Portal session, where a workspace owner
+// cancels their subscription or changes their payment method. This app builds
+// no cancellation UI of its own; the portal is that UI. Needs a Stripe
+// customer id, which the webhook stamps onto `workspaces/{id}/billing/
+// subscription.stripeCustomerId` on every applied event (see the header of
+// callable/createPortalSession.ts). Same "no Stripe account behind this yet"
+// caveat as createCheckoutSession above — the real portal redirect has not
+// been exercised.
+export { createPortalSession } from "./callable/createPortalSession";
+
 // Month 5 — the Stripe webhook (POST /stripeWebhook). Turns a Stripe
 // subscription's lifecycle into `workspaces/{id}.plan`, and is the only writer
 // of that field after signup: firestore.rules denies `plan` on every client

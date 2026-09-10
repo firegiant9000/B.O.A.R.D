@@ -437,3 +437,36 @@ export interface AppNotification {
 // ships read-only ('view'); 'edit' is reserved for M5/M6 host integrations and is
 // not yet mintable client-side.
 export type EmbedScope = "view" | "edit";
+
+// Month 5/6 — billing. The narrowed set of Stripe subscription statuses this
+// client type surfaces. The document this mirrors (see `Subscription` below)
+// is written by the Stripe webhook from the RAW Stripe status string, which
+// carries more values than this ("trialing", "unpaid", "paused",
+// "incomplete_expired", ...) — src/services/billingService.ts's
+// `mapSubscriptionDoc` passes the stored value through as-is rather than
+// validating it against this union, matching the tolerant-reader convention
+// below. Treat any status this app doesn't explicitly branch on as "not
+// entitled to Pro" (see `isEntitledToPro`), never the reverse.
+export type SubscriptionStatus = "active" | "past_due" | "canceled" | "incomplete";
+
+/** Mirror of workspaces/{id}/billing/subscription, written only by the Stripe
+ *  webhook (functions/src/http/stripeWebhook.ts); this client never writes
+ *  it — firestore.rules denies every client write to `billing/{docId}` and
+ *  permits read only to the workspace owner/admin. Readers tolerate missing
+ *  fields (Global Constraints): the document is written by a Cloud Function
+ *  across several Stripe event types and can legitimately be partial.
+ *
+ *  `currentPeriodEndMs: 0` is the "unknown renewal date" sentinel, not an
+ *  error. The stored doc's underlying field is `number | null`, and it can
+ *  legitimately be `null` for a full billing period — an applied event that
+ *  doesn't itself carry a renewal date, with nothing earlier to carry
+ *  forward (see the out-of-order guard in `applyStripeEvent`). `0` is never
+ *  a real Stripe renewal timestamp in this app's lifetime, so it is safe to
+ *  use as the "unknown" marker rather than surfacing it as a failure. */
+export interface Subscription {
+  schemaVersion: 1;
+  status: SubscriptionStatus;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  currentPeriodEndMs: number;
+}
