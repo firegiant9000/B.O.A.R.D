@@ -1,5 +1,6 @@
 import type { Firestore } from "firebase-admin/firestore";
 import type { ChatUsage } from "./provider";
+import { limitFor, type Plan } from "../billing/limits";
 
 // AI cost telemetry (Month 4, Phase 2). The function writes two things after every
 // provider call: a per-period `aiUsage` counter (calls / tokens / $ estimate, plus a
@@ -163,11 +164,55 @@ export async function recordAiUsage(
 }
 
 /**
- * Function-side AI quota gate (Month 4, Phase 2 — M5 enforcement seam). Reads the
- * live period counter so M5 only flips a limit here rather than re-plumbing the
- * call site. Returns `true` for everyone today, mirroring the client `quotaService`
- * contract; the in-function token-bucket (rateLimit.ts) + dashboard caps are the
- * real backstop until M5.
+ * Pure quota comparison, split out for unit testing without Firestore. A
+ * missing/unknown plan is passed through as `"free"` before reaching `limitFor`,
+ * which *also* falls back to `free` for anything it doesn't recognize — so a
+ * corrupt or future plan value fails closed twice over, not by accident.
+ *
+ * `callsThisPeriod < limit` (rather than `>= limit` for the block case) is the
+ * deliberate direction: pro/edu are `UNLIMITED` (`Infinity`), and
+ * `anything < Infinity` is always `true` with no special-casing needed. Callers
+ * must still pass an already-guarded, finite `callsThisPeriod` — see
+ * `checkAiQuota` below — since comparing a corrupt value here is not a
+ * substitute for validating it at the read site.
+ */
+export function isWithinAiQuota(plan: Plan | undefined, callsThisPeriod: number): boolean {
+  return callsThisPeriod < limitFor((plan ?? "free") as Plan, "aiCallsPerPeriod");
+}
+
+/**
+ * Function-side AI quota gate (Month 4 Phase 2 seam, live as of M5). Reads the
+ * live period counter *and* the workspace's plan, then denies past the cap.
+ * The in-function token-bucket (rateLimit.ts) + dashboard caps remain an
+ * additional backstop; this is now the actual quota enforcement point — the
+ * client `quotaService` is advisory only (see its module header).
+ *
+ * Two different "the data isn't there" cases are deliberately given different
+ * fail-closed defaults, not the same one:
+ *   - No usage doc (or the doc exists but never got a `calls` field) genuinely
+ *     means zero AI calls so far this period — 0 is the correct reading, not a
+ *     fallback.
+ *   - A `calls` field that exists but isn't a finite number (`NaN` — a legal
+ *     Firestore double — a string, etc.) is corrupt data, and defaulting THAT
+ *     to 0 would be the exact fail-open trap this task calls out: a counter
+ *     that gets corrupted and never self-heals (`recordAiUsage`'s
+ *     accumulation is `base.calls + 1`, so once `calls` is `NaN` it stays
+ *     `NaN` forever) would then read as "0 calls" on every single check,
+ *     forever, silently granting unlimited AI to a free workspace. So corrupt
+ *     data instead fails closed to `Number.POSITIVE_INFINITY` — guaranteed to
+ *     land on the deny side of `isWithinAiQuota`'s `< limit` comparison for
+ *     every *finite* plan limit, with no knowledge of which plan is in play
+ *     required at this read site.
+ * `typeof x === "number" && Number.isFinite(x)` is required (not
+ * `Number.isFinite` alone, which isn't a type predicate and won't narrow
+ * under this repo's strict mode) to actually catch `NaN`, since
+ * `typeof NaN === "number"`.
+ *
+ * The workspace's `plan` field gets the same treatment: missing/non-string is
+ * passed through as `undefined`, which `isWithinAiQuota` maps to `"free"`;
+ * a defined-but-unrecognized plan string is deliberately *not* filtered here
+ * and instead relies on `limitFor`'s own `?? PLAN_LIMITS.free` fallback — one
+ * intentional fail-closed path, not two independent ones drifting apart.
  */
 export async function checkAiQuota(
   db: Firestore,
@@ -175,8 +220,21 @@ export async function checkAiQuota(
   now: number
 ): Promise<boolean> {
   const period = currentPeriod(now);
-  const snap = await db.doc(`workspaces/${workspaceId}/aiUsage/${period}`).get();
-  // M5: compare snap usage against workspace.plan limits and return false past cap.
-  void snap;
-  return true;
+  const [usageSnap, workspaceSnap] = await Promise.all([
+    db.doc(`workspaces/${workspaceId}/aiUsage/${period}`).get(),
+    db.doc(`workspaces/${workspaceId}`).get(),
+  ]);
+
+  const rawCalls = usageSnap.exists ? usageSnap.data()?.calls : undefined;
+  const calls =
+    rawCalls === undefined
+      ? 0
+      : typeof rawCalls === "number" && Number.isFinite(rawCalls)
+        ? rawCalls
+        : Number.POSITIVE_INFINITY;
+
+  const rawPlan = workspaceSnap.exists ? workspaceSnap.data()?.plan : undefined;
+  const plan = typeof rawPlan === "string" ? (rawPlan as Plan) : undefined;
+
+  return isWithinAiQuota(plan, calls);
 }
