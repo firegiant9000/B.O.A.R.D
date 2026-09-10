@@ -7,6 +7,7 @@ import CursorLayer from "../CursorLayer";
 import BoardOverlayLayer from "./BoardOverlayLayer";
 import AiSelectionActions from "./AiSelectionActions";
 import PerfectShapePrompt from "./PerfectShapePrompt";
+import PresentingBanner from "./PresentingBanner";
 import type { CommentPin } from "../CommentPinLayer";
 import { Point, Viewport } from "../../lib/viewport";
 import { recognizeShape } from "../../lib/shapeRecognition";
@@ -123,8 +124,28 @@ export default function BoardCanvas({
   // Only pen and eraser produce live strokes; text/select route through taps.
   const isDrawingTool = tools.activeTool === "pen" || tools.activeTool === "eraser";
 
+  // Task 14 — an active, unpaused presenter locks out everyone else's drawing.
+  // `activePresenter` is always null on the presenter's own client (see
+  // `useBoardCollab`), so this never blocks the presenter. UI-only affordance:
+  // the screen already steers `activeTool` away from a drawing tool and hides
+  // the toolbar's drawing buttons while this is true (see `app/board/[id].tsx`)
+  // — these are a second guard on the gesture handlers themselves, not a
+  // security boundary (no Firestore rule backs presenter state).
+  //
+  // Scope: this guards the *drawing* tools (pen, eraser, shape, text) — every
+  // point where they'd otherwise reach a `useBoardElements` write path, which
+  // is stroke start/move/end and the tap handler below, not only stroke
+  // start. It deliberately does NOT cover the select tool's drag-to-move
+  // (`moveSelectGesture` → `commitMove`) or the resize/rotate handles
+  // (`beginTransform`/`moveTransform`/`endTransform`): those stay reachable
+  // while presenting, the same as they already are for an ordinary
+  // `canEdit: false` viewer (Toolbar's read-only row keeps Select enabled
+  // too) — presenting narrows to "no new drawing tools," not "read-only."
+  const presenterLocksDrawing = !!collab.activePresenter && !collab.activePresenter.paused;
+
   const handleStrokeStart = () => {
     if (tools.activeTool === "select") { elements.beginSelectGesture(); return; }
+    if (presenterLocksDrawing) return;
     if (tools.activeTool === "shape") { tools.beginShapeDraft(); return; }
     if (!isDrawingTool) return;
     lastSampleRef.current = 0; // first move of a new stroke always records
@@ -137,6 +158,13 @@ export default function BoardCanvas({
       elements.moveSelectGesture(point, isShiftHeld());
       return;
     }
+    // Task 14 — DrawingCanvas fires move/end for a gesture regardless of what
+    // onStrokeStart did (it has no way to signal "ignore the rest of this
+    // gesture"), so the lock has to be re-checked here too: without this,
+    // `handleStrokeStart`'s early return above was cosmetic — `moveShapeDraft`
+    // has no guard against a missing `beginShapeDraft`, and the eraser branch
+    // below calls `eraseAtPoint` (a real, immediate mutation) on every move.
+    if (presenterLocksDrawing) return;
     if (tools.activeTool === "shape") {
       tools.moveShapeDraft(point, isShiftHeld(), elements.shapeGuideTargets());
       return;
@@ -155,6 +183,15 @@ export default function BoardCanvas({
   const handleStrokeEnd = async () => {
     if (tools.activeTool === "select") {
       await elements.endSelectGesture();
+      return;
+    }
+    // Task 14 — same reasoning as the guard in handleStrokeMove: this is the
+    // call that actually persists a stroke/shape (`commitStroke` /
+    // `saveShapeFromDraft`), so it must not rely on handleStrokeStart alone
+    // having skipped initialization. Clear any points a pre-lock portion of
+    // this same gesture already accumulated rather than committing them.
+    if (presenterLocksDrawing) {
+      setCurrentPoints(null);
       return;
     }
     if (tools.activeTool === "shape") {
@@ -232,6 +269,13 @@ export default function BoardCanvas({
       elements.selectAtPoint(point, isShiftHeld());
       return;
     }
+    // Task 14 — same drawing-tool lock as stroke start/move/end, applied to
+    // the tap path: a stationary tap is how text gets created, the eraser
+    // deletes, and the pen drops a dot, so all three are real mutations that
+    // need the same guard. Comment tapping (above) and select (above) are
+    // deliberately outside this check — see the scope note on
+    // `presenterLocksDrawing`.
+    if (presenterLocksDrawing) return;
     if (tools.activeTool === "text") {
       if (editingTextId || elements.selection.count > 0) {
         // First tap on blank canvas deselects the active element
@@ -358,8 +402,17 @@ export default function BoardCanvas({
         selfId={currentUserId}
         blockedIds={blockedIds}
       />
-      {/* Phase 7 — follow-mode indicator. Tapping it (or the canvas) exits. */}
-      {collab.followingId && (
+      {/* Phase 7 — follow-mode indicator. Tapping it (or the canvas) exits.
+          Task 14: suppressed while `activePresenter` is set (active or
+          paused) — both banners render top-center and would overlap. While
+          the presentation is active our camera mirrors the presenter, not
+          `followingId` (precedence case 1 in `src/lib/presenter.ts`), so
+          "Following X" would be misleading then; while it's paused the
+          camera *does* fall back to `followingId` (case 2 → case 3), but the
+          presenter banner still wins the shared banner slot so the room's
+          attention stays on the paused presentation rather than switching
+          banners mid-pause. */}
+      {collab.followingId && !collab.activePresenter && (
         <TouchableOpacity style={styles.followBanner} onPress={collab.exitFollow} activeOpacity={0.85}>
           <Ionicons name="eye-outline" size={15} color="#fff" />
           <Text style={styles.followBannerText} numberOfLines={1}>
@@ -368,6 +421,13 @@ export default function BoardCanvas({
           <Ionicons name="close" size={15} color="#fff" />
         </TouchableOpacity>
       )}
+      {/* Task 14 — audience-facing presenter banner. Renders nothing when
+          `activePresenter` is null (nobody but possibly me is presenting —
+          it's always null on the presenter's own client). */}
+      <PresentingBanner
+        presenterName={collab.activePresenter?.displayName ?? null}
+        paused={collab.activePresenter?.paused ?? false}
+      />
       {enablePanZoom && (
         <ZoomControls
           scale={viewport.scale}

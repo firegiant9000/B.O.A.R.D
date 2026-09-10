@@ -182,6 +182,18 @@ export interface CursorPresence {
   // The userId this author is currently following, or null. Broadcast so peers
   // can break a follow cycle (A follows B while B follows A).
   following?: string | null;
+  // Month 5/6 Task 14 (presenter mode). True while this author is presenting
+  // to the whole board — an active presenter overrides every other viewer's
+  // individual follow choice (src/lib/presenter.ts#resolveViewportSource).
+  // Optional / migration-tolerant: a client that predates presenter mode never
+  // writes this field, and the subscriber maps its absence to `false`.
+  presenting?: boolean;
+  // True while the presenter above has paused. A pause releases the
+  // audience's viewport back to their own control (or their individual follow
+  // choice) but deliberately does NOT clear `presenting` — the audience
+  // banner stays up through a pause. Meaningless when `presenting` is
+  // false/absent. Same migration-tolerance as `presenting`.
+  presenterPaused?: boolean;
 }
 
 export interface Session {

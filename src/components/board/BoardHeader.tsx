@@ -47,6 +47,16 @@ interface BoardHeaderProps {
   endingSession: boolean;
   onEndSession: () => void;
   onStartSession: () => void;
+
+  // Task 14 — admin/host-only presenter controls. Gated on the same `isAdmin`
+  // as the session controls above: this board has no separate "host" role.
+  isPresenting: boolean;
+  /** Meaningless while `isPresenting` is false. */
+  isPresenterPaused: boolean;
+  onStartPresenting: () => void;
+  onStopPresenting: () => void;
+  onPausePresenting: () => void;
+  onResumePresenting: () => void;
 }
 
 export default function BoardHeader({
@@ -74,6 +84,12 @@ export default function BoardHeader({
   endingSession,
   onEndSession,
   onStartSession,
+  isPresenting,
+  isPresenterPaused,
+  onStartPresenting,
+  onStopPresenting,
+  onPausePresenting,
+  onResumePresenting,
 }: BoardHeaderProps) {
   return (
     <View style={styles.header}>
@@ -163,6 +179,31 @@ export default function BoardHeader({
                 <Text style={styles.startSessionText}>Session</Text>
               </TouchableOpacity>
             )}
+            {/* Task 14 — presenter toggle, same isAdmin gate as Session above. */}
+            {isPresenting ? (
+              <>
+                <TouchableOpacity
+                  style={styles.iconBtn}
+                  onPress={isPresenterPaused ? onResumePresenting : onPausePresenting}
+                  hitSlop={8}
+                >
+                  <Ionicons
+                    name={isPresenterPaused ? "play-circle-outline" : "pause-circle-outline"}
+                    size={20}
+                    color="#2563eb"
+                  />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.stopPresentingBtn} onPress={onStopPresenting}>
+                  <Ionicons name="easel-outline" size={16} color="#fff" />
+                  <Text style={styles.startSessionText}>Stop</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity style={styles.presentBtn} onPress={onStartPresenting}>
+                <Ionicons name="easel-outline" size={16} color="#fff" />
+                <Text style={styles.startSessionText}>Present</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={styles.iconBtn}
               onPress={() =>
@@ -228,6 +269,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     backgroundColor: "#ef4444",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  presentBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#7c3aed",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  stopPresentingBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#6b7280",
     paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 8,

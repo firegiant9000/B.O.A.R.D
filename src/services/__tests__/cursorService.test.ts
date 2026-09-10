@@ -9,6 +9,7 @@ import {
   removeCursor,
   visibleCursors,
   CURSOR_STALE_MS,
+  CURSOR_WRITE_INTERVAL_MS,
 } from "../cursorService";
 
 const setDoc = fs.setDoc as jest.Mock;
@@ -59,6 +60,72 @@ describe("subscribeToCursors", () => {
     expect(received[0]).toMatchObject({ userId: "u2", x: 5, y: 6, tool: "pen" });
     expect(received[1]).toMatchObject({ userId: "u3", x: 0, y: 0, tool: "pen", updatedAt: 0 });
     expect(typeof unsub).toBe("function");
+  });
+
+  it("maps presenting/presenterPaused, defaulting a pre-Task-14 doc to false (Task 14)", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u8",
+            {
+              userId: "u8",
+              displayName: "Presenter",
+              x: 0,
+              y: 0,
+              tool: "pen",
+              updatedAt: 1,
+              presenting: true,
+              presenterPaused: true,
+            },
+          ],
+          // Older-shape doc from a client that predates presenter mode.
+          ["u9", { userId: "u9", displayName: "Old", x: 0, y: 0, tool: "pen", updatedAt: 1 }],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("b7", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0]).toMatchObject({ presenting: true, presenterPaused: true });
+    expect(received[1]).toMatchObject({ presenting: false, presenterPaused: false });
+  });
+});
+
+describe("publishCursor — presenter fields (Task 14)", () => {
+  it("omits presenting/presenterPaused from the written doc when false", () => {
+    publishCursor("b5", "u6", {
+      displayName: "U6",
+      x: 0,
+      y: 0,
+      tool: "pen",
+      presenting: false,
+      presenterPaused: false,
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).not.toHaveProperty("presenting");
+    expect(written).not.toHaveProperty("presenterPaused");
+  });
+
+  it("writes presenting/presenterPaused when true", () => {
+    publishCursor("b6", "u7", {
+      displayName: "U7",
+      x: 0,
+      y: 0,
+      tool: "pen",
+      presenting: true,
+      presenterPaused: true,
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).toMatchObject({ presenting: true, presenterPaused: true });
+  });
+
+  it("does not change the write ceiling — CURSOR_WRITE_INTERVAL_MS is untouched", () => {
+    expect(CURSOR_WRITE_INTERVAL_MS).toBe(50);
   });
 });
 

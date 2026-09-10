@@ -32,6 +32,20 @@ export interface CursorPayload {
   viewport?: { x: number; y: number; scale: number };
   /** Phase 7: who this author is following (for the cross-client cycle guard). */
   following?: string | null;
+  /**
+   * Task 14 (presenter mode): true while this author is presenting to the
+   * whole board. Additive field on this same ephemeral payload — presenter
+   * mode is deliberately NOT a second realtime channel. See
+   * `src/lib/presenter.ts#resolveViewportSource` for the precedence between
+   * an active presenter and an individual follow choice.
+   */
+  presenting?: boolean;
+  /**
+   * Task 14: true while the presenter above has paused. A pause releases
+   * every viewer's viewport but does not itself clear `presenting` — the
+   * audience banner stays up through a pause.
+   */
+  presenterPaused?: boolean;
 }
 
 // ~20Hz write ceiling. The render side throttles independently (~12Hz) in the
@@ -67,8 +81,12 @@ function writerFor(boardId: string, userId: string): Throttled<[CursorPayload]> 
     w = throttle((payload: CursorPayload) => {
       // Ephemeral: a dropped cursor frame is harmless, so writes never surface
       // an error or block — they're fire-and-forget.
-      // Firestore rejects `undefined` fields, so viewport/following are only
-      // spread in when present — keeping the doc shape stable for legacy readers.
+      // Firestore rejects `undefined` fields, so viewport/following/presenting
+      // are only spread in when present — keeping the doc shape stable for
+      // legacy readers. `setDoc` (no `{ merge: true }`) replaces the whole
+      // doc each write, so omitting `presenting`/`presenterPaused` here (they
+      // are only ever truthy) is exactly how a presenter's own next
+      // pointer-move write clears a stale `presenting: true` after they stop.
       setDoc(cursorRef(boardId, userId), {
         userId,
         displayName: payload.displayName,
@@ -78,6 +96,8 @@ function writerFor(boardId: string, userId: string): Throttled<[CursorPayload]> 
         updatedAt: Date.now(),
         ...(payload.viewport ? { viewport: payload.viewport } : {}),
         ...(payload.following !== undefined ? { following: payload.following } : {}),
+        ...(payload.presenting ? { presenting: true } : {}),
+        ...(payload.presenterPaused ? { presenterPaused: true } : {}),
       }).catch(() => {});
     }, CURSOR_WRITE_INTERVAL_MS);
     writers.set(key, w);
@@ -108,6 +128,10 @@ export const firestoreTransport: CursorTransport = {
               ? data.viewport
               : undefined,
           following: typeof data.following === "string" ? data.following : null,
+          // Task 14: tolerate a pre-presenter-mode doc (field absent) by
+          // defaulting to false rather than leaving it undefined.
+          presenting: data.presenting === true,
+          presenterPaused: data.presenterPaused === true,
         };
       });
       cb(cursors);

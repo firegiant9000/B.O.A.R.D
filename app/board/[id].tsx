@@ -183,17 +183,35 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     activeTool: tools.activeTool,
     viewport,
     embedMode,
-    // ⚠ Deliberately a fresh closure every render — DO NOT hoist into a
-    // `useCallback` or pass `viewportCtl.animateTo` directly. Before this
-    // refactor the follow subscription's effect listed the whole `useViewport`
-    // controller, which is a new object literal on every render, so the cursor
-    // listener was torn down and re-created each render while following. Keeping
-    // this identity unstable reproduces that exactly. The churn is a pre-existing
-    // perf bug — flagged, not fixed here, because this task must not change
-    // behaviour. Full rationale (and what stabilizing it would change about the
-    // follow ease) is on the follow effect in `src/hooks/useBoardCollab.ts`.
+    // Task 14 resolved the churn question this closure used to raise: the hook
+    // now reads `onLeaderViewport` through a ref rather than listing it as an
+    // effect dependency, so its identity no longer matters — this inline arrow
+    // can stay exactly as it is, fresh every render, memoized or not. Full
+    // rationale on the cursor-subscription effect in
+    // `src/hooks/useBoardCollab.ts`.
     onLeaderViewport: (v) => viewportCtl.animateTo(v),
   });
+
+  // Task 14 — while someone *else* is presenting and hasn't paused, the
+  // audience's own drawing tools are disabled: `collab.activePresenter` is
+  // already `null` for the presenter's own client (see
+  // `useBoardCollab`'s cursor-subscription effect), so this never locks out
+  // the presenter themselves. This is a client-side affordance only — no
+  // Firestore rule backs it (presenter state isn't part of the write-role
+  // model), so it stops the toolbar and gesture handlers from offering
+  // drawing, not a still-connected client from writing directly.
+  const presenterLocksDrawing = !!collab.activePresenter && !collab.activePresenter.paused;
+
+  // If a presentation starts (or resumes) while this viewer's own tool is
+  // still a drawing tool from before, snap back to Select rather than leaving
+  // a hidden-but-still-active pen tool armed.
+  useEffect(() => {
+    if (!presenterLocksDrawing) return;
+    if (tools.activeTool === "pen" || tools.activeTool === "eraser" || tools.activeTool === "shape" || tools.activeTool === "text") {
+      tools.setActiveTool("select");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenterLocksDrawing]);
 
   const comments = useBoardComments(id!, {
     user,
@@ -412,6 +430,12 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           endingSession={doc.endingSession}
           onEndSession={doc.endSession}
           onStartSession={() => setSessionModalVisible(true)}
+          isPresenting={collab.isPresenting}
+          isPresenterPaused={collab.isPresenterPaused}
+          onStartPresenting={collab.startPresenting}
+          onStopPresenting={collab.stopPresenting}
+          onPausePresenting={collab.pausePresenting}
+          onResumePresenting={collab.resumePresenting}
         />
       )}
 
@@ -486,7 +510,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
 
       {/* Contextual pen options (Phase 9) — auto-perfect toggle, only while the
           pen tool is active and the viewer can edit. Hidden in embed mode. */}
-      {tools.activeTool === "pen" && doc.canEdit && !embedMode && (
+      {tools.activeTool === "pen" && doc.canEdit && !presenterLocksDrawing && !embedMode && (
         <PenOptionsBar mode={tools.shapeRecMode} onCycleMode={tools.cycleShapeRecMode} />
       )}
 
@@ -497,7 +521,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           activeColor={tools.activeColor}
           activeStrokeWidth={tools.activeStrokeWidth}
           isAdmin={doc.isAdmin}
-          canEdit={doc.canEdit}
+          canEdit={doc.canEdit && !presenterLocksDrawing}
           canComment={doc.canComment}
           onToolChange={tools.setActiveTool}
           onColorChange={(color) => {
