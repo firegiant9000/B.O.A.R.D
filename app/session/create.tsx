@@ -20,6 +20,8 @@ import { useAuth } from "../../src/hooks/useAuth";
 import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
 import * as sessionService from "../../src/services/sessionService";
+import { isResourceExhausted } from "../../src/services/quotaService";
+import UpsellModal from "../../src/components/UpsellModal";
 
 const DURATION_OPTIONS = [
   { label: "30m", value: 30 },
@@ -48,6 +50,9 @@ export default function CreateSessionScreen() {
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardPickerVisible, setBoardPickerVisible] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  // Task 11: the session-create plan-limit upsell, shown instead of the
+  // generic error alert when createSession rejects with resource-exhausted.
+  const [upsellVisible, setUpsellVisible] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -132,8 +137,18 @@ export default function CreateSessionScreen() {
         });
       }
       router.back();
-    } catch {
-      Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);
+    } catch (error) {
+      // resource-exhausted is the server's real session-cap denial (createSession
+      // callable) — show the upsell instead of the generic alert. Any other
+      // rejection (network, permission, ...) keeps the plain alert; catching
+      // broadly here would make a real failure read as "upgrade". Only the
+      // create path can hit this cap — editing an existing session (isEdit)
+      // never calls createSession.
+      if (!isEdit && isResourceExhausted(error)) {
+        setUpsellVisible(true);
+      } else {
+        Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);
+      }
     } finally {
       setLoading(false);
     }
@@ -174,6 +189,13 @@ export default function CreateSessionScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <UpsellModal
+        visible={upsellVisible}
+        resource="session"
+        workspaceId={selectedBoard?.workspaceId}
+        onDismiss={() => setUpsellVisible(false)}
+      />
+
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>

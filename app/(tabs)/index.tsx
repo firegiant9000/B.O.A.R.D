@@ -35,10 +35,12 @@ import * as friendService from "../../src/services/friendService";
 import { subscribeToNotifications } from "../../src/services/notificationService";
 import { getPinnedBoardIds, setPinnedBoardIds } from "../../src/lib/pinnedBoards";
 import { JoinBoardResult } from "../../src/services/boardService";
+import { isResourceExhausted } from "../../src/services/quotaService";
 import BoardCard from "../../src/components/BoardCard";
 import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
+import UpsellModal from "../../src/components/UpsellModal";
 
 // Phase 10 — the workspace dashboard. Replaces the bare boards list as the default
 // tab landing: pinned boards + upcoming sessions above the fold, then recent boards,
@@ -88,6 +90,9 @@ export default function DashboardScreen() {
   const [newBoardTitle, setNewBoardTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Board | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  // Task 11: the board-create plan-limit upsell. Shown instead of a generic
+  // error when createBoard rejects with resource-exhausted.
+  const [upsellVisible, setUpsellVisible] = useState(false);
 
   const fetchBoards = useCallback(async () => {
     if (!user || !activeWorkspaceId) return;
@@ -254,7 +259,15 @@ export default function DashboardScreen() {
     if (!newBoardTitle.trim() || !user || !activeWorkspaceId) return;
     try {
       const title = newBoardTitle.trim();
-      const boardId = await boardService.createBoard(title, user.uid, activeWorkspaceId);
+      // Task 11: real plan/count from already-loaded state (useWorkspace +
+      // this screen's own board list) — no extra Firestore read.
+      const boardId = await boardService.createBoard(
+        title,
+        user.uid,
+        activeWorkspaceId,
+        activeWorkspace?.plan,
+        boards.length
+      );
       // Phase 8: log the create to the workspace activity feed (fire-and-forget).
       activityService.logBoardCreated({
         workspaceId: activeWorkspaceId,
@@ -267,7 +280,16 @@ export default function DashboardScreen() {
       setCreateModalVisible(false);
       fetchBoards();
     } catch (error: any) {
-      showAlert("Error", error.message ?? "Failed to create board.");
+      // resource-exhausted is the server's real board-cap denial (the
+      // pre-flight above is advisory only) — surface the upsell instead of a
+      // generic error so the upgrade path actually reaches the user. Any
+      // other rejection (network, permission, ...) keeps the plain alert.
+      if (isResourceExhausted(error)) {
+        setCreateModalVisible(false);
+        setUpsellVisible(true);
+      } else {
+        showAlert("Error", error.message ?? "Failed to create board.");
+      }
     }
   };
 
@@ -323,6 +345,13 @@ export default function DashboardScreen() {
         visible={joinModalVisible}
         onClose={() => setJoinModalVisible(false)}
         onJoined={handleJoined}
+      />
+
+      <UpsellModal
+        visible={upsellVisible}
+        resource="board"
+        workspaceId={activeWorkspaceId ?? undefined}
+        onDismiss={() => setUpsellVisible(false)}
       />
 
       <ScrollView

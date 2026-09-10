@@ -13,10 +13,11 @@ import {
   Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { BoardPresence, FriendRequest } from "../types";
+import { BoardPresence, FriendRequest, Plan } from "../types";
 import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as notificationService from "../services/notificationService";
+import { isResourceExhausted } from "../services/quotaService";
 import { showAlert } from "../utils/alerts";
 
 interface StartSessionModalProps {
@@ -28,8 +29,16 @@ interface StartSessionModalProps {
   adminId: string;
   adminName: string;
   presenceUsers: BoardPresence[];
+  /** The board's workspace plan (Task 11), for the advisory quota pre-flight —
+   *  already loaded by the caller (useBoardDocument's boardWorkspace), so this
+   *  never triggers an extra read. */
+  plan?: Plan;
   onClose: () => void;
   onSessionCreated: (sessionId: string) => void;
+  /** The server denied this create as resource-exhausted (Task 11): the
+   *  caller should close this modal and show the upsell instead of the
+   *  generic error alert. */
+  onQuotaExceeded: () => void;
 }
 
 interface SelectableUser {
@@ -46,8 +55,10 @@ export default function StartSessionModal({
   adminId,
   adminName,
   presenceUsers,
+  plan,
   onClose,
   onSessionCreated,
+  onQuotaExceeded,
 }: StartSessionModalProps) {
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState("60");
@@ -131,19 +142,22 @@ export default function StartSessionModal({
     try {
       const participantIds = Array.from(selectedIds);
 
-      const sessionId = await sessionService.createSession({
-        boardId,
-        workspaceId,
-        boardTitle,
-        title: title.trim(),
-        description: "",
-        scheduledAt: new Date(),
-        durationMinutes: durationNum,
-        createdById: adminId,
-        createdByName: adminName,
-        participantIds,
-        status: "active",
-      });
+      const sessionId = await sessionService.createSession(
+        {
+          boardId,
+          workspaceId,
+          boardTitle,
+          title: title.trim(),
+          description: "",
+          scheduledAt: new Date(),
+          durationMinutes: durationNum,
+          createdById: adminId,
+          createdByName: adminName,
+          participantIds,
+          status: "active",
+        },
+        { plan }
+      );
 
       // Send push notifications to participants who have tokens
       if (participantIds.length > 0) {
@@ -165,8 +179,17 @@ export default function StartSessionModal({
           ? `Session created and ${participantIds.length} participant(s) have been notified.`
           : "Session created. No participants were notified."
       );
-    } catch {
-      showAlert("Error", "Failed to create session. Please try again.");
+    } catch (error) {
+      // resource-exhausted is the server's real session-cap denial (the
+      // pre-flight above is advisory only) — hand off to the caller's upsell
+      // instead of this generic alert. Any other rejection (network,
+      // permission, ...) keeps the plain alert; catching broadly here would
+      // make a real failure read as "upgrade".
+      if (isResourceExhausted(error)) {
+        onQuotaExceeded();
+      } else {
+        showAlert("Error", "Failed to create session. Please try again.");
+      }
     } finally {
       setSubmitting(false);
     }

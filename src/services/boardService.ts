@@ -15,7 +15,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, auth, functions } from "../config/firebase";
-import { Board, BoardRole, Workspace, WorkspaceRole } from "../types";
+import { Board, BoardRole, Plan, Workspace, WorkspaceRole } from "../types";
 import { isBackgroundTemplate } from "../lib/backgrounds";
 import { assertQuota } from "./quotaService";
 
@@ -108,19 +108,24 @@ interface CreateBoardResponse {
 /**
  * Server-enforced since M5: the `createBoard` callable owns the free-tier
  * board-count gate and generates the invite code (a client can no longer pick
- * its own). The client signature is unchanged so every call site keeps
- * working untouched.
+ * its own). The client signature is unchanged (title/ownerId/workspaceId) so
+ * every pre-existing call site keeps working untouched; `plan`/`currentCount`
+ * are additive and optional.
  */
 export async function createBoard(
   title: string,
   ownerId: string,
-  workspaceId: string
+  workspaceId: string,
+  // Advisory-only pre-flight (see quotaService's module header) — the caller
+  // supplies the workspace's already-loaded plan and board count so this can
+  // warn before a pointless round trip. Optional: an omitted value falls back
+  // to checkQuota's own "free"/0 defaults, which always predicts "under the
+  // cap" — never the enforcement point either way; the callable below still
+  // makes the real decision and callers must still handle its rejection.
+  plan?: Plan,
+  currentCount?: number
 ): Promise<string> {
-  // Advisory-only pre-flight (see quotaService's module header) — always
-  // passes today since it's called with just 2 args, so `plan`/`currentCount`
-  // fall back to "free"/0. Left in place inert; a later task wires it to the
-  // workspace's real plan/count together with the upsell modal it feeds.
-  await assertQuota(workspaceId, "board");
+  await assertQuota(workspaceId, "board", plan, currentCount);
   void ownerId; // the function derives the owner from the auth token, not the client
 
   const fn = httpsCallable<{ workspaceId: string; title: string }, CreateBoardResponse>(

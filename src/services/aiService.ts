@@ -159,8 +159,13 @@ async function generateSessionSummaryViaGateway(
     return summary;
   } catch (e: any) {
     // Surface the function's HttpsError message (rate limit, permission, etc.)
-    // rather than a generic "internal" wrapper.
-    throw new Error(e?.message ?? "Failed to generate summary.");
+    // AND its `code` — a plain `Error(message)` here would silently drop the
+    // `resource-exhausted` code the AI-quota gate throws (functions/src/ai/
+    // usage.ts#checkAiQuota), and callers need that code to show the upsell
+    // modal instead of a generic failure (see quotaService.isResourceExhausted).
+    throw Object.assign(new Error(e?.message ?? "Failed to generate summary."), {
+      code: e?.code,
+    });
   }
 }
 
@@ -227,8 +232,12 @@ export async function recognizeHandwriting(
     if (!data?.text) throw new Error("No legible text was found in the selection.");
     return data;
   } catch (e: any) {
-    // Surface the function's HttpsError message (rate limit, not-found, etc.).
-    throw new Error(e?.message ?? "Failed to recognize handwriting.");
+    // Surface the function's HttpsError message AND its `code` (see the same
+    // note on `generateSessionSummaryViaGateway` above) — `resource-exhausted`
+    // from checkAiQuota must survive so a caller can show the upsell modal.
+    throw Object.assign(new Error(e?.message ?? "Failed to recognize handwriting."), {
+      code: e?.code,
+    });
   }
 }
 
@@ -276,8 +285,12 @@ export async function explainSelection(
     if (!data?.text) throw new Error("Couldn't produce an explanation for that selection.");
     return data;
   } catch (e: any) {
-    // Surface the function's HttpsError message (rate limit, not-found, etc.).
-    throw new Error(e?.message ?? "Failed to explain the selection.");
+    // Surface the function's HttpsError message AND its `code` (see the same
+    // note on `generateSessionSummaryViaGateway` above) — `resource-exhausted`
+    // from checkAiQuota must survive so a caller can show the upsell modal.
+    throw Object.assign(new Error(e?.message ?? "Failed to explain the selection."), {
+      code: e?.code,
+    });
   }
 }
 
@@ -319,8 +332,12 @@ export async function textToDiagram(
     if (!data?.mermaid) throw new Error("Couldn't generate a diagram for that prompt.");
     return data;
   } catch (e: any) {
-    // Surface the function's HttpsError message (rate limit, not-found, etc.).
-    throw new Error(e?.message ?? "Failed to generate the diagram.");
+    // Surface the function's HttpsError message AND its `code` (see the same
+    // note on `generateSessionSummaryViaGateway` above) — `resource-exhausted`
+    // from checkAiQuota must survive so a caller can show the upsell modal.
+    throw Object.assign(new Error(e?.message ?? "Failed to generate the diagram."), {
+      code: e?.code,
+    });
   }
 }
 

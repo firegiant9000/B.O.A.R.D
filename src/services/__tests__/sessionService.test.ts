@@ -89,13 +89,33 @@ describe("createSession", () => {
     expect(sent).not.toHaveProperty("participants");
   });
 
-  it("invokes the quota choke point with the inherited workspace (Phase 5, still inert)", async () => {
+  it("invokes the quota choke point with the inherited workspace, forwarding no plan/count when the caller omits them", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
     mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
 
     await sessionService.createSession(baseSession);
 
-    expect(spy).toHaveBeenCalledWith("ws-1", "session");
+    expect(spy).toHaveBeenCalledWith("ws-1", "session", undefined, undefined);
+    spy.mockRestore();
+  });
+
+  it("forwards the caller's real plan to the pre-flight (Task 11 wiring)", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(baseSession, { plan: "free" });
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "session", "free", undefined);
+    spy.mockRestore();
+  });
+
+  it("forwards an explicit currentCount too, when a caller has one", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(baseSession, { plan: "free", currentCount: 1 });
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "session", "free", 1);
     spy.mockRestore();
   });
 });

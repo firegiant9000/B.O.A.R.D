@@ -11,6 +11,7 @@ import {
 } from "../services/aiService";
 import { mermaidToBoard, DiagramBuild, EmptyDiagramError } from "../lib/mermaid-to-board";
 import { captureException } from "../lib/errorReporting";
+import { isResourceExhausted } from "../services/quotaService";
 import type { SelectionAnchor } from "./useSelection";
 
 /**
@@ -62,6 +63,10 @@ export interface BoardAIBridge {
   adopt: (ids: string[], opts?: { anchor?: SelectionAnchor; edit?: boolean }) => void;
   /** Surface a user-facing failure in the screen's error banner. */
   onError: (message: string) => void;
+  /** Task 11: an AI call was denied resource-exhausted (checkAiQuota, past the
+   *  free plan's AI-call cap) — the screen should show the upsell instead of
+   *  routing this through `onError`'s generic banner. */
+  onQuotaExceeded: () => void;
 }
 
 /** A low-confidence OCR result held back behind a confirm step (Appendix B.7). */
@@ -153,8 +158,15 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
         await placeOcrText(result.text, position);
       }
     } catch (e: any) {
-      captureException(e, { op: "board.ocr" });
-      bridge.onError(e?.message ?? "Couldn't recognize the handwriting.");
+      // resource-exhausted is checkAiQuota's real AI-call-cap denial — show
+      // the upsell instead of the generic error banner. Anything else
+      // (network, not-found, ...) keeps the existing banner path.
+      if (isResourceExhausted(e)) {
+        bridge.onQuotaExceeded();
+      } else {
+        captureException(e, { op: "board.ocr" });
+        bridge.onError(e?.message ?? "Couldn't recognize the handwriting.");
+      }
     } finally {
       setOcrBusy(false);
     }
@@ -201,8 +213,12 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
       });
       bridge.adopt([elId]);
     } catch (e: any) {
-      captureException(e, { op: "board.explain" });
-      bridge.onError(e?.message ?? "Couldn't explain the selection.");
+      if (isResourceExhausted(e)) {
+        bridge.onQuotaExceeded();
+      } else {
+        captureException(e, { op: "board.explain" });
+        bridge.onError(e?.message ?? "Couldn't explain the selection.");
+      }
     } finally {
       setExplainBusy(false);
     }
@@ -235,12 +251,16 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
       setDiagramOpen(false);
       setDiagramPrompt("");
     } catch (e: any) {
-      captureException(e, { op: "board.diagram" });
-      bridge.onError(
-        e instanceof EmptyDiagramError
-          ? "The AI couldn't turn that into a diagram. Try rephrasing it."
-          : e?.message ?? "Couldn't generate the diagram."
-      );
+      if (isResourceExhausted(e)) {
+        bridge.onQuotaExceeded();
+      } else {
+        captureException(e, { op: "board.diagram" });
+        bridge.onError(
+          e instanceof EmptyDiagramError
+            ? "The AI couldn't turn that into a diagram. Try rephrasing it."
+            : e?.message ?? "Couldn't generate the diagram."
+        );
+      }
     } finally {
       setDiagramBusy(false);
     }

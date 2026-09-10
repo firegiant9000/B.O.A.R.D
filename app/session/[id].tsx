@@ -18,12 +18,14 @@ import * as boardService from "../../src/services/boardService";
 import * as notificationService from "../../src/services/notificationService";
 import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
+import { isResourceExhausted } from "../../src/services/quotaService";
 import { getUsersByIds } from "../../src/services/friendService";
 import { exportRecapPdf } from "../../src/utils/recapExport";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 import SessionLobby from "../../src/components/session/SessionLobby";
 import SessionLive from "../../src/components/session/SessionLive";
 import SessionRecap from "../../src/components/session/SessionRecap";
+import UpsellModal from "../../src/components/UpsellModal";
 
 type Profile = { uid: string; displayName: string; email: string };
 
@@ -43,6 +45,9 @@ export default function SessionDetailScreen() {
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // Task 11: the AI-summary plan-limit upsell, shown instead of a generic
+  // alert when the summary call hits resource-exhausted.
+  const [upsellVisible, setUpsellVisible] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const isCreator = session?.createdById === user?.uid;
@@ -172,7 +177,14 @@ export default function SessionDetailScreen() {
       await sessionService.updateSessionSummary(session.id, summary);
       setSession((prev) => (prev ? { ...prev, summary } : prev));
     } catch (error: any) {
-      showAlert("Summary Failed", error?.message ?? "Failed to generate summary.");
+      // resource-exhausted is checkAiQuota's real AI-call-cap denial — show
+      // the upsell instead of the generic alert. Anything else (network,
+      // missing key, ...) keeps the existing alert.
+      if (isResourceExhausted(error)) {
+        setUpsellVisible(true);
+      } else {
+        showAlert("Summary Failed", error?.message ?? "Failed to generate summary.");
+      }
     } finally {
       setGenerating(false);
     }
@@ -247,6 +259,13 @@ export default function SessionDetailScreen() {
 
   return (
     <View style={styles.container}>
+      <UpsellModal
+        visible={upsellVisible}
+        resource="aiSummary"
+        workspaceId={session.workspaceId || board?.workspaceId}
+        onDismiss={() => setUpsellVisible(false)}
+      />
+
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#333" />

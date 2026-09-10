@@ -37,14 +37,37 @@ describe("createBoard", () => {
     expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("invokes the quota choke point for the board's workspace (Phase 5, still inert)", async () => {
+  it("invokes the quota choke point for the board's workspace, forwarding no plan/count when the caller omits them", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
     mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
     await boardService.createBoard("My Board", "owner-1", "ws-1");
 
-    expect(spy).toHaveBeenCalledWith("ws-1", "board");
+    expect(spy).toHaveBeenCalledWith("ws-1", "board", undefined, undefined);
     spy.mockRestore();
+  });
+
+  it("forwards the caller's real plan and current board count to the pre-flight (Task 11 wiring)", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
+
+    await boardService.createBoard("My Board", "owner-1", "ws-1", "free", 4);
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "board", "free", 4);
+    spy.mockRestore();
+  });
+
+  it("still calls the createBoard callable when the pre-flight's own QuotaExceededError would be thrown — the callable is the real gate", async () => {
+    // Advisory pre-flight throwing does NOT get silently swallowed here — this
+    // pins that createBoard doesn't catch/ignore it, so the caller (which is
+    // responsible for catching resource-exhausted from the server) also sees
+    // this pre-flight failure rather than it vanishing.
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
+
+    await expect(
+      boardService.createBoard("My Board", "owner-1", "ws-1", "free", 5)
+    ).rejects.toBeInstanceOf(quotaService.QuotaExceededError);
+    expect(mockCallable).not.toHaveBeenCalled();
   });
 
   it("binds httpsCallable to the \"createBoard\" function name", async () => {

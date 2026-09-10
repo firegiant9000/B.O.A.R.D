@@ -21,7 +21,9 @@ import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
 import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
+import { isResourceExhausted } from "../../src/services/quotaService";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
+import UpsellModal from "../../src/components/UpsellModal";
 
 type FilterTab = "upcoming" | "active" | "past";
 
@@ -83,6 +85,10 @@ export default function ScheduleScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<FilterTab>("active");
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  // Task 11: the AI-summary plan-limit upsell, shown instead of a generic
+  // alert when a summary call hits resource-exhausted. Holds the session it
+  // was raised for so the modal has a workspaceId to act on.
+  const [upsellSession, setUpsellSession] = useState<Session | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState("");
@@ -233,7 +239,14 @@ export default function ScheduleScreen() {
         prev.map((s) => (s.id === session.id ? { ...s, summary } : s))
       );
     } catch (error: any) {
-      showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
+      // resource-exhausted is checkAiQuota's real AI-call-cap denial — show
+      // the upsell instead of the generic alert. Anything else (network,
+      // missing key, ...) keeps the existing alert.
+      if (isResourceExhausted(error)) {
+        setUpsellSession(session);
+      } else {
+        showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
+      }
     } finally {
       setGeneratingId(null);
     }
@@ -400,6 +413,13 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
+      <UpsellModal
+        visible={!!upsellSession}
+        resource="aiSummary"
+        workspaceId={upsellSession?.workspaceId}
+        onDismiss={() => setUpsellSession(null)}
+      />
+
       {/* Screen header — workspace switcher as the title (Phase 3), consistent
           with the Boards tab top bar. */}
       <View style={styles.screenHeader}>

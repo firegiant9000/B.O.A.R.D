@@ -3,6 +3,8 @@ import {
   assertQuota,
   QuotaExceededError,
   QuotaResource,
+  isResourceExhausted,
+  RESOURCE_EXHAUSTED_CODE,
 } from "../quotaService";
 
 const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary", "aiCall"];
@@ -64,5 +66,46 @@ describe("QuotaExceededError", () => {
     expect(err.name).toBe("QuotaExceededError");
     expect(err.resource).toBe("board");
     expect(err.workspaceId).toBe("ws-1");
+  });
+});
+
+describe("isResourceExhausted", () => {
+  it("matches the real Firebase callable rejection shape (functions/resource-exhausted)", () => {
+    const err = Object.assign(new Error("You've reached your plan's board limit."), {
+      code: "functions/resource-exhausted",
+    });
+    expect(isResourceExhausted(err)).toBe(true);
+    expect(err.code).toBe(RESOURCE_EXHAUSTED_CODE);
+  });
+
+  it("does not match an unprefixed code — the client SDK always prefixes it", () => {
+    // Guards against re-introducing a bare "resource-exhausted" check: that is
+    // the server-side HttpsError code, not what actually reaches the client.
+    expect(isResourceExhausted(Object.assign(new Error("x"), { code: "resource-exhausted" }))).toBe(
+      false
+    );
+  });
+
+  it("does not match a different callable rejection (e.g. failed-precondition)", () => {
+    expect(
+      isResourceExhausted(Object.assign(new Error("x"), { code: "functions/failed-precondition" }))
+    ).toBe(false);
+  });
+
+  it("does not match a plain network/generic error with no code at all", () => {
+    expect(isResourceExhausted(new Error("Network request failed"))).toBe(false);
+  });
+
+  it("does not match a reworded message alone — this must never branch on .message", () => {
+    const err = Object.assign(new Error("You are completely out of room, upgrade now!"), {
+      code: "functions/failed-precondition",
+    });
+    expect(isResourceExhausted(err)).toBe(false);
+  });
+
+  it("does not throw on non-object / null input", () => {
+    expect(isResourceExhausted(null)).toBe(false);
+    expect(isResourceExhausted(undefined)).toBe(false);
+    expect(isResourceExhausted("resource-exhausted")).toBe(false);
   });
 });

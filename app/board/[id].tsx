@@ -31,6 +31,7 @@ import { useBoardComments } from "../../src/hooks/useBoardComments";
 import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
+import type { QuotaResource } from "../../src/services/quotaService";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
 
@@ -94,6 +95,9 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
   const [historyVisible, setHistoryVisible] = useState(false);
   const [bgPickerVisible, setBgPickerVisible] = useState(false);
+  // Task 11: the plan-limit upsell shown instead of a generic error when
+  // session create or an AI affordance hits resource-exhausted.
+  const [upsellResource, setUpsellResource] = useState<QuotaResource | null>(null);
 
   // Ref to the underlying SVG element on web, for canvas snapshot capture
   const canvasSvgRef = useRef<any>(null);
@@ -249,6 +253,10 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
       }),
     adopt: adoptElements,
     onError: showError,
+    // Task 11: the three AI affordances share one "aiCall" resource — the
+    // generic AI-call quota (src/services/quotaService.ts#QuotaResource) all
+    // of OCR/explain/diagram gate through the same choke point on.
+    onQuotaExceeded: () => setUpsellResource("aiCall"),
   });
 
   // Resolve every comment to a pin at its anchored element. Memoized over the
@@ -532,6 +540,12 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
         onCloseBgPicker={() => setBgPickerVisible(false)}
         sessionVisible={sessionModalVisible}
         onCloseSession={() => setSessionModalVisible(false)}
+        upsellResource={upsellResource}
+        onDismissUpsell={() => setUpsellResource(null)}
+        onSessionQuotaExceeded={() => {
+          setSessionModalVisible(false);
+          setUpsellResource("session");
+        }}
       />
     </KeyboardAvoidingView>
   );

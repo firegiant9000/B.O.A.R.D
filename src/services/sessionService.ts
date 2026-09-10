@@ -16,7 +16,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../config/firebase";
-import { Session, SessionSummary, ParticipantSnapshot } from "../types";
+import { Plan, Session, SessionSummary, ParticipantSnapshot } from "../types";
 import { assertQuota } from "./quotaService";
 import { getUsersByIds } from "./friendService";
 
@@ -69,11 +69,19 @@ interface CreateSessionResponse {
  * `endedAt`, `participants`) aren't sent — they're either stamped server-side
  * at create (`joinCode`, and `startedAt` when `status` is "active") or only
  * ever set later, by `startSession`/`endSession`/`updateSessionSummary`.
+ *
+ * `quota` is the advisory pre-flight's real plan/count (see quotaService's
+ * module header): optional and additive, so every pre-existing call keeps
+ * working untouched. `currentCount` has no honest value to pass yet — the
+ * authoritative monthly count lives in an owner/admin-gated Firestore doc
+ * (see the module header note on `assertQuota`) — so this only ever forwards
+ * `plan` today; a caller that also has a trustworthy count may pass it.
  */
 export async function createSession(
-  data: Omit<Session, "id" | "createdAt">
+  data: Omit<Session, "id" | "createdAt">,
+  quota?: { plan?: Plan; currentCount?: number }
 ): Promise<string> {
-  await assertQuota(data.workspaceId, "session");
+  await assertQuota(data.workspaceId, "session", quota?.plan, quota?.currentCount);
 
   const fn = httpsCallable<
     {

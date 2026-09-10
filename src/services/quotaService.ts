@@ -29,6 +29,20 @@
 // not a create, so no callable could gate it. That is the only enforcement point
 // for that limit; nothing on the Functions side reads it.
 //
+// Workspaces are gated NOWHERE. firestore.rules' `match /workspaces/{workspaceId}`
+// `allow create` requires only that the caller is the new doc's `ownerId`, is
+// recorded as its `'owner'` member, and that `plan == 'free'` — there is no
+// count condition, and rules have no way to write one (they cannot count a
+// caller's existing documents). No callable owns
+// workspace creation the way createBoard/createSession own theirs; the client
+// (workspaceService.createWorkspace) writes the doc directly. PLAN_LIMITS.free.
+// workspaces (src/lib/planLimits.ts) is a display value only — nothing denies a
+// user who creates a second, tenth, or hundredth workspace, and each fresh
+// workspace grants its own 5 boards and 5 AI calls. This is the free tier's most
+// expensive uncapped resource. Closing it needs a `createWorkspace` callable
+// mirroring createBoard/createSession — out of scope here; do not treat this
+// limit as enforced anywhere.
+//
 // Never add a limit here and consider it enforced without independently
 // confirming the server side actually denies it. A patched bundle skips this
 // file entirely.
@@ -56,7 +70,9 @@ export class QuotaExceededError extends Error {
   }
 }
 
-const RESOURCE_TO_LIMIT: Record<QuotaResource, Parameters<typeof limitFor>[1]> = {
+// Exported so callers that display the limit (the upsell modal) resolve the same
+// `planLimits.ts` key this module's own check uses, instead of re-deriving it.
+export const RESOURCE_TO_LIMIT: Record<QuotaResource, Parameters<typeof limitFor>[1]> = {
   board: "boards",
   session: "sessionsPerPeriod",
   aiSummary: "aiCallsPerPeriod",
@@ -91,12 +107,17 @@ export async function checkQuota(
  * catching or not catching this error changes nothing about server
  * enforcement, which happens independently in the callable / `checkAiQuota`.
  *
- * TODO(quota-wiring): the production call sites (`boardService.createBoard`,
- * `sessionService.createSession`) currently call this with 2 args, so `plan`
- * and `currentCount` fall back to `"free"`/`0` and `checkQuota` always
- * evaluates `0 < limit` -> true. The comparison logic above is exercised only
- * by this file's own tests until those call sites are wired to pass the
- * workspace's real plan and current count.
+ * Wiring note: `boardService.createBoard` passes its caller's real `plan` and
+ * board count (both already loaded on the one dashboard screen that creates
+ * boards — no extra read here). `sessionService.createSession` passes a real
+ * `plan` (the board's already-loaded workspace) but NOT a real `currentCount`:
+ * the authoritative count lives in `workspaces/{id}/usage/{period}`
+ * (functions/src/billing/usage.ts), which firestore.rules restricts to
+ * workspace owner/admin readers — most session creators can't read it, and
+ * fetching it would add the very round trip this pre-flight exists to avoid.
+ * `currentCount` for "session" falls back to its `0` default until a
+ * member-readable session-usage path exists; the plan is still real, and the
+ * server's rejection is still handled regardless of what this predicts.
  */
 export async function assertQuota(
   workspaceId: string,
@@ -107,4 +128,29 @@ export async function assertQuota(
   if (!(await checkQuota(workspaceId, resource, plan, currentCount))) {
     throw new QuotaExceededError(resource, workspaceId);
   }
+}
+
+// ── server rejection detection ──────────────────────────────────────────────
+// This is the REAL gate's rejection (see the module header) — the thing every
+// create/AI call site must catch to show the upsell modal instead of a generic
+// error. The Firebase JS SDK wraps a callable's HttpsError into a
+// `FunctionsError` whose `.code` is prefixed `"functions/"` (the RPC status
+// alone, e.g. "resource-exhausted", never reaches the client unprefixed) — see
+// `FunctionsError` in @firebase/functions. Call sites must check `.code`
+// through this helper, never `.message` text, so a reworded server message
+// never silently stops being detected.
+export const RESOURCE_EXHAUSTED_CODE = "functions/resource-exhausted";
+
+/** True when `err` is the callable rejection every plan cap throws once a
+ *  create/AI call is past its limit (functions/src/callable/createBoard.ts,
+ *  createSession.ts, and the four AI callables via checkAiQuota). A network
+ *  error, an unrelated HttpsError, or anything else must NOT match — callers
+ *  branch on this instead of catching broadly so a real failure never reads
+ *  as "upgrade". */
+export function isResourceExhausted(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === RESOURCE_EXHAUSTED_CODE
+  );
 }

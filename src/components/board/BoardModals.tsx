@@ -7,10 +7,12 @@ import BackgroundPicker from "../BackgroundPicker";
 import CommentThreadPanel from "../CommentThreadPanel";
 import StartSessionModal from "../StartSessionModal";
 import DiagramPromptModal from "../DiagramPromptModal";
+import UpsellModal from "../UpsellModal";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardPresence } from "../../types";
+import type { QuotaResource } from "../../services/quotaService";
 
 /**
  * The board's dialog layer (Month 5/6 Task 1 — extracted verbatim from
@@ -65,6 +67,15 @@ interface BoardModalsProps {
 
   sessionVisible: boolean;
   onCloseSession: () => void;
+
+  /** Task 11: the plan-limit upsell, driven by whichever create/AI action on
+   *  this screen last hit resource-exhausted (session create, or one of the
+   *  three AI affordances via `ai`). Null hides it. */
+  upsellResource: QuotaResource | null;
+  onDismissUpsell: () => void;
+  /** StartSessionModal caught resource-exhausted: close the session composer
+   *  and show the upsell in its place. */
+  onSessionQuotaExceeded: () => void;
 }
 
 export default function BoardModals({
@@ -90,6 +101,9 @@ export default function BoardModals({
   onCloseBgPicker,
   sessionVisible,
   onCloseSession,
+  upsellResource,
+  onDismissUpsell,
+  onSessionQuotaExceeded,
 }: BoardModalsProps) {
   const activeComment = comments.activeComment;
   const activeCommentDetached =
@@ -167,11 +181,13 @@ export default function BoardModals({
           adminId={currentUserId}
           adminName={adminName}
           presenceUsers={presence}
+          plan={doc.boardWorkspace?.plan}
           onClose={onCloseSession}
           onSessionCreated={() => {
             onCloseSession();
             doc.refreshActiveSession();
           }}
+          onQuotaExceeded={onSessionQuotaExceeded}
         />
       )}
 
@@ -186,6 +202,15 @@ export default function BoardModals({
           onClose={ai.closeDiagram}
         />
       )}
+
+      {/* Task 11 — plan-limit upsell, for session create (above) and the three
+          AI affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback). */}
+      <UpsellModal
+        visible={!!upsellResource}
+        resource={upsellResource ?? "board"}
+        workspaceId={doc.board?.workspaceId}
+        onDismiss={onDismissUpsell}
+      />
     </>
   );
 }
