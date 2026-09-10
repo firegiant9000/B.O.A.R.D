@@ -459,10 +459,16 @@ export type SubscriptionStatus = "active" | "past_due" | "canceled" | "incomplet
  *  `currentPeriodEndMs: 0` is the "unknown renewal date" sentinel, not an
  *  error. The stored doc's underlying field is `number | null`, and it can
  *  legitimately be `null` for a full billing period — an applied event that
- *  doesn't itself carry a renewal date, with nothing earlier to carry
- *  forward (see the out-of-order guard in `applyStripeEvent`). `0` is never
- *  a real Stripe renewal timestamp in this app's lifetime, so it is safe to
- *  use as the "unknown" marker rather than surfacing it as a failure. */
+ *  doesn't itself carry a renewal date, with no earlier value to carry
+ *  forward (see the `currentPeriodEndMs` carry-forward line in
+ *  `applyStripeEvent`, functions/src/http/stripeWebhook.ts — a different
+ *  mechanism from that file's out-of-order guard, which only decides
+ *  whether an event applies at all). `0` is never a real Stripe renewal
+ *  timestamp in this app's lifetime, so it is safe to use as the "unknown"
+ *  marker rather than surfacing it as a failure. Consumers should check
+ *  `hasKnownRenewalDate` (src/services/billingService.ts) before formatting
+ *  this field — `new Date(0)` formats without error, so a naive "Renews on"
+ *  row would render 1 January 1970 with no visible sign of the problem. */
 export interface Subscription {
   schemaVersion: 1;
   status: SubscriptionStatus;

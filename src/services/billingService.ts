@@ -5,7 +5,7 @@ import type { Subscription, SubscriptionStatus } from "../types";
 
 // Month 5/6 — the client-side seam for billing. UI components call these
 // functions, never Firestore or a callable directly (Global Constraint).
-// Tasks 11, 12 and 13 consume `startCheckout`, `openBillingPortal` and
+// The billing UI tasks consume `startCheckout`, `openBillingPortal` and
 // `getSubscription`.
 //
 // The Stripe Customer Portal (opened via `openBillingPortal`) is where a
@@ -29,6 +29,12 @@ import type { Subscription, SubscriptionStatus } from "../types";
  *  an existing-but-empty object still maps to a (maximally defaulted)
  *  Subscription, not null.
  *
+ *  `data == null` (not `=== undefined`) so a runtime `null` — from a caller
+ *  outside TypeScript's view, or a `snap.data()` that returns `null` rather
+ *  than `undefined` — is treated the same as a missing doc instead of
+ *  reaching `data.status` and throwing. That throw is exactly what the
+ *  tolerant-reader convention this function follows exists to prevent.
+ *
  *  `status` is passed through as-is rather than validated against
  *  `SubscriptionStatus` — the stored field is written by the webhook from
  *  Stripe's raw status string, which carries values this narrowed client
@@ -39,9 +45,9 @@ import type { Subscription, SubscriptionStatus } from "../types";
  *  to "incomplete" — the least-entitled value — rather than "active", so a
  *  corrupt/partial doc fails closed. */
 export function mapSubscriptionDoc(
-  data: Record<string, any> | undefined
+  data: Record<string, any> | null | undefined
 ): Subscription | null {
-  if (data === undefined) return null;
+  if (data == null) return null;
   return {
     schemaVersion: 1,
     status: (data.status as SubscriptionStatus | undefined) ?? "incomplete",
@@ -57,23 +63,49 @@ export function mapSubscriptionDoc(
 
 /** Whether `sub` currently entitles its workspace to Pro features, as of
  *  `nowMs`. Deny-unless-provably-permitted (Global Constraints): only
- *  "active", and "past_due" strictly before its recorded period end, grant
- *  anything — every other status (including "incomplete", a status this
- *  union doesn't otherwise name, or a `null` subscription) denies.
+ *  "active", "trialing", and "past_due" strictly before its recorded period
+ *  end, grant anything — every other status (including "incomplete", a
+ *  status this union doesn't otherwise name, or a `null` subscription)
+ *  denies.
+ *
+ *  "trialing" MUST grant: the webhook's own `PRO_STATUSES`
+ *  (functions/src/http/stripeWebhook.ts) is `{active, trialing}` and writes
+ *  `plan: "pro"` for a trialing subscription — so the server already treats
+ *  a trialing workspace as fully Pro. If this function denied it, a
+ *  trialing customer would be shown an upgrade prompt for a plan they
+ *  already have. `status` is widened to `string` for this comparison
+ *  because "trialing" is one of the raw Stripe values `mapSubscriptionDoc`
+ *  passes through untouched (see its doc comment) but is not a member of
+ *  the 4-value `SubscriptionStatus` union, so comparing the narrowed type
+ *  directly against the "trialing" literal would be a compile error
+ *  (TS2367: no overlap) even though the runtime value is real.
  *
  *  `nowMs < sub.currentPeriodEndMs` also denies on an unknown renewal date
  *  (`currentPeriodEndMs === 0`, see `mapSubscriptionDoc`): comparing any
  *  realistic epoch-ms `nowMs` against 0 is false, so a past_due subscription
  *  with no recorded period end does not silently get a grace window it
  *  cannot be shown to still be inside. This function is not currently wired
- *  into any UI gate in this task — Tasks 11-13 are the consumers — but it is
- *  written to the same fail-closed discipline the Cloud Function gates use
- *  (functions/src/callable/createBoard.ts, createSession.ts). */
+ *  into any UI gate in this task — the billing UI tasks are the consumers —
+ *  but it is written to the same fail-closed discipline the Cloud Function
+ *  gates use (functions/src/callable/createBoard.ts, createSession.ts). */
 export function isEntitledToPro(sub: Subscription | null, nowMs: number): boolean {
   if (sub === null) return false;
-  if (sub.status === "active") return true;
-  if (sub.status === "past_due") return nowMs < sub.currentPeriodEndMs;
+  const status: string = sub.status;
+  if (status === "active" || status === "trialing") return true;
+  if (status === "past_due") return nowMs < sub.currentPeriodEndMs;
   return false;
+}
+
+/** Whether `sub.currentPeriodEndMs` is a real Stripe renewal timestamp
+ *  rather than the "unknown" sentinel (`0` — see `mapSubscriptionDoc`).
+ *  `new Date(0).toLocaleDateString()` succeeds with no throw, no
+ *  `Invalid Date`, and no `undefined` to trip an optional chain — so a
+ *  "Renews on {date}" row that formats `currentPeriodEndMs` directly would
+ *  render 1 January 1970 with total confidence instead of visibly failing.
+ *  Consumers should branch on this named predicate rather than comparing
+ *  against the magic number themselves. */
+export function hasKnownRenewalDate(sub: Subscription): boolean {
+  return sub.currentPeriodEndMs !== 0;
 }
 
 /** Reads the workspace's subscription state, or `null` if it has never had
@@ -97,6 +129,26 @@ interface CheckoutSessionResponse {
   url: string;
 }
 
+/** Thrown by `startCheckout`/`openBillingPortal` when the callable rejects.
+ *  Preserves the callable's `code` (e.g. `"failed-precondition"`) and
+ *  `details` — such as `{ reason: "subscription-exists", canOpenPortal:
+ *  true }` from the double-checkout guard in
+ *  functions/src/callable/createCheckoutSession.ts, or `{ reason:
+ *  "subscription-paused", canOpenPortal: false }` — instead of collapsing
+ *  every rejection into a bare `Error(message)` the way this seam used to.
+ *  A UI can branch on `.details?.reason`/`.details?.canOpenPortal` rather
+ *  than regex-matching `.message`, which is all a plain `Error` leaves it. */
+export class BillingCallableError extends Error {
+  code?: string;
+  details?: unknown;
+  constructor(message: string, code?: string, details?: unknown) {
+    super(message);
+    this.name = "BillingCallableError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
 /** Starts a Stripe Checkout session for the workspace's Pro upgrade and
  *  returns the URL to redirect the client to. All plan/eligibility checks —
  *  including the double-checkout guard that refuses a second live
@@ -115,9 +167,10 @@ export async function startCheckout(workspaceId: string): Promise<string> {
     return data.url;
   } catch (e: any) {
     // Surfaces the function's HttpsError message (failed-precondition,
-    // permission-denied, ...) rather than a generic wrapper — same
-    // convention as aiService.ts's callable wrappers.
-    throw new Error(e?.message ?? "Failed to start checkout.");
+    // permission-denied, ...) AND its `code`/`details`, rather than
+    // collapsing the rejection into a message-only `Error` — see
+    // `BillingCallableError`.
+    throw new BillingCallableError(e?.message ?? "Failed to start checkout.", e?.code, e?.details);
   }
 }
 
@@ -139,6 +192,10 @@ export async function openBillingPortal(workspaceId: string): Promise<string> {
     if (!data?.url) throw new Error("Stripe did not return a billing portal URL.");
     return data.url;
   } catch (e: any) {
-    throw new Error(e?.message ?? "Failed to open the billing portal.");
+    throw new BillingCallableError(
+      e?.message ?? "Failed to open the billing portal.",
+      e?.code,
+      e?.details
+    );
   }
 }

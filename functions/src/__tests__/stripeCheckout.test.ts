@@ -162,21 +162,36 @@ describe("handleCreateCheckoutSession — the double-checkout guard", () => {
     expect(d.createSession).not.toHaveBeenCalled();
   });
 
-  it("blocks a second checkout while the subscription is unpaid (downgraded, not deleted)", async () => {
+  it("blocks a second checkout while the subscription is unpaid (downgraded, not deleted), pointing at the portal", async () => {
     // Also a `plan`-only blind spot: "unpaid" is one of the webhook's
     // REVOKE_STATUSES, so `plan` has already reverted to "free" here — but
     // the Stripe subscription object itself still exists. The Customer
-    // Portal, not a second Checkout, is the intended fix.
+    // Portal, not a second Checkout, is the intended fix — and, unlike
+    // "This workspace already has an active plan" (the plan check's
+    // message, which would be false here since `plan` is "free"),
+    // `details.reason` says the caller has a subscription to manage.
     const d = deps({ subscriptionDoc: { status: "unpaid" } });
-    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
-      .rejects.toMatchObject({ code: "failed-precondition" });
+    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d)).rejects.toMatchObject({
+      code: "failed-precondition",
+      details: { reason: "subscription-exists", canOpenPortal: true },
+    });
     expect(d.createSession).not.toHaveBeenCalled();
   });
 
-  it("blocks a second checkout while the subscription is paused", async () => {
+  it("blocks a second checkout while the subscription is paused, with an honest operator-only message", async () => {
+    // "paused" comes from `pause_collection`, which is operator-set — the
+    // Customer Portal has no resume control for it, so this denial must NOT
+    // claim the portal is the fix (that would be the false statement flagged
+    // in review): it gets its own message and details.
     const d = deps({ subscriptionDoc: { status: "paused" } });
-    await expect(handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d))
-      .rejects.toMatchObject({ code: "failed-precondition" });
+    const err = await handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d).catch(
+      (e) => e
+    );
+    expect(err).toMatchObject({
+      code: "failed-precondition",
+      details: { reason: "subscription-paused", canOpenPortal: false },
+    });
+    expect(err.message).not.toMatch(/billing portal/i);
     expect(d.createSession).not.toHaveBeenCalled();
   });
 
@@ -233,6 +248,32 @@ describe("handleCreateCheckoutSession — the double-checkout guard", () => {
       handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d)
     ).rejects.toThrow("firestore unavailable");
     expect(d.createSession).not.toHaveBeenCalled();
+  });
+
+  it("denies distinguishably from the plan check, which carries no details", async () => {
+    // Both the guard and the `plan !== "free"` check above it use the SAME
+    // `failed-precondition` code — before this, a caller had no way to tell
+    // them apart except by matching the message string. `details.reason`
+    // (guard-only) is that signal now, and it must actually differ, not just
+    // exist as a type.
+    const guardBlocked = deps({ subscriptionDoc: { status: "active" } });
+    const guardErr = await handleCreateCheckoutSession(
+      reqFor("u1", { workspaceId: "ws1" }),
+      guardBlocked
+    ).catch((e) => e);
+    expect(guardErr.code).toBe("failed-precondition");
+    expect(guardErr.details).toEqual({ reason: "subscription-exists", canOpenPortal: true });
+
+    const planBlocked = deps({ plan: "pro" });
+    const planErr = await handleCreateCheckoutSession(
+      reqFor("u1", { workspaceId: "ws1" }),
+      planBlocked
+    ).catch((e) => e);
+    expect(planErr.code).toBe("failed-precondition");
+    // The plan check throws `new HttpsError(code, message)` with no third
+    // argument — HttpsError's `details` defaults to `undefined` in that case
+    // — so this is the concrete "no signal" the guard's denial improves on.
+    expect(planErr.details).toBeUndefined();
   });
 });
 

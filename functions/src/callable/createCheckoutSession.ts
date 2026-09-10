@@ -73,8 +73,18 @@ export interface CreateCheckoutSessionResponse {
  *  purpose of downgrading `plan`: "unpaid" and "paused" still name a live
  *  Stripe subscription object that was downgraded, not deleted. Letting a
  *  fresh Checkout Session through for either would leave that subscription
- *  dangling alongside a second, genuinely duplicate one — the Customer
- *  Portal (also this task) is the intended path to fix payment or resume. */
+ *  dangling alongside a second, genuinely duplicate one.
+ *
+ *  - "unpaid": the Customer Portal is the intended fix — the customer
+ *    updates their payment method there and Stripe retries the SAME
+ *    subscription, no new Checkout needed.
+ *  - "paused": comes from `pause_collection`, which is operator-set, not
+ *    customer-set, and the Customer Portal exposes no resume control for
+ *    it. Nothing in this app pauses a subscription, so this is reachable
+ *    only by an operator acting directly on Stripe — and that operator is
+ *    also the one who can unpause it. The denial thrown below says so
+ *    honestly (see `denySecondCheckout`) rather than pointing at the
+ *    portal, which would be a false claim for this one status. */
 const NON_LIVE_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
 
 /** True unless `status` is PROVABLY one of the two terminal values above. A
@@ -84,6 +94,35 @@ const NON_LIVE_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"
  *  charge (fail closed on an unreadable document, per this task's brief). */
 function isLiveSubscriptionStatus(status: unknown): boolean {
   return !(typeof status === "string" && NON_LIVE_SUBSCRIPTION_STATUSES.has(status));
+}
+
+/** Denies a second checkout, distinguishably from the plan check just above
+ *  it. Both use `failed-precondition` — the SAME code — because a client
+ *  branching on error code alone couldn't tell them apart, and previously
+ *  neither carried anything else: a caller had no signal beyond a string to
+ *  match against. `details.reason` is that signal, and `startCheckout`
+ *  (src/services/billingService.ts) now preserves it through to the caller
+ *  instead of discarding it.
+ *
+ *  Message and `canOpenPortal` vary by status, because the honest remedy
+ *  does: for everything except "paused", the Customer Portal is a real next
+ *  step (it is the general per-customer billing surface, regardless of the
+ *  specific subscription status behind it). For "paused" specifically it is
+ *  not — see the comment on NON_LIVE_SUBSCRIPTION_STATUSES above — so that
+ *  one status gets its own message rather than repeating a false claim. */
+function denySecondCheckout(status: unknown): never {
+  if (status === "paused") {
+    throw new HttpsError(
+      "failed-precondition",
+      "This workspace's subscription is paused and can only be resumed by an operator.",
+      { reason: "subscription-paused", canOpenPortal: false }
+    );
+  }
+  throw new HttpsError(
+    "failed-precondition",
+    "This workspace's subscription needs attention in the billing portal.",
+    { reason: "subscription-exists", canOpenPortal: true }
+  );
 }
 
 /** Injected so the handler unit-tests without Firestore or the Stripe SDK,
@@ -149,10 +188,7 @@ export async function handleCreateCheckoutSession(
   // is provably live does.
   const subscription = await deps.getSubscriptionStatus(workspaceId);
   if (subscription !== null && isLiveSubscriptionStatus(subscription.status)) {
-    throw new HttpsError(
-      "failed-precondition",
-      "This workspace already has an active subscription."
-    );
+    denySecondCheckout(subscription.status);
   }
 
   return deps.createSession({ workspaceId, uid });

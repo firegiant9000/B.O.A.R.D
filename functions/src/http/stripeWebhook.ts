@@ -229,7 +229,21 @@ const PRO_STATUSES = new Set(["active", "trialing"]);
 
 /** Statuses that take the workspace back to free so the gates re-engage.
  *  `unpaid` and `incomplete_expired` are where Stripe parks a subscription
- *  whose payments have definitively failed; `paused` collects no money either. */
+ *  whose payments have definitively failed; `paused` collects no money either.
+ *
+ *  Deliberately NOT the same set `createCheckoutSession`'s double-checkout
+ *  guard treats as safe to start a fresh Checkout over
+ *  (NON_LIVE_SUBSCRIPTION_STATUSES in functions/src/callable/
+ *  createCheckoutSession.ts) — that set excludes only "canceled" and
+ *  "incomplete_expired", so "unpaid" and "paused" stay blocked there even
+ *  though they revoke Pro here. The two sets answer different questions on
+ *  purpose: this one asks "does the workspace get Pro", the guard asks "is
+ *  it safe to mint a SECOND subscription" — and for "unpaid"/"paused" the
+ *  answer to both is "no", for different reasons. A workspace in either
+ *  state therefore loses Pro here AND is refused a new checkout there,
+ *  simultaneously. That combined state is intentional, not an accidental
+ *  gap between two files that happen to agree — if you change this set,
+ *  check whether the guard's set should still diverge from it. */
 const REVOKE_STATUSES = new Set(["canceled", "unpaid", "incomplete_expired", "paused"]);
 
 /** Statuses where a payment is still in flight. The plan is left exactly as it
