@@ -176,7 +176,7 @@ describe("gateway path (AI_GATEWAY_ENABLED)", () => {
     );
   });
 
-  it("preserves the callable's code on rejection, so a resource-exhausted AI-quota denial can be detected (Task 11)", async () => {
+  it("preserves the callable's code on rejection, so a resource-exhausted AI-quota denial can be detected", async () => {
     // functions/src/ai/usage.ts#checkAiQuota denies via HttpsError("resource-
     // exhausted", ...); a plain `Error(message)` here would silently drop the
     // code a caller needs to show the upsell modal instead of a generic error.
@@ -230,7 +230,7 @@ describe("recognizeHandwriting (Phase 10 OCR)", () => {
     ).rejects.toThrow(/Too many AI requests/);
   });
 
-  it("preserves the callable's code on rejection (Task 11)", async () => {
+  it("preserves the callable's code on rejection", async () => {
     mockCallable.mockRejectedValueOnce(
       Object.assign(new Error("Monthly AI limit reached."), {
         code: "functions/resource-exhausted",
@@ -284,7 +284,7 @@ describe("explainSelection (Phase 11)", () => {
     );
   });
 
-  it("preserves the callable's code on rejection (Task 11)", async () => {
+  it("preserves the callable's code on rejection", async () => {
     mockCallable.mockRejectedValueOnce(
       Object.assign(new Error("Monthly AI limit reached."), {
         code: "functions/resource-exhausted",
@@ -326,7 +326,7 @@ describe("textToDiagram (Phase 12)", () => {
     await expect(aiService.textToDiagram("board-1", "x")).rejects.toThrow(/Too many AI requests/);
   });
 
-  it("preserves the callable's code on rejection (Task 11)", async () => {
+  it("preserves the callable's code on rejection", async () => {
     mockCallable.mockRejectedValueOnce(
       Object.assign(new Error("Monthly AI limit reached."), {
         code: "functions/resource-exhausted",

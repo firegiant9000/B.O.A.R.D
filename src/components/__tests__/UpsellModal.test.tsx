@@ -1,97 +1,179 @@
 // Standard service-boundary mocks (matches every other test that transitively
 // touches billingService/Firebase — see src/services/__tests__/billingService.test.ts).
+// Only the web variant (imported explicitly below) touches any of this; the
+// native variant imports none of it.
 jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
 jest.mock("firebase/functions", () => ({ httpsCallable: jest.fn() }));
 
 // Mock only the two callable-backed functions; keep the REAL `BillingCallableError`
-// class so `instanceof` checks inside UpsellModal work against the real identity,
-// not a test double's.
+// class so `instanceof` checks inside UpsellModal.tsx work against the real
+// identity, not a test double's.
 jest.mock("../../services/billingService", () => ({
   ...jest.requireActual("../../services/billingService"),
   startCheckout: jest.fn(),
   openBillingPortal: jest.fn(),
 }));
 
+import fs from "fs";
+import path from "path";
 import React from "react";
 import { render, fireEvent, waitFor } from "@testing-library/react-native";
-import { Platform, Linking } from "react-native";
-import UpsellModal from "../UpsellModal";
+import { Linking } from "react-native";
+import type { QuotaResource } from "../../services/quotaService";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../../services/billingService";
+
+// The load-bearing part of this file: two SEPARATE physical modules, not one
+// module switched by a runtime Platform.OS check.
+//
+//   - `"../UpsellModal"` (no extension) resolves the way a real consumer's
+//     import resolves under this repo's Jest config: `haste.platforms` for
+//     the bare "jest-expo" preset is `['android', 'ios', 'native']` with
+//     `defaultPlatform: 'ios'` (react-native/jest-preset.js) — no `.ios.tsx`
+//     file exists here, so the resolver falls through to `.native.tsx`,
+//     which does. This is the SAME resolution a native build's bundler
+//     performs — nothing in this test forces it.
+//   - `"../UpsellModal.tsx"` (explicit extension) is resolved as that exact
+//     literal file, bypassing platform-extension resolution entirely (Node/
+//     Jest only appends candidate extensions when none is given) — this is
+//     the bare file, i.e. the web body.
+//
+// Each variant is therefore independently importable and independently
+// testable; neither is reachable only through a runtime switch.
+import NativeUpsellModal from "../UpsellModal";
+// `require`, not `import`: TypeScript rejects a static `import` specifier
+// that names a literal `.tsx` extension (TS5097) unless
+// `allowImportingTsExtensions` is on project-wide, which this repo doesn't
+// set. `require` isn't statically extension-checked by tsc, and resolves
+// through the exact same Jest module resolver as the `import` above, so it
+// reaches the identical bare file.
+const WebUpsellModal: React.ComponentType<
+  React.ComponentProps<typeof NativeUpsellModal>
+> = require("../UpsellModal.tsx").default;
 
 const mockStartCheckout = startCheckout as jest.Mock;
 const mockOpenBillingPortal = openBillingPortal as jest.Mock;
 
-describe("UpsellModal", () => {
+const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary", "aiCall"];
+
+// The store-compliance guard's strongest layer: read the native file's own
+// SOURCE TEXT rather than only its rendered output. A price or a checkout
+// link held in a handler and never rendered (e.g. a bare
+// `Linking.openURL(PAY_URL)` nobody calls in these tests) is invisible to
+// `toJSON()` and to a press-driven mock-call assertion, but not to this.
+const nativeSource = fs.readFileSync(
+  path.join(__dirname, "../UpsellModal.native.tsx"),
+  "utf8"
+);
+
+describe("UpsellModal — native source (store-compliance guard)", () => {
+  it("contains no price, currency, Stripe reference, or link scheme anywhere in its source — not just its rendered output", () => {
+    expect(nativeSource).not.toMatch(/\$|https?:|stripe|checkout|price/i);
+  });
+
+  it("imports nothing from billingService", () => {
+    expect(nativeSource).not.toMatch(/billingService/i);
+  });
+});
+
+describe("UpsellModal.native.tsx (rendered)", () => {
+  it.each(RESOURCES)(
+    "renders NO price and NO link for resource=%s, however worded",
+    (resource) => {
+      const { toJSON } = render(
+        <NativeUpsellModal visible resource={resource} onDismiss={() => {}} />
+      );
+      const tree = JSON.stringify(toJSON());
+      expect(tree).not.toMatch(/\$\d/);
+      expect(tree).not.toMatch(/https?:\/\//);
+      expect(tree).not.toMatch(/upgrade/i);
+      expect(tree).not.toMatch(/subscri/i);
+    }
+  );
+
+  it("still explains the limit that was hit", () => {
+    const { getByText } = render(
+      <NativeUpsellModal visible resource="board" onDismiss={() => {}} />
+    );
+    expect(getByText(/5 boards/i)).toBeTruthy();
+  });
+
+  // Stronger than the text-regex checks above: a checkout/upgrade affordance
+  // reworded to dodge every one of those regexes (e.g. a button that just
+  // says "Continue" and silently opens a link) would still be a SECOND
+  // `button`-role element next to Dismiss, so this catches it regardless of
+  // wording — counts actionable affordances by accessibility role, not label.
+  it("offers no interactive affordance beyond Dismiss, however a checkout action might be worded", () => {
+    const { getAllByRole } = render(
+      <NativeUpsellModal visible resource="board" onDismiss={() => {}} />
+    );
+    expect(getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("calls onDismiss when the sole action is pressed", () => {
+    const onDismiss = jest.fn();
+    const { getByTestId } = render(
+      <NativeUpsellModal visible resource="board" onDismiss={onDismiss} />
+    );
+    fireEvent.press(getByTestId("upsell-native-dismiss-button"));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("on an unlimited (Pro) plan, shows a transient note instead of a plan-limit claim — the denial can't be a plan cap", () => {
+    // Pro is UNLIMITED for every resource this modal covers, so
+    // resource-exhausted on a Pro workspace can only be the AI rate
+    // throttle, never the plan cap — showing "you've reached the free
+    // plan's limit" here would be a false paywall for a plan already owned.
+    const { getByText, queryByText } = render(
+      <NativeUpsellModal visible resource="aiCall" plan="pro" onDismiss={() => {}} />
+    );
+    expect(getByText(/sending requests a little fast/i)).toBeTruthy();
+    expect(queryByText(/plan's limit/i)).toBeNull();
+  });
+
+  it("defaults to the free plan (and so the paywall claim) when no plan is supplied", () => {
+    const { getByText } = render(
+      <NativeUpsellModal visible resource="board" onDismiss={() => {}} />
+    );
+    expect(getByText(/free plan's limit of 5 boards/i)).toBeTruthy();
+  });
+});
+
+describe("UpsellModal.tsx (web, rendered)", () => {
   afterEach(() => {
-    Platform.OS = "web";
     jest.clearAllMocks();
   });
 
-  it("shows the price and an upgrade action on web", () => {
-    Platform.OS = "web";
-    const { getByText } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
+  it("shows the price and an upgrade action", () => {
+    const { getByText } = render(
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} />
+    );
     expect(getByText(/\$5/)).toBeTruthy();
     expect(getByText(/upgrade/i)).toBeTruthy();
   });
 
   it("names the limit that was hit", () => {
-    Platform.OS = "web";
-    const { getByText } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
+    const { getByText } = render(
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} />
+    );
     expect(getByText(/5 boards/i)).toBeTruthy();
   });
 
-  // The store-compliance guard. If this test ever fails, the binary is at risk.
-  it("renders NO price and NO link on native", () => {
-    Platform.OS = "ios";
-    const { toJSON } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
-    const tree = JSON.stringify(toJSON());
-    expect(tree).not.toMatch(/\$\d/);
-    expect(tree).not.toMatch(/https?:\/\//);
-    expect(tree).not.toMatch(/upgrade/i);
-    expect(tree).not.toMatch(/subscri/i);
-  });
-
-  it("still explains the limit on native", () => {
-    Platform.OS = "ios";
-    const { getByText } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
-    expect(getByText(/5 boards/i)).toBeTruthy();
-  });
-
-  // Stronger than the text-regex checks above: a checkout/upgrade affordance
-  // reworded to dodge every one of those regexes (e.g. a button that just says
-  // "Continue" and silently opens Stripe) would still be a SECOND `button`-role
-  // element next to Dismiss, so this catches it regardless of wording — it
-  // counts actionable affordances by accessibility role, not by label text.
-  it("offers no interactive affordance beyond Dismiss on native, however a checkout action might be worded", () => {
-    Platform.OS = "android";
-    const { getAllByRole } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
-    expect(getAllByRole("button")).toHaveLength(1);
-  });
-
-  it("never imports/calls billingService on native — pressing the sole native button never starts checkout", () => {
-    Platform.OS = "ios";
-    const { getByTestId } = render(<UpsellModal visible resource="board" onDismiss={() => {}} />);
-    fireEvent.press(getByTestId("upsell-native-dismiss-button"));
-    expect(mockStartCheckout).not.toHaveBeenCalled();
-    expect(mockOpenBillingPortal).not.toHaveBeenCalled();
-  });
-
-  it("calls onDismiss when the native Dismiss action is pressed", () => {
-    Platform.OS = "ios";
-    const onDismiss = jest.fn();
-    const { getByTestId } = render(<UpsellModal visible resource="board" onDismiss={onDismiss} />);
-    fireEvent.press(getByTestId("upsell-native-dismiss-button"));
-    expect(onDismiss).toHaveBeenCalledTimes(1);
+  it("on an unlimited (Pro) plan, shows the transient note instead of the paywall — no price, no upgrade action", () => {
+    const { getByText, queryByText, queryByTestId } = render(
+      <WebUpsellModal visible resource="aiCall" plan="pro" onDismiss={() => {}} />
+    );
+    expect(getByText(/sending requests a little fast/i)).toBeTruthy();
+    expect(queryByText(/\$5/)).toBeNull();
+    expect(queryByTestId("upsell-web-upgrade-button")).toBeNull();
   });
 
   it("starts checkout with the given workspace and opens the returned URL", async () => {
-    Platform.OS = "web";
     const openURLSpy = jest.spyOn(Linking, "openURL").mockResolvedValue(true as never);
     mockStartCheckout.mockResolvedValueOnce("https://checkout.stripe.test/s/1");
 
     const { getByTestId } = render(
-      <UpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
     );
     fireEvent.press(getByTestId("upsell-web-upgrade-button"));
 
@@ -101,7 +183,6 @@ describe("UpsellModal", () => {
   });
 
   it("routes on details.canOpenPortal=true by offering the Customer Portal, not a message-text guess", async () => {
-    Platform.OS = "web";
     mockStartCheckout.mockRejectedValueOnce(
       new BillingCallableError("This workspace's subscription needs attention.", "failed-precondition", {
         reason: "subscription-exists",
@@ -110,7 +191,7 @@ describe("UpsellModal", () => {
     );
 
     const { getByTestId, queryByTestId } = render(
-      <UpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
     );
     expect(queryByTestId("upsell-web-portal-button")).toBeNull();
     fireEvent.press(getByTestId("upsell-web-upgrade-button"));
@@ -119,9 +200,8 @@ describe("UpsellModal", () => {
   });
 
   it("does NOT offer the portal when details.canOpenPortal=false, even if the message reads like it should", async () => {
-    // The message deliberately mentions "portal" — if routing ever regresses to
-    // sniffing `.message` text instead of `.details.canOpenPortal`, this fails.
-    Platform.OS = "web";
+    // The message deliberately mentions "portal" — if routing ever regresses
+    // to sniffing `.message` text instead of `.details.canOpenPortal`, this fails.
     mockStartCheckout.mockRejectedValueOnce(
       new BillingCallableError(
         "Please open the billing portal to resolve this subscription.",
@@ -131,7 +211,7 @@ describe("UpsellModal", () => {
     );
 
     const { getByTestId, queryByTestId, getByText } = render(
-      <UpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
     );
     fireEvent.press(getByTestId("upsell-web-upgrade-button"));
 
@@ -140,7 +220,6 @@ describe("UpsellModal", () => {
   });
 
   it("pressing the portal action opens the URL from openBillingPortal", async () => {
-    Platform.OS = "web";
     const openURLSpy = jest.spyOn(Linking, "openURL").mockResolvedValue(true as never);
     mockStartCheckout.mockRejectedValueOnce(
       new BillingCallableError("needs attention", "failed-precondition", {
@@ -151,7 +230,7 @@ describe("UpsellModal", () => {
     mockOpenBillingPortal.mockResolvedValueOnce("https://billing.stripe.test/p/1");
 
     const { getByTestId } = render(
-      <UpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
     );
     fireEvent.press(getByTestId("upsell-web-upgrade-button"));
     await waitFor(() => getByTestId("upsell-web-portal-button"));

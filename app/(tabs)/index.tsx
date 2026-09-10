@@ -35,7 +35,7 @@ import * as friendService from "../../src/services/friendService";
 import { subscribeToNotifications } from "../../src/services/notificationService";
 import { getPinnedBoardIds, setPinnedBoardIds } from "../../src/lib/pinnedBoards";
 import { JoinBoardResult } from "../../src/services/boardService";
-import { isResourceExhausted } from "../../src/services/quotaService";
+import { isQuotaDenial } from "../../src/services/quotaService";
 import BoardCard from "../../src/components/BoardCard";
 import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
@@ -90,8 +90,8 @@ export default function DashboardScreen() {
   const [newBoardTitle, setNewBoardTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Board | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  // Task 11: the board-create plan-limit upsell. Shown instead of a generic
-  // error when createBoard rejects with resource-exhausted.
+  // The board-create plan-limit upsell. Shown instead of a generic error
+  // when createBoard is denied for being over the board cap.
   const [upsellVisible, setUpsellVisible] = useState(false);
 
   const fetchBoards = useCallback(async () => {
@@ -259,8 +259,8 @@ export default function DashboardScreen() {
     if (!newBoardTitle.trim() || !user || !activeWorkspaceId) return;
     try {
       const title = newBoardTitle.trim();
-      // Task 11: real plan/count from already-loaded state (useWorkspace +
-      // this screen's own board list) — no extra Firestore read.
+      // Real plan/count from already-loaded state (useWorkspace + this
+      // screen's own board list) — no extra Firestore read.
       const boardId = await boardService.createBoard(
         title,
         user.uid,
@@ -280,11 +280,12 @@ export default function DashboardScreen() {
       setCreateModalVisible(false);
       fetchBoards();
     } catch (error: any) {
-      // resource-exhausted is the server's real board-cap denial (the
-      // pre-flight above is advisory only) — surface the upsell instead of a
-      // generic error so the upgrade path actually reaches the user. Any
-      // other rejection (network, permission, ...) keeps the plain alert.
-      if (isResourceExhausted(error)) {
+      // A board-cap denial can arrive two ways: the server's own rejection
+      // (after the callable ran) or the client-side pre-flight's own
+      // QuotaExceededError (thrown before the callable ever runs, with no
+      // `.code` at all) — isQuotaDenial catches both. Any other rejection
+      // (network, permission, ...) keeps the plain alert.
+      if (isQuotaDenial(error)) {
         setCreateModalVisible(false);
         setUpsellVisible(true);
       } else {
@@ -350,6 +351,7 @@ export default function DashboardScreen() {
       <UpsellModal
         visible={upsellVisible}
         resource="board"
+        plan={activeWorkspace?.plan}
         workspaceId={activeWorkspaceId ?? undefined}
         onDismiss={() => setUpsellVisible(false)}
       />

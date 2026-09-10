@@ -99,7 +99,7 @@ describe("createSession", () => {
     spy.mockRestore();
   });
 
-  it("forwards the caller's real plan to the pre-flight (Task 11 wiring)", async () => {
+  it("forwards the caller's real plan to the pre-flight", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
     mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
 

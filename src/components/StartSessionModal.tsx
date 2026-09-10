@@ -17,7 +17,7 @@ import { BoardPresence, FriendRequest, Plan } from "../types";
 import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as notificationService from "../services/notificationService";
-import { isResourceExhausted } from "../services/quotaService";
+import { isQuotaDenial } from "../services/quotaService";
 import { showAlert } from "../utils/alerts";
 
 interface StartSessionModalProps {
@@ -29,15 +29,15 @@ interface StartSessionModalProps {
   adminId: string;
   adminName: string;
   presenceUsers: BoardPresence[];
-  /** The board's workspace plan (Task 11), for the advisory quota pre-flight —
-   *  already loaded by the caller (useBoardDocument's boardWorkspace), so this
-   *  never triggers an extra read. */
+  /** The board's workspace plan, for the advisory quota pre-flight — already
+   *  loaded by the caller (useBoardDocument's boardWorkspace), so this never
+   *  triggers an extra read. */
   plan?: Plan;
   onClose: () => void;
   onSessionCreated: (sessionId: string) => void;
-  /** The server denied this create as resource-exhausted (Task 11): the
-   *  caller should close this modal and show the upsell instead of the
-   *  generic error alert. */
+  /** This create was denied for being over the session cap (or the
+   *  client-side pre-flight predicted it would be): the caller should close
+   *  this modal and show the upsell instead of the generic error alert. */
   onQuotaExceeded: () => void;
 }
 
@@ -180,12 +180,13 @@ export default function StartSessionModal({
           : "Session created. No participants were notified."
       );
     } catch (error) {
-      // resource-exhausted is the server's real session-cap denial (the
-      // pre-flight above is advisory only) — hand off to the caller's upsell
-      // instead of this generic alert. Any other rejection (network,
+      // A session-cap denial can arrive two ways: the server's own rejection
+      // (after the callable ran) or the client-side pre-flight's own
+      // QuotaExceededError (thrown before the callable ever runs) —
+      // isQuotaDenial catches both. Any other rejection (network,
       // permission, ...) keeps the plain alert; catching broadly here would
       // make a real failure read as "upgrade".
-      if (isResourceExhausted(error)) {
+      if (isQuotaDenial(error)) {
         onQuotaExceeded();
       } else {
         showAlert("Error", "Failed to create session. Please try again.");

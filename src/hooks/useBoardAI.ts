@@ -11,7 +11,7 @@ import {
 } from "../services/aiService";
 import { mermaidToBoard, DiagramBuild, EmptyDiagramError } from "../lib/mermaid-to-board";
 import { captureException } from "../lib/errorReporting";
-import { isResourceExhausted } from "../services/quotaService";
+import { isQuotaDenial } from "../services/quotaService";
 import type { SelectionAnchor } from "./useSelection";
 
 /**
@@ -63,9 +63,11 @@ export interface BoardAIBridge {
   adopt: (ids: string[], opts?: { anchor?: SelectionAnchor; edit?: boolean }) => void;
   /** Surface a user-facing failure in the screen's error banner. */
   onError: (message: string) => void;
-  /** Task 11: an AI call was denied resource-exhausted (checkAiQuota, past the
-   *  free plan's AI-call cap) — the screen should show the upsell instead of
-   *  routing this through `onError`'s generic banner. */
+  /** An AI call was denied `resource-exhausted` by checkAiQuota — either the
+   *  free plan's AI-call cap, or the (plan-independent) per-workspace request
+   *  throttle; the server doesn't distinguish them. The screen should show
+   *  the upsell instead of routing this through `onError`'s generic banner;
+   *  the modal itself decides cap vs. throttle from the workspace's plan. */
   onQuotaExceeded: () => void;
 }
 
@@ -158,10 +160,11 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
         await placeOcrText(result.text, position);
       }
     } catch (e: any) {
-      // resource-exhausted is checkAiQuota's real AI-call-cap denial — show
-      // the upsell instead of the generic error banner. Anything else
-      // (network, not-found, ...) keeps the existing banner path.
-      if (isResourceExhausted(e)) {
+      // checkAiQuota's resource-exhausted covers both the AI rate throttle
+      // and the real plan-cap denial — show the upsell (it sorts out which)
+      // instead of the generic error banner. Anything else (network,
+      // not-found, ...) keeps the existing banner path.
+      if (isQuotaDenial(e)) {
         bridge.onQuotaExceeded();
       } else {
         captureException(e, { op: "board.ocr" });
@@ -213,7 +216,7 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
       });
       bridge.adopt([elId]);
     } catch (e: any) {
-      if (isResourceExhausted(e)) {
+      if (isQuotaDenial(e)) {
         bridge.onQuotaExceeded();
       } else {
         captureException(e, { op: "board.explain" });
@@ -251,7 +254,7 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
       setDiagramOpen(false);
       setDiagramPrompt("");
     } catch (e: any) {
-      if (isResourceExhausted(e)) {
+      if (isQuotaDenial(e)) {
         bridge.onQuotaExceeded();
       } else {
         captureException(e, { op: "board.diagram" });

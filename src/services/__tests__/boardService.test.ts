@@ -47,7 +47,7 @@ describe("createBoard", () => {
     spy.mockRestore();
   });
 
-  it("forwards the caller's real plan and current board count to the pre-flight (Task 11 wiring)", async () => {
+  it("forwards the caller's real plan and current board count to the pre-flight", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
     mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
@@ -57,13 +57,13 @@ describe("createBoard", () => {
     spy.mockRestore();
   });
 
-  it("still calls the createBoard callable when the pre-flight's own QuotaExceededError would be thrown — the callable is the real gate", async () => {
-    // Advisory pre-flight throwing does NOT get silently swallowed here — this
-    // pins that createBoard doesn't catch/ignore it, so the caller (which is
-    // responsible for catching resource-exhausted from the server) also sees
-    // this pre-flight failure rather than it vanishing.
-    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
-
+  it("does NOT call the createBoard callable when the pre-flight's own QuotaExceededError fires — the pre-flight short-circuits the request", async () => {
+    // `assertQuota` throwing is NOT silently swallowed — createBoard doesn't
+    // catch/ignore it — but that also means the callable never runs on this
+    // path, so a caller catching only the server's resource-exhausted code
+    // (isResourceExhausted) would MISS this rejection entirely and fall
+    // through to a generic error. Callers must use quotaService.isQuotaDenial,
+    // which recognizes both this and the server's own denial.
     await expect(
       boardService.createBoard("My Board", "owner-1", "ws-1", "free", 5)
     ).rejects.toBeInstanceOf(quotaService.QuotaExceededError);

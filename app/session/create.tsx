@@ -20,7 +20,7 @@ import { useAuth } from "../../src/hooks/useAuth";
 import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
 import * as sessionService from "../../src/services/sessionService";
-import { isResourceExhausted } from "../../src/services/quotaService";
+import { isQuotaDenial } from "../../src/services/quotaService";
 import UpsellModal from "../../src/components/UpsellModal";
 
 const DURATION_OPTIONS = [
@@ -50,8 +50,8 @@ export default function CreateSessionScreen() {
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardPickerVisible, setBoardPickerVisible] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  // Task 11: the session-create plan-limit upsell, shown instead of the
-  // generic error alert when createSession rejects with resource-exhausted.
+  // The session-create plan-limit upsell, shown instead of the generic error
+  // alert when createSession is denied for being over the session cap.
   const [upsellVisible, setUpsellVisible] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -138,13 +138,17 @@ export default function CreateSessionScreen() {
       }
       router.back();
     } catch (error) {
-      // resource-exhausted is the server's real session-cap denial (createSession
-      // callable) — show the upsell instead of the generic alert. Any other
-      // rejection (network, permission, ...) keeps the plain alert; catching
-      // broadly here would make a real failure read as "upgrade". Only the
-      // create path can hit this cap — editing an existing session (isEdit)
-      // never calls createSession.
-      if (!isEdit && isResourceExhausted(error)) {
+      // A session-cap denial can arrive two ways: the server's own rejection
+      // (createSession callable) or the client-side pre-flight's own
+      // QuotaExceededError — isQuotaDenial catches both. Any other rejection
+      // (network, permission, ...) keeps the plain alert; catching broadly
+      // here would make a real failure read as "upgrade". Only the create
+      // path can hit this cap — editing an existing session (isEdit) never
+      // calls createSession. No throttle ambiguity here (unlike the AI
+      // callables): createSession has exactly one resource-exhausted throw
+      // site, the plan cap itself, so no workspace-plan lookup is needed to
+      // tell this apart from anything else.
+      if (!isEdit && isQuotaDenial(error)) {
         setUpsellVisible(true);
       } else {
         Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);

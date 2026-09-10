@@ -5,92 +5,57 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Platform,
   Linking,
   ActivityIndicator,
 } from "react-native";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../services/billingService";
-import { limitFor } from "../lib/planLimits";
-import { RESOURCE_TO_LIMIT, type QuotaResource } from "../services/quotaService";
+import { limitMessage, isPlanCapped, THROTTLE_MESSAGE, RESOURCE_LABEL } from "./upsellCopy";
+import type { QuotaResource } from "../services/quotaService";
+import type { Plan } from "../types";
 
-// Month 5/6 — the plan-limit upsell. Shown when a create/AI call site catches
-// the server's `resource-exhausted` rejection (src/services/quotaService.ts
-// #isResourceExhausted) instead of a generic error.
+// Web body of the plan-limit upsell — the platform-extension DEFAULT (bare
+// filename). Metro/RN resolve this file for every non-native build; the
+// sibling UpsellModal.native.tsx overrides it for iOS/Android — same
+// convention as src/lib/hardwareKeys.ts / hardwareKeys.native.ts. The native
+// variant must contain no price or checkout affordance, guarded by this
+// component's test file (which scans that file's own source, not only its
+// rendered output — a price or link the native handler never renders would
+// otherwise be invisible to a render-only check).
 //
-// TWO SEPARATE RENDERS, chosen by `Platform.OS` at render time, not one tree
-// with a conditional price/link: Apple and Google both prohibit steering a
-// native-app user to external payment. `WebUpsell` (web only) shows a price
-// and a Stripe Checkout affordance; `NativeLimitNotice` (iOS/Android) states
-// the limit and offers only Dismiss, and does not import billingService.
-//
-// This repo does have a platform-EXTENSION-FILE convention (`x.native.ts`
-// beside a bare `x.ts`, e.g. src/lib/hardwareKeys.native.ts) — that mechanism
-// is strictly stronger (the bundler excludes the other file outright, so the
-// web strings couldn't exist in the native binary even as dead data) and was
-// evaluated for this component first. It was not used here because file-
-// extension resolution is static per test run (Jest's `react-native` preset
-// pins `haste.defaultPlatform: 'ios'` with no `web` platform registered for
-// this project's default config) — it cannot be toggled per test the way the
-// store-compliance test in the sibling test file requires (asserting the web
-// render in one `it`, the native render in the next, via `Platform.OS =`
-// reassignment within one imported module). One module with two render
-// components, switched at render time, is what makes both renders provably
-// testable in this repo's existing Jest setup; see the Task 11 report for the
-// full reasoning. The tradeoff (per the brief): `WebUpsell`'s strings remain
-// present, unreachable, in the native bundle.
-//
-// G3 (no live Stripe account) and G4 (no decided price) are both unmet.
-// Nothing here ever completes a real checkout, and PENDING_PRO_PRICE_LABEL
-// below is a placeholder, not an approved price — see the module constant.
+// G3 (no live Stripe account) and G4 (no decided price) are both unmet as of
+// this writing. `startCheckout`/`openBillingPortal` are real calls into
+// billingService, but nothing in this app has ever exercised a live Stripe
+// redirect. PENDING_PRO_PRICE_LABEL below is a placeholder, not an approved
+// price — see its own comment.
 
 export interface UpsellModalProps {
   visible: boolean;
   resource: QuotaResource;
   onDismiss: () => void;
-  /** Needed only by the web render, to actually call billingService when the
-   *  user acts; the native render never reads it. Optional so callers that
-   *  only need the display (and this component's own tests) don't have to
-   *  supply one. */
+  /** The workspace's actual plan. Determines whether this resource can even
+   *  be plan-capped (see upsellCopy.isPlanCapped) — falls back to "free"
+   *  when omitted. */
+  plan?: Plan;
+  /** Needed to actually call `startCheckout`/`openBillingPortal`. */
   workspaceId?: string;
 }
 
-// PLACEHOLDER — Gate G4 (pricing) is unmet; no price has been approved. "$5/
-// month" is the value Task 11's own brief specified for its web-variant test;
-// it is not a business decision made here. A later, pricing-owning task must
-// replace this single constant once a real price is approved — do not read
-// its presence as that decision having been made.
+// PLACEHOLDER — Gate G4 (pricing) is unmet; no price has been approved. This
+// value is not a business decision made here; a later, pricing-owning task
+// must replace this single constant once a real price is approved.
 const PENDING_PRO_PRICE_LABEL = "$5/month";
 
-const RESOURCE_LABEL: Record<QuotaResource, string> = {
-  board: "boards",
-  session: "sessions",
-  aiSummary: "AI calls",
-  aiCall: "AI calls",
-};
-
-/** Shared between both renders: names the free-plan limit that was hit. Reads
- *  `limitFor` (Task 2) rather than hardcoding a number, so this tracks
- *  src/lib/planLimits.ts if it ever changes. */
-function limitMessage(resource: QuotaResource): string {
-  const limit = limitFor("free", RESOURCE_TO_LIMIT[resource]);
-  return `You've reached the free plan's limit of ${limit} ${RESOURCE_LABEL[resource]}.`;
+interface CheckoutError {
+  message: string;
+  canOpenPortal: boolean;
 }
 
-interface VariantProps {
-  visible: boolean;
-  resource: QuotaResource;
-  onDismiss: () => void;
-  workspaceId?: string;
-}
+export default function UpsellModal({ visible, resource, onDismiss, plan, workspaceId }: UpsellModalProps) {
+  const effectivePlan: Plan = plan ?? "free";
+  const capped = isPlanCapped(effectivePlan, resource);
 
-/** The web render: names the limit, shows the (placeholder) price, and offers
- *  a real Stripe Checkout action plus, when the server says the remedy is the
- *  Customer Portal rather than a new checkout, a Manage Billing action. */
-function WebUpsell({ visible, resource, onDismiss, workspaceId }: VariantProps) {
   const [busy, setBusy] = useState(false);
-  const [checkoutError, setCheckoutError] = useState<
-    { message: string; canOpenPortal: boolean } | null
-  >(null);
+  const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
 
   const handleUpgrade = async () => {
     if (!workspaceId || busy) return;
@@ -100,11 +65,11 @@ function WebUpsell({ visible, resource, onDismiss, workspaceId }: VariantProps) 
       const url = await startCheckout(workspaceId);
       await Linking.openURL(url);
     } catch (e) {
-      // Route on the error's `details`, never on its `.message` text (Task 11
-      // requirement): `canOpenPortal` says whether the Customer Portal is the
-      // right remedy (e.g. a lapsed card on an existing subscription) or not
-      // (e.g. an operator-paused subscription, where the remedy is operator-
-      // side and offering the portal would be a dead end).
+      // Route on the error's `details`, never on its `.message` text:
+      // `canOpenPortal` says whether the Customer Portal is the right remedy
+      // (e.g. a lapsed card on an existing subscription) or not (e.g. an
+      // operator-paused subscription, where the remedy is operator-side and
+      // offering the portal would be a dead end).
       const details =
         e instanceof BillingCallableError
           ? (e.details as { canOpenPortal?: boolean } | undefined)
@@ -138,42 +103,51 @@ function WebUpsell({ visible, resource, onDismiss, workspaceId }: VariantProps) 
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>You've reached your plan's limit</Text>
-          <Text style={styles.body}>{limitMessage(resource)}</Text>
-          <Text style={styles.price}>
-            {PENDING_PRO_PRICE_LABEL} unlocks unlimited {RESOURCE_LABEL[resource]}
-          </Text>
+          {capped ? (
+            <>
+              <Text style={styles.title}>You've reached your plan's limit</Text>
+              <Text style={styles.body}>{limitMessage(resource, effectivePlan)}</Text>
+              <Text style={styles.price}>
+                {PENDING_PRO_PRICE_LABEL} unlocks unlimited {RESOURCE_LABEL[resource]}
+              </Text>
 
-          {checkoutError && (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>{checkoutError.message}</Text>
-              {checkoutError.canOpenPortal && (
-                <TouchableOpacity
-                  testID="upsell-web-portal-button"
-                  accessibilityRole="button"
-                  style={styles.secondaryButton}
-                  onPress={handleManageBilling}
-                  disabled={busy}
-                >
-                  <Text style={styles.secondaryButtonText}>Manage billing</Text>
-                </TouchableOpacity>
+              {checkoutError && (
+                <View style={styles.errorBox}>
+                  <Text style={styles.errorText}>{checkoutError.message}</Text>
+                  {checkoutError.canOpenPortal && (
+                    <TouchableOpacity
+                      testID="upsell-web-portal-button"
+                      accessibilityRole="button"
+                      style={styles.secondaryButton}
+                      onPress={handleManageBilling}
+                      disabled={busy}
+                    >
+                      <Text style={styles.secondaryButtonText}>Manage billing</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               )}
-            </View>
-          )}
 
-          <TouchableOpacity
-            testID="upsell-web-upgrade-button"
-            accessibilityRole="button"
-            style={styles.primaryButton}
-            onPress={handleUpgrade}
-            disabled={busy}
-          >
-            {busy ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryButtonText}>Upgrade to Pro</Text>
-            )}
-          </TouchableOpacity>
+              <TouchableOpacity
+                testID="upsell-web-upgrade-button"
+                accessibilityRole="button"
+                style={styles.primaryButton}
+                onPress={handleUpgrade}
+                disabled={busy}
+              >
+                {busy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>Upgrade to Pro</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Text style={styles.title}>One moment</Text>
+              <Text style={styles.body}>{THROTTLE_MESSAGE}</Text>
+            </>
+          )}
 
           <TouchableOpacity
             testID="upsell-web-dismiss-button"
@@ -186,43 +160,6 @@ function WebUpsell({ visible, resource, onDismiss, workspaceId }: VariantProps) 
         </View>
       </View>
     </Modal>
-  );
-}
-
-/** The native render: states the limit reached and offers only Dismiss. No
- *  price, no checkout link, no billingService import — App Store / Play
- *  policy prohibits steering a native-app user to external payment, and
- *  there is no in-app purchase path in this app to offer as an alternative,
- *  so this states the fact and nothing more. */
-function NativeLimitNotice({ visible, resource, onDismiss }: VariantProps) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
-      <View style={styles.backdrop}>
-        <View style={styles.card}>
-          <Text style={styles.title}>Plan limit reached</Text>
-          <Text style={styles.body}>{limitMessage(resource)}</Text>
-          <TouchableOpacity
-            testID="upsell-native-dismiss-button"
-            accessibilityRole="button"
-            style={styles.primaryButton}
-            onPress={onDismiss}
-          >
-            <Text style={styles.primaryButtonText}>OK</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-export default function UpsellModal({ visible, resource, onDismiss, workspaceId }: UpsellModalProps) {
-  // Two separate renders. Do NOT collapse these into one tree with conditional
-  // children: a price or checkout link inside the mobile binary violates App
-  // Store / Play policy on external payment.
-  return Platform.OS === "web" ? (
-    <WebUpsell resource={resource} visible={visible} onDismiss={onDismiss} workspaceId={workspaceId} />
-  ) : (
-    <NativeLimitNotice resource={resource} visible={visible} onDismiss={onDismiss} />
   );
 }
 

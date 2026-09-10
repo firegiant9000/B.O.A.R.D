@@ -95,8 +95,8 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
   const [historyVisible, setHistoryVisible] = useState(false);
   const [bgPickerVisible, setBgPickerVisible] = useState(false);
-  // Task 11: the plan-limit upsell shown instead of a generic error when
-  // session create or an AI affordance hits resource-exhausted.
+  // The plan-limit upsell shown instead of a generic error when session
+  // create or an AI affordance is denied for being over its cap.
   const [upsellResource, setUpsellResource] = useState<QuotaResource | null>(null);
 
   // Ref to the underlying SVG element on web, for canvas snapshot capture
@@ -253,9 +253,9 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
       }),
     adopt: adoptElements,
     onError: showError,
-    // Task 11: the three AI affordances share one "aiCall" resource — the
-    // generic AI-call quota (src/services/quotaService.ts#QuotaResource) all
-    // of OCR/explain/diagram gate through the same choke point on.
+    // The three AI affordances share one "aiCall" resource — the generic
+    // AI-call quota (src/services/quotaService.ts#QuotaResource) all of
+    // OCR/explain/diagram gate through the same choke point on.
     onQuotaExceeded: () => setUpsellResource("aiCall"),
   });
 

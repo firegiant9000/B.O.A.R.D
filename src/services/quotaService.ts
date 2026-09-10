@@ -141,16 +141,41 @@ export async function assertQuota(
 // never silently stops being detected.
 export const RESOURCE_EXHAUSTED_CODE = "functions/resource-exhausted";
 
-/** True when `err` is the callable rejection every plan cap throws once a
- *  create/AI call is past its limit (functions/src/callable/createBoard.ts,
- *  createSession.ts, and the four AI callables via checkAiQuota). A network
- *  error, an unrelated HttpsError, or anything else must NOT match — callers
- *  branch on this instead of catching broadly so a real failure never reads
- *  as "upgrade". */
+/** True when `err` is the `resource-exhausted` callable rejection
+ *  (functions/src/callable/createBoard.ts, createSession.ts, and the four AI
+ *  callables via checkAiQuota). A network error, an unrelated HttpsError, or
+ *  anything else must NOT match — callers branch on this instead of catching
+ *  broadly so a real failure never reads as "upgrade".
+ *
+ *  NOT the same thing as "the plan cap was hit": on the four AI callables this
+ *  code also fires for the plan-INDEPENDENT per-workspace request-rate
+ *  throttle (30 burst / 1 per 30s), which the server does not distinguish
+ *  from the plan-cap denial via `details`. A caller that wants to tell them
+ *  apart needs the workspace's own `plan` (see UpsellModal/upsellCopy's
+ *  `isPlanCapped`) — Pro/Edu are unlimited for every resource this modal
+ *  covers, so `resource-exhausted` on those plans can only be the throttle. */
 export function isResourceExhausted(err: unknown): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     (err as { code?: unknown }).code === RESOURCE_EXHAUSTED_CODE
   );
+}
+
+/** True when `err` is EITHER shape a create/AI path can reject with once a
+ *  plan limit is (or looks) exhausted:
+ *   - `isResourceExhausted(err)` — the server's real denial, arriving after
+ *     the callable actually ran.
+ *   - `err instanceof QuotaExceededError` — THIS module's own advisory
+ *     pre-flight (`assertQuota`, called from `boardService.createBoard` and
+ *     `sessionService.createSession`) throwing BEFORE the callable ever runs.
+ *     A caller that checks `isResourceExhausted` alone misses this entirely:
+ *     `QuotaExceededError` carries no `.code`, so it falls through to a
+ *     generic error path and the raw `Plan quota exceeded for "..." in
+ *     workspace ...` message reaches the user, un-actionable, while the
+ *     modal never opens and the server is never even asked.
+ *  Every create/AI call site must use THIS function, not `isResourceExhausted`
+ *  alone, to decide whether to show the upsell. */
+export function isQuotaDenial(err: unknown): boolean {
+  return isResourceExhausted(err) || err instanceof QuotaExceededError;
 }

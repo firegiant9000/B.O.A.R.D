@@ -68,9 +68,9 @@ interface BoardModalsProps {
   sessionVisible: boolean;
   onCloseSession: () => void;
 
-  /** Task 11: the plan-limit upsell, driven by whichever create/AI action on
-   *  this screen last hit resource-exhausted (session create, or one of the
-   *  three AI affordances via `ai`). Null hides it. */
+  /** The plan-limit upsell, driven by whichever create/AI action on this
+   *  screen last hit a quota denial (session create, or one of the three AI
+   *  affordances via `ai`). Null hides it. */
   upsellResource: QuotaResource | null;
   onDismissUpsell: () => void;
   /** StartSessionModal caught resource-exhausted: close the session composer
@@ -203,14 +203,19 @@ export default function BoardModals({
         />
       )}
 
-      {/* Task 11 — plan-limit upsell, for session create (above) and the three
-          AI affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback). */}
-      <UpsellModal
-        visible={!!upsellResource}
-        resource={upsellResource ?? "board"}
-        workspaceId={doc.board?.workspaceId}
-        onDismiss={onDismissUpsell}
-      />
+      {/* Plan-limit upsell, for session create (above) and the three AI
+          affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback).
+          Rendered only once there's an actual resource to show — no
+          placeholder `resource` fallback paired with a false `visible`. */}
+      {upsellResource && (
+        <UpsellModal
+          visible
+          resource={upsellResource}
+          plan={doc.boardWorkspace?.plan}
+          workspaceId={doc.board?.workspaceId}
+          onDismiss={onDismissUpsell}
+        />
+      )}
     </>
   );
 }

@@ -4,6 +4,7 @@ import {
   QuotaExceededError,
   QuotaResource,
   isResourceExhausted,
+  isQuotaDenial,
   RESOURCE_EXHAUSTED_CODE,
 } from "../quotaService";
 
@@ -107,5 +108,36 @@ describe("isResourceExhausted", () => {
     expect(isResourceExhausted(null)).toBe(false);
     expect(isResourceExhausted(undefined)).toBe(false);
     expect(isResourceExhausted("resource-exhausted")).toBe(false);
+  });
+});
+
+describe("isQuotaDenial", () => {
+  it("matches the client-side pre-flight's own QuotaExceededError, which carries no .code", () => {
+    // This is the shape `assertQuota` throws BEFORE any callable runs
+    // (boardService.createBoard, sessionService.createSession) — a caller
+    // checking isResourceExhausted alone would miss it entirely, since it has
+    // no `.code` at all. This is the regression this predicate exists to fix.
+    const err = new QuotaExceededError("board", "ws-1");
+    expect((err as { code?: unknown }).code).toBeUndefined();
+    expect(isQuotaDenial(err)).toBe(true);
+  });
+
+  it("matches the real server rejection too (delegates to isResourceExhausted)", () => {
+    const err = Object.assign(new Error("x"), { code: "functions/resource-exhausted" });
+    expect(isQuotaDenial(err)).toBe(true);
+  });
+
+  it("does not match a plain network/generic error", () => {
+    expect(isQuotaDenial(new Error("Network request failed"))).toBe(false);
+  });
+
+  it("does not match an unrelated Error subclass", () => {
+    class SomeOtherError extends Error {}
+    expect(isQuotaDenial(new SomeOtherError("x"))).toBe(false);
+  });
+
+  it("does not throw on non-object / null input", () => {
+    expect(isQuotaDenial(null)).toBe(false);
+    expect(isQuotaDenial(undefined)).toBe(false);
   });
 });

@@ -120,8 +120,11 @@ export async function createBoard(
   // supplies the workspace's already-loaded plan and board count so this can
   // warn before a pointless round trip. Optional: an omitted value falls back
   // to checkQuota's own "free"/0 defaults, which always predicts "under the
-  // cap" — never the enforcement point either way; the callable below still
-  // makes the real decision and callers must still handle its rejection.
+  // cap". This throws its OWN `QuotaExceededError` (not a callable rejection)
+  // when it predicts over-cap, and short-circuits BEFORE the callable below
+  // ever runs — so on that path the callable does NOT get a chance to make
+  // the real decision. Callers must catch both shapes via
+  // quotaService.isQuotaDenial, never isResourceExhausted alone.
   plan?: Plan,
   currentCount?: number
 ): Promise<string> {
