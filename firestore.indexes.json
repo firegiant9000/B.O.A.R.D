@@ -17,6 +17,14 @@
       ]
     },
     {
+      "collectionGroup": "boards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "workspaceId", "order": "ASCENDING" },
+        { "fieldPath": "inviteCode", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "friendRequests",
       "queryScope": "COLLECTION",
       "fields": [

@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   RefreshControl,
+  Platform,
+  Linking,
 } from "react-native";
 import { useFocusEffect, useRouter, Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,11 +24,28 @@ import {
   type AiUsagePeriod,
   type AiLogEntry,
 } from "../src/services/aiUsageService";
+import {
+  getWorkspaceUsage,
+  type WorkspaceUsage,
+  type Headroom,
+} from "../src/services/usageService";
+import {
+  getSubscription,
+  openBillingPortal,
+  hasKnownRenewalDate,
+} from "../src/services/billingService";
+import { limitFor, UNLIMITED } from "../src/lib/planLimits";
+import type { Subscription } from "../src/types";
 
-// Read-only AI usage settings page (Month 4, Phase 2). Surfaces this period's
-// calls / tokens / $ estimate + a per-feature breakdown + recent calls. Owner/admin
-// only — mirrors the aiUsage/aiLog read rule in firestore.rules. No enforcement
-// this month (the gate stays soft); this is the meter, not the cap.
+// Read-only usage dashboard (Month 4 Phase 2 AI meter, extended Month 5/6 —
+// Task 12 — with boards, sessions and overall plan headroom). Surfaces this
+// period's AI calls / tokens / $ estimate + a per-feature breakdown + recent
+// calls, plus used/limit for every metered plan resource. Owner/admin only —
+// mirrors the aiUsage/aiLog/usage/billing read rules in firestore.rules.
+//
+// Every number on this screen is DISPLAY, not enforcement — the real gates
+// are the Cloud Functions and firestore.rules (see usageService.ts). Nothing
+// here denies a create; a plan can still be exceeded between page loads.
 
 const FEATURE_LABELS: Record<string, string> = {
   summary: "Session summaries",
@@ -36,6 +55,37 @@ const FEATURE_LABELS: Record<string, string> = {
   unknown: "Other",
 };
 
+/** "3 of 5" for a capped resource, "3 · Unlimited" for an unlimited one — never
+ *  a raw `Infinity` on screen. */
+function headroomValueText(h: Headroom): string {
+  return h.unlimited ? `${h.used} · Unlimited` : `${h.used} of ${h.limit}`;
+}
+
+/** Plain-language text for the (unenforced) `workspaces` plan limit — never
+ *  a raw `Infinity`. `limitFor` is a pure function (Task 2), safe to call
+ *  directly from the UI; it isn't a Firestore/network call. */
+function workspacesLimitText(plan: Parameters<typeof limitFor>[0]): string {
+  const n = limitFor(plan, "workspaces");
+  return n === UNLIMITED ? "unlimited workspaces" : `${n} workspace${n === 1 ? "" : "s"}`;
+}
+
+function HeadroomRow({ label, headroom, note }: { label: string; headroom: Headroom; note?: string }) {
+  return (
+    <View style={styles.usageRow}>
+      <View style={styles.usageRowHeader}>
+        <Text style={styles.usageLabel}>{label}</Text>
+        <Text style={styles.usageValue}>{headroomValueText(headroom)}</Text>
+      </View>
+      {!headroom.unlimited && (
+        <View style={styles.barTrack}>
+          <View style={[styles.barFill, { width: `${Math.round(headroom.fraction * 100)}%` }]} />
+        </View>
+      )}
+      {note && <Text style={styles.usageNote}>{note}</Text>}
+    </View>
+  );
+}
+
 export default function AiUsageScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -43,15 +93,20 @@ export default function AiUsageScreen() {
 
   const [usage, setUsage] = useState<AiUsagePeriod | null>(null);
   const [log, setLog] = useState<AiLogEntry[]>([]);
+  const [workspaceUsage, setWorkspaceUsage] = useState<WorkspaceUsage | null>(null);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
 
   const role =
     activeWorkspace && user
       ? getWorkspaceRole(activeWorkspace, user.uid)
       : undefined;
   const allowed = canViewUsage(role);
+  const plan = activeWorkspace?.plan ?? "free";
 
   const fetchUsage = useCallback(async () => {
     if (!activeWorkspaceId || !allowed) {
@@ -60,20 +115,24 @@ export default function AiUsageScreen() {
       return;
     }
     try {
-      const [u, l] = await Promise.all([
+      const [u, l, wsUsage, sub] = await Promise.all([
         getAiUsage(activeWorkspaceId),
         getRecentAiLog(activeWorkspaceId),
+        getWorkspaceUsage(activeWorkspaceId, plan),
+        getSubscription(activeWorkspaceId),
       ]);
       setUsage(u);
       setLog(l);
+      setWorkspaceUsage(wsUsage);
+      setSubscription(sub);
       setError(null);
     } catch {
-      setError("Failed to load AI usage. Pull down to retry.");
+      setError("Failed to load usage. Pull down to retry.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [activeWorkspaceId, allowed]);
+  }, [activeWorkspaceId, allowed, plan]);
 
   useFocusEffect(
     useCallback(() => {
@@ -86,12 +145,31 @@ export default function AiUsageScreen() {
     fetchUsage();
   };
 
+  // Web only (brief): the native Stripe Customer Portal redirect has never
+  // been exercised (no live Stripe account — see billingService.ts's module
+  // header) and this app builds no cancellation UI of its own, so the portal
+  // link is offered only where a redirect is unremarkable.
+  const handleManageBilling = async () => {
+    if (!activeWorkspaceId || billingBusy) return;
+    setBillingBusy(true);
+    setBillingError(null);
+    try {
+      const url = await openBillingPortal(activeWorkspaceId);
+      await Linking.openURL(url);
+    } catch (e) {
+      // BillingCallableError extends Error, so this also catches it.
+      setBillingError(e instanceof Error ? e.message : "Couldn't open the billing portal.");
+    } finally {
+      setBillingBusy(false);
+    }
+  };
+
   const header = (
     <View style={styles.header}>
       <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
         <Ionicons name="chevron-back" size={24} color="#111827" />
       </TouchableOpacity>
-      <Text style={styles.headerTitle}>AI Usage</Text>
+      <Text style={styles.headerTitle}>Usage</Text>
       <View style={styles.backBtn} />
     </View>
   );
@@ -117,7 +195,7 @@ export default function AiUsageScreen() {
           <Ionicons name="lock-closed-outline" size={40} color="#d1d5db" />
           <Text style={styles.emptyTitle}>Owner/admin only</Text>
           <Text style={styles.emptyText}>
-            AI usage for a workspace is visible to its owner and admins.
+            Usage for a workspace is visible to its owner and admins.
           </Text>
         </View>
       </View>
@@ -156,9 +234,71 @@ export default function AiUsageScreen() {
           </View>
         </View>
 
-        <Text style={styles.note}>
-          Estimates only — usage is metered but not yet capped on the free plan.
-        </Text>
+        <Text style={styles.note}>Estimates only.</Text>
+
+        {/* Plan usage (Month 5/6). "boards" mirrors the server's enforcement
+            query as closely as firestore.rules allows a client to get (see
+            usageService.ts) — everything else here is a straight read of the
+            same counter the relevant Cloud Function gates on. Nothing on
+            this screen enforces anything; a create can still be denied
+            between page loads. */}
+        {workspaceUsage && (
+          <>
+            <Text style={styles.sectionTitle}>Plan usage</Text>
+            <HeadroomRow
+              label="Boards"
+              headroom={workspaceUsage.boards}
+              note="Counts boards billed to this workspace — the same number a new board is checked against. Boards from before workspaces existed aren't included here even though they still appear in your board list."
+            />
+            <HeadroomRow label="Sessions this period" headroom={workspaceUsage.sessions} />
+            <HeadroomRow label="AI calls this period" headroom={workspaceUsage.aiCalls} />
+            <HeadroomRow
+              label="Collaborators"
+              headroom={workspaceUsage.collaborators}
+              note={`Your plan allows up to ${
+                workspaceUsage.collaborators.unlimited ? "unlimited" : workspaceUsage.collaborators.limit
+              } people per board. This counts everyone currently in the workspace, not any one board.`}
+            />
+
+            {/* Workspaces (brief requirement): PLAN_LIMITS lists a number for
+                this, but nothing enforces it — firestore.rules lets a client
+                create workspaces with no count check, and rules have no way
+                to add one. This is deliberately NOT a HeadroomRow: a bar
+                would visually claim a cap that does not exist. */}
+            <Text style={styles.workspacesNote}>
+              Workspaces: the {plan} plan lists{" "}
+              {workspacesLimitText(plan)}. Not enforced — creating another workspace isn't
+              currently blocked.
+            </Text>
+          </>
+        )}
+
+        {subscription && (
+          <Text style={styles.note}>
+            {hasKnownRenewalDate(subscription)
+              ? `Renews ${new Date(subscription.currentPeriodEndMs).toLocaleDateString()}.`
+              : "Renewal date unknown."}
+          </Text>
+        )}
+
+        {Platform.OS === "web" && (
+          <>
+            {billingError && <Text style={styles.errorText}>{billingError}</Text>}
+            <TouchableOpacity
+              testID="manage-billing-button"
+              accessibilityRole="button"
+              style={styles.manageBillingButton}
+              onPress={handleManageBilling}
+              disabled={billingBusy}
+            >
+              {billingBusy ? (
+                <ActivityIndicator color="#2563eb" />
+              ) : (
+                <Text style={styles.manageBillingText}>Manage billing</Text>
+              )}
+            </TouchableOpacity>
+          </>
+        )}
 
         {/* Per-feature breakdown */}
         <Text style={styles.sectionTitle}>By feature</Text>
@@ -248,4 +388,31 @@ const styles = StyleSheet.create({
   empty: { alignItems: "center", paddingTop: 60, paddingHorizontal: 32, gap: 8 },
   emptyTitle: { fontSize: 16, fontWeight: "600", color: "#374151" },
   emptyText: { fontSize: 13, color: "#9ca3af", textAlign: "center", lineHeight: 18 },
+  usageRow: { marginTop: 14 },
+  usageRowHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    marginBottom: 6,
+  },
+  usageLabel: { fontSize: 14, fontWeight: "600", color: "#111827" },
+  usageValue: { fontSize: 13, color: "#6b7280" },
+  barTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#e5e7eb",
+    overflow: "hidden",
+  },
+  barFill: { height: 6, borderRadius: 3, backgroundColor: "#2563eb" },
+  usageNote: { fontSize: 11, color: "#9ca3af", marginTop: 4, lineHeight: 15 },
+  workspacesNote: { fontSize: 11, color: "#9ca3af", marginTop: 16, lineHeight: 15 },
+  manageBillingButton: {
+    marginTop: 16,
+    alignSelf: "flex-start",
+    backgroundColor: "#eff6ff",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  manageBillingText: { color: "#2563eb", fontSize: 14, fontWeight: "700" },
 });
