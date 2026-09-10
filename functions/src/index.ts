@@ -32,3 +32,8 @@ export { textToDiagram } from "./callable/textToDiagram";
 // Exported names match the client callable names in src/services/embedService.ts.
 export { mintEmbedToken_fn as mintEmbedToken } from "./callable/mintEmbedToken";
 export { exchangeEmbedToken_fn as exchangeEmbedToken } from "./callable/exchangeEmbedToken";
+
+// Month 5 — plan enforcement. Board creation moved server-side so the free-tier
+// board cap cannot be bypassed by a patched client (firestore.rules denies
+// direct client creates; see Task 7).
+export { createBoard } from "./callable/createBoard";

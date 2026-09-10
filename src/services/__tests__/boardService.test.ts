@@ -1,5 +1,9 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+const mockCallable = jest.fn();
+jest.mock("firebase/functions", () => ({
+  httpsCallable: () => mockCallable,
+}));
 
 import * as fs from "firebase/firestore";
 import { auth } from "../../config/firebase";
@@ -18,26 +22,23 @@ beforeEach(() => {
 });
 
 describe("createBoard", () => {
-  it("creates the board with owner as sole member, the workspaceId, and a BORD- invite code", async () => {
-    addDoc.mockResolvedValueOnce({ id: "board-1" });
+  // Server-enforced since M5 (Task 5): board creation and invite-code
+  // generation moved into the `createBoard` callable, so the client no longer
+  // writes the board doc directly. See functions/src/callable/createBoard.ts.
+  it("calls the createBoard callable with the workspace and title, returning its boardId", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
     const id = await boardService.createBoard("My Board", "owner-1", "ws-1");
 
     expect(id).toBe("board-1");
-    const payload = addDoc.mock.calls[0][1];
-    expect(payload).toMatchObject({
-      workspaceId: "ws-1",
-      title: "My Board",
-      ownerId: "owner-1",
-      adminId: "owner-1",
-      members: ["owner-1"],
-    });
-    expect(payload.inviteCode).toMatch(/^BORD-[A-Z0-9]{6}$/);
+    expect(mockCallable).toHaveBeenCalledWith({ workspaceId: "ws-1", title: "My Board" });
+    // The client no longer writes the board doc (or an invite code) directly.
+    expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("invokes the quota choke point for the board's workspace (Phase 5)", async () => {
+  it("invokes the quota choke point for the board's workspace (Phase 5, still inert)", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
-    addDoc.mockResolvedValueOnce({ id: "board-1" });
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
     await boardService.createBoard("My Board", "owner-1", "ws-1");
 

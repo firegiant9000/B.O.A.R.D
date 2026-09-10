@@ -5,14 +5,24 @@
 // AI calls ARE gated server-side today: functions/src/ai/usage.ts#checkAiQuota
 // reads the workspace's plan and period usage and denies past the cap.
 //
-// Board and session limits are NOT enforced server-side yet. As of this
-// writing, firestore.rules lets a signed-in workspace member create a board
-// or session directly with no count or plan condition, and nothing else
-// intercepts either create path — so the `boards` / `sessionsPerPeriod`
-// numbers this module compares against are backed by nothing server-side.
-// A create-time server check and a matching rules denial for both are
-// expected on this branch later; when they land, update this comment to say
-// so rather than trusting this note to still be accurate.
+// Boards are PARTIALLY enforced server-side as of Task 5: the `createBoard`
+// callable (functions/src/callable/createBoard.ts) reads the live board count
+// and denies past the plan's cap before writing. But firestore.rules still
+// lets a signed-in workspace member `addDoc` a board directly with no count
+// condition, so a client that skips the callable (a patched bundle, a raw
+// REST call) can still create board #6 — a later task closes that by denying
+// the direct-write path in firestore.rules. Until then the `boards` number
+// this module compares against is backed by a real server check on only one
+// of the two live create paths.
+//
+// Session limits are NOT enforced server-side yet. As of this writing,
+// firestore.rules lets a signed-in workspace member create a session directly
+// with no count or plan condition, and nothing else intercepts that create
+// path — so the `sessionsPerPeriod` number this module compares against is
+// backed by nothing server-side. A create-time server check and a matching
+// rules denial are expected on this branch later; when they land, update
+// this comment to say so rather than trusting this note to still be
+// accurate.
 //
 // Never add a limit here and consider it enforced without independently
 // confirming the server side actually denies it. A patched bundle skips this

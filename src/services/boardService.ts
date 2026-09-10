@@ -1,6 +1,5 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
   deleteDoc,
@@ -14,15 +13,13 @@ import {
   deleteField,
   writeBatch,
 } from "firebase/firestore";
-import { db, auth } from "../config/firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../config/firebase";
 import { Board, BoardRole, Workspace, WorkspaceRole } from "../types";
-import { randomCode } from "../lib/secureRandom";
 import { isBackgroundTemplate } from "../lib/backgrounds";
 import { assertQuota } from "./quotaService";
 
 const boardsRef = collection(db, "boards");
-
-const INVITE_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function mapBoard(id: string, data: Record<string, any>): Board {
   return {
@@ -43,10 +40,6 @@ function mapBoard(id: string, data: Record<string, any>): Board {
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   };
-}
-
-function generateInviteCode(): string {
-  return `BORD-${randomCode(6, INVITE_CODE_CHARS)}`;
 }
 
 // ── per-board role resolution (Phase 6) ──────────────────────────────────────
@@ -107,25 +100,35 @@ async function deleteSubcollection(boardId: string, subcollection: string): Prom
   }
 }
 
+interface CreateBoardResponse {
+  boardId: string;
+  inviteCode: string;
+}
+
+/**
+ * Server-enforced since M5: the `createBoard` callable owns the free-tier
+ * board-count gate and generates the invite code (a client can no longer pick
+ * its own). The client signature is unchanged so every call site keeps
+ * working untouched.
+ */
 export async function createBoard(
   title: string,
   ownerId: string,
   workspaceId: string
 ): Promise<string> {
+  // Advisory-only pre-flight (see quotaService's module header) — always
+  // passes today since it's called with just 2 args, so `plan`/`currentCount`
+  // fall back to "free"/0. Left in place inert; a later task wires it to the
+  // workspace's real plan/count together with the upsell modal it feeds.
   await assertQuota(workspaceId, "board");
-  const inviteCode = generateInviteCode();
-  const docRef = await addDoc(boardsRef, {
-    workspaceId,
-    title,
-    ownerId,
-    adminId: ownerId,
-    collaboratorIds: [],
-    inviteCode,
-    members: [ownerId],
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
-  return docRef.id;
+  void ownerId; // the function derives the owner from the auth token, not the client
+
+  const fn = httpsCallable<{ workspaceId: string; title: string }, CreateBoardResponse>(
+    functions,
+    "createBoard"
+  );
+  const { data } = await fn({ workspaceId, title });
+  return data.boardId;
 }
 
 // Migration-tolerant workspace scoping (Phase 2). We deliberately keep the
