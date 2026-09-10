@@ -9,8 +9,13 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../services/billingService";
-import { limitMessage, isPlanCapped, THROTTLE_MESSAGE, RESOURCE_LABEL } from "./upsellCopy";
-import type { QuotaResource } from "../services/quotaService";
+import {
+  limitMessage,
+  isPlanCapped,
+  THROTTLE_MESSAGE,
+  RESOURCE_LABEL,
+  type UpsellModalProps,
+} from "./upsellCopy";
 import type { Plan } from "../types";
 
 // Web body of the plan-limit upsell — the platform-extension DEFAULT (bare
@@ -28,17 +33,7 @@ import type { Plan } from "../types";
 // redirect. PENDING_PRO_PRICE_LABEL below is a placeholder, not an approved
 // price — see its own comment.
 
-export interface UpsellModalProps {
-  visible: boolean;
-  resource: QuotaResource;
-  onDismiss: () => void;
-  /** The workspace's actual plan. Determines whether this resource can even
-   *  be plan-capped (see upsellCopy.isPlanCapped) — falls back to "free"
-   *  when omitted. */
-  plan?: Plan;
-  /** Needed to actually call `startCheckout`/`openBillingPortal`. */
-  workspaceId?: string;
-}
+export type { UpsellModalProps };
 
 // PLACEHOLDER — Gate G4 (pricing) is unmet; no price has been approved. This
 // value is not a business decision made here; a later, pricing-owning task

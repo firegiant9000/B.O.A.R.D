@@ -1,7 +1,6 @@
 import React from "react";
 import { Modal, View, Text, TouchableOpacity, StyleSheet } from "react-native";
-import { limitMessage, isPlanCapped, THROTTLE_MESSAGE } from "./upsellCopy";
-import type { QuotaResource } from "../services/quotaService";
+import { limitMessage, isPlanCapped, THROTTLE_MESSAGE, type UpsellModalProps } from "./upsellCopy";
 import type { Plan } from "../types";
 
 // Native (iOS/Android) body of the plan-limit upsell — the platform-extension
@@ -9,25 +8,18 @@ import type { Plan } from "../types";
 // UpsellModal.tsx (see that file's header for the convention, matching
 // src/lib/hardwareKeys.ts / hardwareKeys.native.ts).
 //
-// COMPLIANCE INVARIANT, guarded by this component's test file: this source
-// file may never name a cost figure, a currency amount, an off-app link, or
-// any affordance that could lead one off-app to complete a purchase — that
-// is App Store / Play policy on external payment for a native app. It states
-// the limit (or, when the denial can't be a plan cap, a transient note) and
-// offers only a dismiss action. It imports nothing capable of constructing
-// such a link — no billing seam of any kind, only the shared, figure-free
-// copy in ./upsellCopy.
+// COMPLIANCE INVARIANT, guarded by this component's test file (which scans
+// this source text, not only its rendered output): this file may never name
+// a cost figure, a currency amount, an off-app link, or any affordance that
+// could lead one off-app to complete a purchase — that is App Store / Play
+// policy on external payment for a native app. It states the limit (or, when
+// the denial can't be a plan cap, a transient note) and offers only a
+// dismiss action. Its OWN imports are react-native's UI primitives and the
+// shared, figure-free copy in ./upsellCopy — no billing seam of any kind.
+// (react-native itself exports things capable of opening an outside link;
+// nothing here reaches for any of them.)
 
-export interface UpsellModalProps {
-  visible: boolean;
-  resource: QuotaResource;
-  onDismiss: () => void;
-  /** The workspace's actual plan; falls back to "free" when omitted. */
-  plan?: Plan;
-  /** Unused on this variant — kept so every call site can pass the same
-   *  props to either platform's file without branching. */
-  workspaceId?: string;
-}
+export type { UpsellModalProps };
 
 export default function UpsellModal({ visible, resource, onDismiss, plan }: UpsellModalProps) {
   const effectivePlan: Plan = plan ?? "free";

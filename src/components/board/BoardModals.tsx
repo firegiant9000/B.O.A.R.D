@@ -73,7 +73,9 @@ interface BoardModalsProps {
    *  affordances via `ai`). Null hides it. */
   upsellResource: QuotaResource | null;
   onDismissUpsell: () => void;
-  /** StartSessionModal caught resource-exhausted: close the session composer
+  /** StartSessionModal caught a quota denial (isQuotaDenial — the server's
+   *  own resource-exhausted rejection, or the client-side pre-flight's own
+   *  QuotaExceededError, which carries no code): close the session composer
    *  and show the upsell in its place. */
   onSessionQuotaExceeded: () => void;
 }

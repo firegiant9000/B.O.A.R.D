@@ -56,23 +56,44 @@ const mockOpenBillingPortal = openBillingPortal as jest.Mock;
 
 const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary", "aiCall"];
 
-// The store-compliance guard's strongest layer: read the native file's own
-// SOURCE TEXT rather than only its rendered output. A price or a checkout
-// link held in a handler and never rendered (e.g. a bare
-// `Linking.openURL(PAY_URL)` nobody calls in these tests) is invisible to
-// `toJSON()` and to a press-driven mock-call assertion, but not to this.
-const nativeSource = fs.readFileSync(
-  path.join(__dirname, "../UpsellModal.native.tsx"),
-  "utf8"
-);
+// The store-compliance guard's strongest layer: read every file the native
+// bundle actually pulls in, as SOURCE TEXT, rather than only rendered
+// output. A price or a checkout link held in a handler and never rendered
+// (e.g. a bare `Linking.openURL(PAY_URL)` nobody calls in these tests) is
+// invisible to `toJSON()` and to a press-driven mock-call assertion, but not
+// to this. Covers both files on the native variant's own import graph:
+// UpsellModal.native.tsx itself, and upsellCopy.ts (its only non-type
+// import) — upsellCopy.ts is otherwise unscanned by anything, which would
+// make it exactly the "shared module quietly carries the price" hole this
+// split exists to close. (upsellCopy.ts's own further imports —
+// planLimits.ts, quotaService.ts — are generic, not upsell-specific, and
+// carry no billing code; not scanned here.)
+//
+// The `$` half of the pattern excludes `$` immediately followed by `{`:
+// a bare `/\$/` would also flag template-literal interpolation, and
+// upsellCopy.ts's own `limitMessage` legitimately uses several
+// (`` `...${plan}...${limit}...` ``) — a real price ($5, $5.99, $5/month,
+// ...) still matches, since a digit or other character, never `{`, follows
+// the sign in every form this app uses.
+const NO_PAYMENT_CONTENT = /\$(?!\{)|https?:|stripe|checkout|price/i;
 
-describe("UpsellModal — native source (store-compliance guard)", () => {
-  it("contains no price, currency, Stripe reference, or link scheme anywhere in its source — not just its rendered output", () => {
-    expect(nativeSource).not.toMatch(/\$|https?:|stripe|checkout|price/i);
-  });
+const NATIVE_BUNDLE_SOURCE_FILES: Array<[label: string, relPath: string]> = [
+  ["UpsellModal.native.tsx", "../UpsellModal.native.tsx"],
+  ["upsellCopy.ts", "../upsellCopy.ts"],
+];
 
-  it("imports nothing from billingService", () => {
-    expect(nativeSource).not.toMatch(/billingService/i);
+describe("UpsellModal — native-reachable source (store-compliance guard)", () => {
+  it.each(NATIVE_BUNDLE_SOURCE_FILES)(
+    "%s contains no price, currency, Stripe reference, or link scheme anywhere in its source — not just rendered output",
+    (_label, relPath) => {
+      const source = fs.readFileSync(path.join(__dirname, relPath), "utf8");
+      expect(source).not.toMatch(NO_PAYMENT_CONTENT);
+    }
+  );
+
+  it.each(NATIVE_BUNDLE_SOURCE_FILES)("%s imports nothing from billingService", (_label, relPath) => {
+    const source = fs.readFileSync(path.join(__dirname, relPath), "utf8");
+    expect(source).not.toMatch(/billingService/i);
   });
 });
 
