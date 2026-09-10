@@ -231,6 +231,21 @@ service cloud.firestore {
       match /aiRate/{bucketId} {
         allow read, write: if false;
       }
+
+      // Plan metering (M5). Written ONLY by Cloud Functions via the Admin SDK,
+      // exactly like aiUsage/aiLog above. Owner/admin read it for the usage page.
+      match /usage/{period} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
+      // Stripe subscription state (M5). The webhook is the only writer; a client
+      // that could write here could grant itself Pro.
+      match /billing/{docId} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
     }
 
     // ── boards ────────────────────────────────────────────────────────────────

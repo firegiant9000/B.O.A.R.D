@@ -166,6 +166,11 @@ beforeEach(async () => {
     await setDoc(doc(db, "workspaces/wsA/aiLog/call1"), { uid: ALICE, model: "gpt-3.5-turbo", tokens: 300 });
     await setDoc(doc(db, "workspaces/wsA/aiRate/bucket"), { tokens: 30, updatedAt: 0 });
 
+    // M5 — plan metering docs (written by Functions in prod). Seeded here with
+    // rules bypassed to test client read/write access against them.
+    await setDoc(doc(db, "workspaces/wsA/usage/2026-09"), { sessions: 1, updatedAt: 0 });
+    await setDoc(doc(db, "workspaces/wsA/billing/subscription"), { plan: "free" });
+
     // Phase 10 — an OCR cache entry the function would have written.
     await setDoc(doc(db, "boards/boardCoded/ocrCache/hash1"), {
       text: "Hi", confidence: 0.9, source: "vision", model: "google-vision", createdAt: 0,
@@ -768,5 +773,45 @@ describe("embed token read path", () => {
   it("a signed-in non-member with no embed claim is still denied (claim is required)", async () => {
     // BOB is in a different workspace and holds no embed claim — the ordinary gate.
     await assertFails(getDoc(doc(db(BOB), "boards/boardPrivate")));
+  });
+});
+
+// ── M5: plan metering collections (usage / billing) ────────────────────────────
+// Both are written ONLY by Cloud Functions via the Admin SDK (which bypasses
+// rules); every client write must be denied, and reads are limited to workspace
+// owner/admins, mirroring the aiUsage/aiLog gate above.
+describe("M5 metering collections", () => {
+  it("denies a client write to usage", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "workspaces/wsA/usage/2026-09"), { sessions: 0, updatedAt: 0 })
+    );
+  });
+
+  it("denies a client write to billing", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "workspaces/wsA/billing/subscription"), { plan: "pro" })
+    );
+  });
+
+  it("lets a workspace owner read usage", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "workspaces/wsA/usage/2026-09")));
+  });
+
+  it("denies a plain member reading usage", async () => {
+    // dave is a plain workspace member, not owner/admin.
+    await assertFails(getDoc(doc(db(DAVE), "workspaces/wsA/usage/2026-09")));
+  });
+
+  it("lets a workspace owner read billing", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "workspaces/wsA/billing/subscription")));
+  });
+
+  it("denies a plain member reading billing", async () => {
+    await assertFails(getDoc(doc(db(DAVE), "workspaces/wsA/billing/subscription")));
+  });
+
+  it("denies a non-member reading usage or billing", async () => {
+    await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/usage/2026-09")));
+    await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/billing/subscription")));
   });
 });
