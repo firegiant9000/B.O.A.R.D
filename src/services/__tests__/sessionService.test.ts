@@ -1,5 +1,10 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+const mockCallable = jest.fn();
+const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
+jest.mock("firebase/functions", () => ({
+  httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
+}));
 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
@@ -31,33 +36,59 @@ beforeEach(() => {
 });
 
 describe("createSession", () => {
-  it("generates a SESS- join code, converts scheduledAt, and stamps createdAt", async () => {
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+  // Server-enforced since M5 (Task 6): session creation and join-code
+  // generation moved into the `createSession` callable, so the client no
+  // longer writes the session doc directly. See
+  // functions/src/callable/createSession.ts.
+  it("calls the createSession callable with a millisecond scheduledAt, returning its sessionId", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
 
     const id = await sessionService.createSession(baseSession);
 
     expect(id).toBe("sess-1");
-    const payload = addDoc.mock.calls[0][1];
-    expect(payload.joinCode).toMatch(/^SESS-[A-Z0-9]{6}$/);
-    expect(payload.scheduledAt).toMatchObject({ __type: "timestamp" });
-    expect(payload.createdAt).toBe("__serverTimestamp__");
+    expect(mockCallable).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "ws-1",
+        boardId: "board-1",
+        title: "Study",
+        scheduledAtMs: baseSession.scheduledAt.getTime(),
+        durationMinutes: 60,
+      })
+    );
+    // The client no longer writes the session doc (or a join code) directly.
+    expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("omits summary when undefined", async () => {
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+  it("binds httpsCallable to the \"createSession\" function name", async () => {
+    // Pins the callable's name against the mock factory's own second
+    // argument, not just the mock's configured return value — a typo here
+    // (e.g. "createsession") would still satisfy every other assertion in
+    // this block while breaking every session create in production.
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
     await sessionService.createSession(baseSession);
-    expect(addDoc.mock.calls[0][1]).not.toHaveProperty("summary");
+
+    expect(mockHttpsCallable).toHaveBeenCalled();
+    expect(mockHttpsCallable.mock.calls[0][1]).toBe("createSession");
   });
 
-  it("stamps the inherited workspaceId onto the session (Phase 4)", async () => {
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+  it("does not send lifecycle fields the server stamps itself (joinCode, createdById is derived from auth)", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
     await sessionService.createSession(baseSession);
-    expect(addDoc.mock.calls[0][1].workspaceId).toBe("ws-1");
+
+    const sent = mockCallable.mock.calls[0][0];
+    expect(sent).not.toHaveProperty("joinCode");
+    expect(sent).not.toHaveProperty("createdById");
+    expect(sent).not.toHaveProperty("summary");
+    expect(sent).not.toHaveProperty("startedAt");
+    expect(sent).not.toHaveProperty("endedAt");
+    expect(sent).not.toHaveProperty("participants");
   });
 
-  it("invokes the quota choke point with the inherited workspace (Phase 5)", async () => {
+  it("invokes the quota choke point with the inherited workspace (Phase 5, still inert)", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
 
     await sessionService.createSession(baseSession);
 
@@ -237,17 +268,19 @@ describe("updateSession", () => {
 });
 
 describe("createSession lifecycle (Phase 4)", () => {
-  it("stamps startedAt when created already active", async () => {
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+  // startedAt is now stamped server-side (functions/src/callable/createSession.ts)
+  // when status is "active"; the client only needs to forward `status`.
+  it("sends status: active through to the callable", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
     await sessionService.createSession({ ...baseSession, status: "active" });
-    expect(addDoc.mock.calls[0][1].startedAt).toBe("__serverTimestamp__");
+    expect(mockCallable.mock.calls[0][0]).toMatchObject({ status: "active" });
   });
 
-  it("omits startedAt and agenda for a plain scheduled session", async () => {
-    addDoc.mockResolvedValueOnce({ id: "sess-1" });
+  it("sends status: scheduled for a plain scheduled session, with no agenda field sent", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
     await sessionService.createSession(baseSession);
-    expect(addDoc.mock.calls[0][1]).not.toHaveProperty("startedAt");
-    expect(addDoc.mock.calls[0][1]).not.toHaveProperty("agenda");
+    expect(mockCallable.mock.calls[0][0]).toMatchObject({ status: "scheduled" });
+    expect(mockCallable.mock.calls[0][0].agenda).toBeUndefined();
   });
 });
 

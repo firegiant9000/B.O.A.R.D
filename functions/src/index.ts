@@ -37,3 +37,11 @@ export { exchangeEmbedToken_fn as exchangeEmbedToken } from "./callable/exchange
 // board cap cannot be bypassed by a patched client once firestore.rules denies
 // the direct client create; until then both paths are live.
 export { createBoard } from "./callable/createBoard";
+
+// Month 5 — plan enforcement. Session creation moved server-side so the
+// free-tier monthly session cap cannot be bypassed by a patched client once
+// firestore.rules denies the direct client create; until then both paths are
+// live. Sessions are metered with a transactional monthly counter rather than
+// a live count (functions/src/billing/usage.ts), since a session is never
+// freed the way a deleted board is.
+export { createSession } from "./callable/createSession";

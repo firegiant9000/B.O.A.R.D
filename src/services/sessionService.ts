@@ -1,6 +1,5 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
   deleteDoc,
@@ -15,20 +14,13 @@ import {
   Timestamp,
   QueryConstraint,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../config/firebase";
 import { Session, SessionSummary, ParticipantSnapshot } from "../types";
-import { randomCode } from "../lib/secureRandom";
 import { assertQuota } from "./quotaService";
 import { getUsersByIds } from "./friendService";
 
 const sessionsRef = collection(db, "sessions");
-
-// Excludes ambiguous glyphs (I/O/0/1) so codes read aloud unambiguously.
-const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateJoinCode(): string {
-  return `SESS-${randomCode(6, JOIN_CODE_CHARS)}`;
-}
 
 function mapSession(id: string, data: any): Session {
   return {
@@ -58,27 +50,60 @@ function mapSession(id: string, data: any): Session {
   };
 }
 
+interface CreateSessionResponse {
+  sessionId: string;
+  joinCode: string;
+}
+
+/**
+ * Server-enforced since M5: the `createSession` callable owns the free-tier
+ * monthly session cap and generates the join code (a client can no longer
+ * pick its own or forge `createdById`). The client signature is unchanged so
+ * every call site keeps working untouched.
+ *
+ * `scheduledAt` doesn't survive the callable boundary as a `Date`, so it's
+ * converted to epoch milliseconds here; the function rebuilds the `Timestamp`
+ * server-side. Lifecycle fields (`summary`, `joinCode`, `startedAt`,
+ * `endedAt`, `participants`) aren't sent — they're either stamped server-side
+ * at create (`joinCode`, and `startedAt` when `status` is "active") or only
+ * ever set later, by `startSession`/`endSession`/`updateSessionSummary`.
+ */
 export async function createSession(
   data: Omit<Session, "id" | "createdAt">
 ): Promise<string> {
   await assertQuota(data.workspaceId, "session");
-  // Drop lifecycle fields that are stamped server-side, not supplied at create:
-  // startedAt is set below (or by startSession), endedAt/participants only at end.
-  const { summary, joinCode: _jc, startedAt: _st, endedAt: _en, participants: _p, ...rest } = data;
-  const payload: Record<string, any> = {
-    ...rest,
-    joinCode: generateJoinCode(),
-    scheduledAt: Timestamp.fromDate(rest.scheduledAt),
-    createdAt: serverTimestamp(),
-  };
-  if (summary !== undefined) payload.summary = summary;
-  if (rest.agenda === undefined) delete payload.agenda; // Firestore rejects undefined
-  // A session created already "active" (e.g. the board's Start Session modal)
-  // anchors its elapsed timer from now; scheduled sessions get startedAt at the
-  // scheduled → active transition (see startSession).
-  if (rest.status === "active") payload.startedAt = serverTimestamp();
-  const ref = await addDoc(sessionsRef, payload);
-  return ref.id;
+
+  const fn = httpsCallable<
+    {
+      workspaceId: string;
+      boardId: string;
+      boardTitle?: string;
+      title: string;
+      description?: string;
+      scheduledAtMs: number;
+      durationMinutes: number;
+      createdByName?: string;
+      participantIds?: string[];
+      status?: Session["status"];
+      agenda?: string;
+    },
+    CreateSessionResponse
+  >(functions, "createSession");
+
+  const { data: res } = await fn({
+    workspaceId: data.workspaceId,
+    boardId: data.boardId,
+    boardTitle: data.boardTitle,
+    title: data.title,
+    description: data.description,
+    scheduledAtMs: data.scheduledAt.getTime(),
+    durationMinutes: data.durationMinutes,
+    createdByName: data.createdByName,
+    participantIds: data.participantIds,
+    status: data.status,
+    agenda: data.agenda,
+  });
+  return res.sessionId;
 }
 
 export async function joinSessionByCode(

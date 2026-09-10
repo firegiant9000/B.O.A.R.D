@@ -1,0 +1,206 @@
+import { onCall, HttpsError, type CallableRequest } from "firebase-functions/v2/https";
+import { getFirestore, FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
+import { generateInviteCode } from "./createBoard";
+import { limitFor, type Plan } from "../billing/limits";
+import {
+  readSessionCount,
+  incrementSessionCount,
+  sessionUsageRef,
+  type SessionUsageDoc,
+} from "../billing/usage";
+
+// Month 5 — session creation moves server-side so the free-tier monthly
+// session cap (functions/src/billing/limits.ts) can't be bypassed by a
+// patched client or a raw REST call. Sessions are a FLOW (3/month, never
+// freed) metered with a stored monthly counter (functions/src/billing/usage.ts)
+// rather than a live count, so the counter bump and the session write happen
+// inside one Firestore transaction — if they could diverge, the gate would be
+// decorative. firestore.rules still allows a direct client create with no
+// count condition until a later task closes that path; until then this
+// callable and the direct client write are both live.
+
+export interface CreateSessionRequest {
+  workspaceId: string;
+  boardId: string;
+  title: string;
+  scheduledAtMs: number;
+  durationMinutes: number;
+  boardTitle?: string;
+  description?: string;
+  createdByName?: string;
+  participantIds?: string[];
+  status?: "scheduled" | "active" | "ended";
+  agenda?: string;
+}
+
+export interface CreateSessionResponse {
+  sessionId: string;
+  joinCode: string;
+}
+
+/** Injected so the handler unit-tests without Firestore, matching
+ *  handleCreateBoard's pattern (functions/src/callable/createBoard.ts).
+ *  `runCreate` is the transactional core: it re-reads the usage doc,
+ *  re-checks the limit against that fresh read, and writes the session +
+ *  bumps the counter in one transaction. `readSessionCount` is only used for
+ *  a fail-fast pre-check outside any transaction — a concurrent create right
+ *  at the boundary is caught by the re-check inside `runCreate`, not by
+ *  this one. */
+export interface CreateSessionDeps {
+  getWorkspace(
+    workspaceId: string
+  ): Promise<{ plan?: string; members?: Record<string, string> } | null>;
+  readSessionCount(workspaceId: string, now: number): Promise<number>;
+  runCreate(
+    workspaceId: string,
+    sessionDoc: Record<string, unknown>,
+    now: number,
+    plan: Plan
+  ): Promise<CreateSessionResponse>;
+}
+
+export async function handleCreateSession(
+  req: CallableRequest<CreateSessionRequest>,
+  deps: CreateSessionDeps,
+  now: number
+): Promise<CreateSessionResponse> {
+  const uid = req.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Sign in to create a session.");
+
+  const data = (req.data ?? {}) as Partial<CreateSessionRequest>;
+  const { workspaceId, boardId, title, scheduledAtMs, durationMinutes } = data;
+
+  if (!workspaceId) throw new HttpsError("invalid-argument", "workspaceId is required.");
+  if (!boardId) throw new HttpsError("invalid-argument", "boardId is required.");
+  if (!title || !title.trim()) {
+    throw new HttpsError("invalid-argument", "A session title is required.");
+  }
+  if (typeof scheduledAtMs !== "number" || !Number.isFinite(scheduledAtMs)) {
+    throw new HttpsError("invalid-argument", "scheduledAtMs is required.");
+  }
+  if (
+    typeof durationMinutes !== "number" ||
+    !Number.isFinite(durationMinutes) ||
+    durationMinutes <= 0
+  ) {
+    throw new HttpsError("invalid-argument", "durationMinutes must be a positive number.");
+  }
+
+  const ws = await deps.getWorkspace(workspaceId);
+  if (!ws) throw new HttpsError("not-found", "Workspace not found.");
+  if (!ws.members || !(uid in ws.members)) {
+    throw new HttpsError("permission-denied", "You are not a member of this workspace.");
+  }
+
+  const plan = (ws.plan ?? "free") as Plan;
+
+  // Fail-fast pre-check outside any transaction, purely to avoid a pointless
+  // round trip when we can already tell the caller no. Not authoritative —
+  // `runCreate` re-reads the counter fresh inside its own transaction, and
+  // that re-check is the only one that actually decides.
+  const used = await deps.readSessionCount(workspaceId, now);
+  const limit = limitFor(plan, "sessionsPerPeriod");
+  // Deny unless PROVABLY under the cap (mirrors handleCreateBoard): `limitFor`
+  // can return `undefined` for a prototype-shaped plan value (e.g.
+  // "__proto__"), and `used` could in principle be non-finite; `!(used <
+  // limit)` denies on both, with no extra branch needed for UNLIMITED
+  // (`Infinity`) — `used < Infinity` is simply always true for a finite `used`.
+  if (!(used < limit)) {
+    throw new HttpsError(
+      "resource-exhausted",
+      `You've reached your plan's session limit (${limit}) for this period. Upgrade for more.`
+    );
+  }
+
+  const status: "scheduled" | "active" = data.status === "active" ? "active" : "scheduled";
+  const sessionDoc: Record<string, unknown> = {
+    workspaceId,
+    boardId,
+    boardTitle: typeof data.boardTitle === "string" ? data.boardTitle : "",
+    title: title.trim(),
+    description: typeof data.description === "string" ? data.description : "",
+    scheduledAt: Timestamp.fromMillis(scheduledAtMs),
+    durationMinutes,
+    // Derived from the auth token, never trusted from the client — mirrors
+    // ownerId/adminId in handleCreateBoard, and matches what firestore.rules
+    // already requires on the direct-write path (createdById == auth.uid).
+    createdById: uid,
+    createdByName: typeof data.createdByName === "string" ? data.createdByName : "",
+    participantIds: Array.isArray(data.participantIds) ? data.participantIds : [],
+    status,
+    createdAt: FieldValue.serverTimestamp(),
+  };
+  if (typeof data.agenda === "string" && data.agenda.trim()) {
+    sessionDoc.agenda = data.agenda;
+  }
+  if (status === "active") {
+    // Mirrors the prior client-side behavior: a session created already
+    // "active" (the board's Start Session modal) anchors its elapsed timer
+    // from now, rather than waiting for a later scheduled -> active transition.
+    sessionDoc.startedAt = FieldValue.serverTimestamp();
+  }
+
+  // `sessionDoc` is built field-by-field above from validated/whitelisted
+  // input — a client-supplied `joinCode` (or any other unexpected field) in
+  // `req.data` never reaches it. The transactional core below generates its
+  // own join code regardless, as defense in depth.
+  return deps.runCreate(workspaceId, sessionDoc, now, plan);
+}
+
+/** The real transactional core, split out so it unit-tests against a fake
+ *  Firestore-like object without the emulator. `prev` MUST come from
+ *  `tx.get(sessionUsageRef(...))` inside this same transaction — never from
+ *  `readSessionCount`, which reads outside any transaction and would let a
+ *  concurrent increment get silently lost. All reads happen before any
+ *  write: the single `tx.get` below is the transaction's only read, and it
+ *  precedes both the session's `tx.set` and the counter's `tx.set` (inside
+ *  `incrementSessionCount`). */
+export function makeRunCreate(db: Firestore): CreateSessionDeps["runCreate"] {
+  return (workspaceId, sessionDoc, now, plan) =>
+    db.runTransaction(async (tx) => {
+      const ref = sessionUsageRef(db, workspaceId, now);
+      const snap = await tx.get(ref);
+      const prev = snap.exists ? (snap.data() as SessionUsageDoc) : undefined;
+      const used =
+        typeof prev?.sessions === "number" && Number.isFinite(prev.sessions) ? prev.sessions : 0;
+      const limit = limitFor(plan, "sessionsPerPeriod");
+      // Same negated "provably under" gate as the pre-flight above, re-run
+      // against the value this transaction itself just read — this re-check
+      // is what makes two concurrent creates at the boundary safe.
+      if (!(used < limit)) {
+        throw new HttpsError(
+          "resource-exhausted",
+          `You've reached your plan's session limit (${limit}) for this period. Upgrade for more.`
+        );
+      }
+
+      const sessionRef = db.collection("sessions").doc();
+      // Generated here, never taken from `sessionDoc`: a client cannot choose
+      // its own join code. Imported from createBoard.ts rather than
+      // reimplemented (same 6-char, 36-char-alphabet, rejection-sampled
+      // generator boards already use).
+      const joinCode = generateInviteCode();
+      tx.set(sessionRef, { ...sessionDoc, joinCode });
+      incrementSessionCount(tx, db, workspaceId, now, prev);
+
+      return { sessionId: sessionRef.id, joinCode };
+    });
+}
+
+export const createSession = onCall((req: CallableRequest<CreateSessionRequest>) => {
+  const db = getFirestore();
+  return handleCreateSession(
+    req,
+    {
+      getWorkspace: async (id) => {
+        const s = await db.doc(`workspaces/${id}`).get();
+        return s.exists
+          ? (s.data() as { plan?: string; members?: Record<string, string> })
+          : null;
+      },
+      readSessionCount: (id, now) => readSessionCount(db, id, now),
+      runCreate: makeRunCreate(db),
+    },
+    Date.now()
+  );
+});

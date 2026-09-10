@@ -15,14 +15,16 @@
 // this module compares against is backed by a real server check on only one
 // of the two live create paths.
 //
-// Session limits are NOT enforced server-side yet. As of this writing,
-// firestore.rules lets a signed-in workspace member create a session directly
-// with no count or plan condition, and nothing else intercepts that create
-// path — so the `sessionsPerPeriod` number this module compares against is
-// backed by nothing server-side. A create-time server check and a matching
-// rules denial are expected on this branch later; when they land, update
-// this comment to say so rather than trusting this note to still be
-// accurate.
+// Sessions are PARTIALLY enforced server-side: the `createSession` callable
+// (functions/src/callable/createSession.ts) reads the workspace's monthly
+// session counter inside a transaction and denies past the plan's cap before
+// writing. But firestore.rules still lets a signed-in workspace member
+// `addDoc` a session directly with no count condition, so a client that
+// skips the callable (a patched bundle, a raw REST call) can still create
+// session #4 — a later task closes that by denying the direct-write path in
+// firestore.rules. Until then the `sessionsPerPeriod` number this module
+// compares against is backed by a real server check on only one of the two
+// live create paths.
 //
 // Never add a limit here and consider it enforced without independently
 // confirming the server side actually denies it. A patched bundle skips this
