@@ -5,26 +5,24 @@
 // AI calls ARE gated server-side today: functions/src/ai/usage.ts#checkAiQuota
 // reads the workspace's plan and period usage and denies past the cap.
 //
-// Boards are PARTIALLY enforced server-side as of Task 5: the `createBoard`
-// callable (functions/src/callable/createBoard.ts) reads the live board count
-// and denies past the plan's cap before writing. But firestore.rules still
-// lets a signed-in workspace member `addDoc` a board directly with no count
-// condition, so a client that skips the callable (a patched bundle, a raw
-// REST call) can still create board #6 — a later task closes that by denying
-// the direct-write path in firestore.rules. Until then the `boards` number
-// this module compares against is backed by a real server check on only one
-// of the two live create paths.
+// Boards ARE gated server-side: the `createBoard` callable
+// (functions/src/callable/createBoard.ts) reads the live board count and denies
+// past the plan's cap before writing, and firestore.rules now denies client
+// board creates outright (`allow create: if false`), so the callable is the only
+// create path. One real gap remains: the callable's board count filters on
+// `workspaceId`, so boards predating the workspace migration are invisible to it
+// and don't consume a slot — the cap undercounts for those accounts until the
+// backfill runs. The cap cannot be bypassed; it can be undercounted.
 //
-// Sessions are PARTIALLY enforced server-side: the `createSession` callable
-// (functions/src/callable/createSession.ts) reads the workspace's monthly
-// session counter inside a transaction and denies past the plan's cap before
-// writing. But firestore.rules still lets a signed-in workspace member
-// `addDoc` a session directly with no count condition, so a client that
-// skips the callable (a patched bundle, a raw REST call) can still create
-// session #4 — a later task closes that by denying the direct-write path in
-// firestore.rules. Until then the `sessionsPerPeriod` number this module
-// compares against is backed by a real server check on only one of the two
-// live create paths.
+// Sessions ARE gated server-side: the `createSession` callable
+// (functions/src/callable/createSession.ts) bumps the workspace's monthly
+// session counter and writes the session in one transaction, denying past the
+// plan's cap, and firestore.rules now denies client session creates outright.
+//
+// Collaborators per board are gated in firestore.rules directly, as a predicate
+// on board `update` — the invite-code self-join path is an update to `members`,
+// not a create, so no callable could gate it. That is the only enforcement point
+// for that limit; nothing on the Functions side reads it.
 //
 // Never add a limit here and consider it enforced without independently
 // confirming the server side actually denies it. A patched bundle skips this

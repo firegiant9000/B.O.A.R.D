@@ -56,6 +56,14 @@ export function canManageMembers(role: WorkspaceRole | undefined): boolean {
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+/**
+ * Creates a workspace. `plan` is effectively "free" from the client: since M5,
+ * firestore.rules rejects a create that stamps any other value, and rejects any
+ * update that touches `plan` at all — the Stripe webhook (Admin SDK, bypasses
+ * rules) is the only writer after signup. The parameter is kept for the tests
+ * that exercise the mapper, but passing "pro"/"edu" here will be denied. A paid
+ * or edu workspace has to be provisioned server-side.
+ */
 export async function createWorkspace(
   name: string,
   ownerId: string,

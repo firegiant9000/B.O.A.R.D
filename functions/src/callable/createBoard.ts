@@ -4,11 +4,17 @@ import { randomInt } from "crypto";
 import { countBoards } from "../billing/usage";
 import { limitFor, type Plan } from "../billing/limits";
 
-// Month 5 — board creation moves server-side so the free-tier board cap
+// Month 5 — board creation is server-side so the free-tier board cap
 // (functions/src/billing/limits.ts) can't be bypassed by a patched client or a
-// raw REST call. firestore.rules still allows a direct client create with no
-// count condition until a later task flips that to deny (Task 7); until then
-// this callable and the direct client write are both live paths.
+// raw REST call. This is the ONLY create path: firestore.rules denies client
+// board creates outright, and the Admin SDK write below bypasses rules. That
+// makes this function load-bearing — it must be deployed before those rules, or
+// board creation goes down (see the warning at the top of firestore.rules).
+//
+// Known gap: `countBoards` filters on `workspaceId`, so boards predating the
+// workspace migration are invisible to the count and don't consume a slot. The
+// cap undercounts for those accounts until the backfill runs; it is not
+// bypassable.
 
 const INVITE_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const INVITE_CODE_LENGTH = 6;

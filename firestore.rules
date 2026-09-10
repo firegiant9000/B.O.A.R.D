@@ -1,5 +1,19 @@
 rules_version = '2';
 
+// ⚠️ DEPLOY ORDER — READ BEFORE `firebase deploy --only firestore:rules`.
+//
+// This file denies client-side board and session creates outright; the only
+// creation paths are the `createBoard` and `createSession` Cloud Functions,
+// which write via the Admin SDK and so bypass these rules entirely.
+//
+// Those functions MUST already be deployed when these rules go live. Deploying
+// this file first takes board and session creation down for every user: the
+// client path is denied and its replacement does not exist yet. Deploy
+// `functions` first, confirm both callables respond, then deploy rules.
+//
+// Rolling back is the mirror image: roll rules back BEFORE removing the
+// functions, never after.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -146,6 +160,53 @@ service cloud.firestore {
         request.auth.token.get('embedBoardId', '') == boardId;
     }
 
+    // ── M5 seat cap ───────────────────────────────────────────────────────────
+    // The per-board collaborator cap. Enforced here as a rules predicate rather
+    // than in a Cloud Function because the invite-code self-join path is a client
+    // `update` to `members`, not a create — a callable would leave that door open.
+    // This is the only enforcement point for `collaboratorsPerBoard`; nothing on
+    // the Functions side reads that limit today.
+    //
+    // ⚠️ DUPLICATED NUMBERS. These three must equal
+    // `PLAN_LIMITS[*].collaboratorsPerBoard` in functions/src/billing/limits.ts,
+    // which is the source of truth. Rules cannot import TypeScript, so the
+    // agreement is held by a drift test — `functions/src/__tests__/limits.test.ts`
+    // parses this map as text and fails if the two disagree in either direction.
+    // Edit both files together.
+    function seatCaps() {
+      return {'free': 4, 'pro': 25, 'edu': 100};
+    }
+
+    // The workspace's plan. Missing workspace, missing field, or a legacy board
+    // with no workspaceId all resolve to 'free' — an unreadable or unknown plan
+    // fails closed to the smallest cap, matching `limitFor`'s fallback on the
+    // Functions side. `plan` itself is not client-writable (see the workspaces
+    // rules below), so this value is trustworthy.
+    function planOfWorkspace(wsId) {
+      return wsId != null && wsId != '' &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) ?
+        get(/databases/$(database)/documents/workspaces/$(wsId)).data.get('plan', 'free') : 'free';
+    }
+
+    // An unrecognized plan string falls back to the free cap, same as limitFor.
+    function planSeatLimit(wsId) {
+      return seatCaps().get(planOfWorkspace(wsId), seatCaps().free);
+    }
+
+    // Whether a board `update` leaves `members` within the plan's cap. The cap
+    // counts the whole `members` array (the owner included) — that is the unit
+    // both this rule and the limits table use.
+    //
+    // The second clause lets a board that is ALREADY over cap (a workspace that
+    // downgraded from pro, say) still shrink or hold steady. Without it such a
+    // board freezes permanently: no one could rename it, and a member could not
+    // even leave.
+    function withinSeatCap(board, next) {
+      let nextSize = next.get('members', []).size();
+      return nextSize <= planSeatLimit(board.get('workspaceId', null)) ||
+        nextSize <= board.get('members', []).size();
+    }
+
     // ── users ─────────────────────────────────────────────────────────────────
     match /users/{uid} {
       allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
@@ -183,12 +244,25 @@ service cloud.firestore {
     // time-to-first-paint perf gate clear). Role/membership changes are owner/admin
     // only; ordinary members may rename the workspace. Boards bind to a workspace in
     // Phase 2, where this becomes the root of board access.
+    //
+    // `plan` is the one field a client may never choose (M5). Every server-side
+    // quota gate — checkAiQuota, handleCreateBoard, handleCreateSession, and
+    // `planSeatLimit` above — reads it, so a client that could write it could hand
+    // itself Pro with a single Firestore write and every one of those gates would
+    // agree. Signup legitimately stamps `plan: 'free'`, so `create` permits that
+    // value and nothing else; `update` may not touch the field at all, which
+    // leaves the Stripe webhook (Admin SDK, bypasses these rules) as the only
+    // writer of `plan` after signup. Note the restriction is on the FIELD, not on
+    // a field allowlist: every other workspace field (name, members, memberIds,
+    // settings, anything added later) keeps its existing role gate untouched.
     match /workspaces/{workspaceId} {
       allow read:   if isSignedIn() && request.auth.uid in resource.data.members;
       allow create: if isSignedIn() &&
                       request.resource.data.ownerId == request.auth.uid &&
-                      request.resource.data.members[request.auth.uid] == 'owner';
-      allow update: if isSignedIn() && (
+                      request.resource.data.members[request.auth.uid] == 'owner' &&
+                      request.resource.data.get('plan', 'free') == 'free';
+      allow update: if isSignedIn() &&
+                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan']) && (
                       resource.data.members[request.auth.uid] in ['owner', 'admin'] ||
                       (request.auth.uid in resource.data.members &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']))
@@ -262,19 +336,40 @@ service cloud.firestore {
                     )) ||
                     // Phase 8 — a board-scoped embed token grants read-only access.
                     isEmbedViewer(boardId);
-      // Creator must own the new board AND belong to the workspace it's stamped
-      // into (can't plant a board in someone else's workspace). Legacy/no-ws
-      // creates still allowed during the migration window.
-      allow create: if isSignedIn() &&
-                      request.auth.uid == request.resource.data.ownerId &&
-                      (request.resource.data.get('workspaceId', null) == null ||
-                       isMemberOfWorkspace(request.resource.data.get('workspaceId', null)));
+      // Creating a board is Cloud-Function-only (functions/src/callable/createBoard.ts).
+      // The function reads the live board count and denies past the plan's cap,
+      // then writes with the Admin SDK, which bypasses these rules. A client
+      // create is denied here because no rules predicate can count a workspace's
+      // boards — so leaving the direct path open would make the cap bypassable by
+      // a patched bundle or a raw REST call. See the deploy-order warning at the
+      // top of this file: the callable must be live before this is deployed.
+      //
+      // Known gap, tracked elsewhere and deliberately not addressed here: the
+      // function's `countBoards` filters on `workspaceId`, so boards predating the
+      // Phase 2 migration are invisible to the count and don't consume a slot.
+      // That undercounts the cap until the backfill runs; it does not open a
+      // create path, since every create now goes through the function.
+      allow create: if false;
       // Admin can change anything (incl. the per-board `roles` map — Phase 6);
       // an effective editor can change the shared backgroundTemplate (Phase 12);
       // any member can still touch members/updatedAt (leave/self-join bookkeeping)
       // so a viewer can leave a board; a non-member can self-join via invite code
       // (mirrors the sessions rule).
-      allow update: if isBoardAdmin(boardId) ||
+      //
+      // The seat cap gates ALL of those arms, not just the self-join one: the
+      // admin/editor/member arms can each grow `members` too (boardService's
+      // addMemberById / addMemberByEmail land on them), so capping only self-join
+      // would leave the ordinary "share this board" path uncapped. An update that
+      // does not grow `members` always satisfies the predicate, so no pre-existing
+      // legitimate edit changes behavior.
+      //
+      // The cap is ANDed last on purpose: an unauthorized caller is rejected by
+      // the arms without ever paying for `planSeatLimit`'s workspace get(). For an
+      // authorized caller the arms have already loaded that same doc, and the
+      // rules engine caches document access within one evaluation, so the cap adds
+      // no read to the requests that reach it.
+      allow update: if (
+                      isBoardAdmin(boardId) ||
                       (isBoardEditor(boardId) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt', 'backgroundTemplate'])) ||
                       (isBoardMember(boardId) &&
@@ -285,7 +380,8 @@ service cloud.firestore {
                         request.resource.data.members.hasAll(resource.data.members) &&
                         request.resource.data.members.size() == resource.data.members.size() + 1 &&
                         request.resource.data.members.hasAny([request.auth.uid])
-                      );
+                      )
+                    ) && withinSeatCap(resource.data, request.resource.data);
       allow delete: if isBoardAdmin(boardId);
 
       // Canvas content (paths, notes, textElements, shapes, images, snapshots):
@@ -367,11 +463,13 @@ service cloud.firestore {
     // Phase 4 (multi-tenancy). Sessions inherit a workspaceId from their board.
     // A workspace member can read sessions in their workspace; the creator and
     // participants still read directly, and the joinCode public-lookup path is
-    // unchanged (needed for join-by-code). Create can't plant a session in a
-    // workspace the user doesn't belong to. Migration-tolerant: a legacy session
-    // with no workspaceId keeps the pre-Phase-4 behavior.
-    // TODO(phase-9-cutover): remove the `workspaceId == null` tolerance once the
-    // migration has stamped every session and the staging soak closes.
+    // unchanged (needed for join-by-code). Migration-tolerant on READ: a legacy
+    // session with no workspaceId keeps the pre-Phase-4 read behavior. Creates are
+    // Cloud-Function-only as of M5 (see the create rule below), and the function
+    // requires a workspaceId — so no new workspace-less session can appear, but
+    // existing ones stay readable.
+    // TODO(phase-9-cutover): remove the `workspaceId == null` read tolerance once
+    // the migration has stamped every session and the staging soak closes.
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
@@ -379,10 +477,15 @@ service cloud.firestore {
                       isMemberOfWorkspace(resource.data.get('workspaceId', null)) ||
                       resource.data.joinCode != null
                     );
-      allow create: if isSignedIn() &&
-                      request.auth.uid == request.resource.data.createdById &&
-                      (request.resource.data.get('workspaceId', '') == '' ||
-                       isMemberOfWorkspace(request.resource.data.get('workspaceId', '')));
+      // Creating a session is Cloud-Function-only (functions/src/callable/createSession.ts).
+      // The function bumps the workspace's monthly session counter and writes the
+      // session in one transaction, then writes with the Admin SDK, which bypasses
+      // these rules. Denied here for two reasons a rules predicate cannot cover:
+      // rules cannot read a monthly counter to enforce sessions/period, and a
+      // client create could pick its own `joinCode` (the function generates one
+      // server-side). Reads, updates, the joinCode self-join and delete are all
+      // unchanged. See the deploy-order warning at the top of this file.
+      allow create: if false;
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       (

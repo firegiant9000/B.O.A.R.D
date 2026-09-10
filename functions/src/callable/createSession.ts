@@ -9,15 +9,19 @@ import {
   type SessionUsageDoc,
 } from "../billing/usage";
 
-// Month 5 — session creation moves server-side so the free-tier monthly
-// session cap (functions/src/billing/limits.ts) can't be bypassed by a
-// patched client or a raw REST call. Sessions are a FLOW (3/month, never
-// freed) metered with a stored monthly counter (functions/src/billing/usage.ts)
-// rather than a live count, so the counter bump and the session write happen
-// inside one Firestore transaction — if they could diverge, the gate would be
-// decorative. firestore.rules still allows a direct client create with no
-// count condition until a later task closes that path; until then this
-// callable and the direct client write are both live.
+// Month 5 — session creation is server-side so the free-tier monthly session
+// cap (functions/src/billing/limits.ts) can't be bypassed by a patched client or
+// a raw REST call. Sessions are a FLOW (3/month, never freed) metered with a
+// stored monthly counter (functions/src/billing/usage.ts) rather than a live
+// count, so the counter bump and the session write happen inside one Firestore
+// transaction — if they could diverge, the gate would be decorative.
+//
+// This is the ONLY create path: firestore.rules denies client session creates
+// outright, and the Admin SDK write below bypasses rules. Two things depend on
+// that — the monthly cap, and the join code, which a client create could
+// otherwise choose for itself. It also makes this function load-bearing: it must
+// be deployed before those rules, or session creation goes down (see the warning
+// at the top of firestore.rules).
 
 export interface CreateSessionRequest {
   workspaceId: string;

@@ -73,6 +73,26 @@ beforeEach(async () => {
       memberIds: [BOB],
       plan: "free",
     });
+    // M5 seat cap — a pro workspace, so the cap tests can prove the rule actually
+    // reads the plan rather than hardcoding the free number.
+    await setDoc(doc(db, "workspaces/wsPro"), {
+      name: "Pro WS",
+      ownerId: ALICE,
+      members: { [ALICE]: "owner", [DAVE]: "member" },
+      memberIds: [ALICE, DAVE],
+      plan: "pro",
+    });
+    // M5 seat cap — an unrecognized plan string (a future tier, a corrupt value).
+    // Must fall back to the free cap, the same way limitFor does on the Functions
+    // side, and must NOT error: an erroring cap predicate would lock every member
+    // of this workspace out of their own boards.
+    await setDoc(doc(db, "workspaces/wsWeird"), {
+      name: "Weird WS",
+      ownerId: ALICE,
+      members: { [ALICE]: "owner", [DAVE]: "member" },
+      memberIds: [ALICE, DAVE],
+      plan: "team-tier-that-does-not-exist",
+    });
 
     await setDoc(doc(db, "boards/boardCoded"), {
       workspaceId: "wsA",
@@ -118,6 +138,55 @@ beforeEach(async () => {
       inviteCode: null,
     });
     await setDoc(doc(db, "boards/boardWrite/paths/seed"), { userId: ALICE });
+
+    // M5 seat cap fixtures. `collaboratorsPerBoard` counts the whole `members`
+    // array, so free = 4 total.
+    //   boardFull    — wsA (free), exactly AT the cap (4 members), invite-coded
+    //   boardProFull — wsPro (pro, cap 25), same 4 members, invite-coded
+    //   boardOverCap — wsA (free), ALREADY OVER the cap (6 members), invite-coded;
+    //                  the post-downgrade state that must stay editable/shrinkable
+    await setDoc(doc(db, "boards/boardFull"), {
+      workspaceId: "wsA",
+      title: "Full",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, CAROL, DAVE, FRANK],
+      inviteCode: "BORD-FULLLL",
+    });
+    await setDoc(doc(db, "boards/boardProFull"), {
+      workspaceId: "wsPro",
+      title: "Pro Full",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, CAROL, DAVE, FRANK],
+      inviteCode: "BORD-PROFUL",
+    });
+    await setDoc(doc(db, "boards/boardOverCap"), {
+      workspaceId: "wsA",
+      title: "Over Cap",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, CAROL, DAVE, FRANK, EVIL, "extra1"],
+      inviteCode: "BORD-OVERCP",
+    });
+    //   boardWeirdFull/boardWeirdSmall — on the unrecognized-plan workspace, at
+    //   and under the free cap respectively
+    await setDoc(doc(db, "boards/boardWeirdFull"), {
+      workspaceId: "wsWeird",
+      title: "Weird Full",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, CAROL, DAVE, FRANK],
+      inviteCode: "BORD-WEIRDF",
+    });
+    await setDoc(doc(db, "boards/boardWeirdSmall"), {
+      workspaceId: "wsWeird",
+      title: "Weird Small",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, DAVE],
+      inviteCode: "BORD-WEIRDS",
+    });
 
     // Phase 7 — comment fixtures (one per board), authored by alice.
     const seedComment = { anchorElementId: "seed", anchorKind: "shape", authorId: ALICE, body: "hi", replies: [], resolved: false };
@@ -254,10 +323,15 @@ describe("invite-code self-join", () => {
   });
 });
 
-// ── board create binds to a workspace you belong to ───────────────────────────
+// ── board create is Cloud-Function-only (M5) ──────────────────────────────────
+// Was: a workspace member could addDoc a board directly. That path is denied now
+// so the plan's board cap (enforced in functions/src/callable/createBoard.ts,
+// which writes via the Admin SDK and bypasses rules) cannot be bypassed.
 describe("board create", () => {
-  it("a workspace member can create a board stamped into that workspace", async () => {
-    await assertSucceeds(
+  it("denies a direct client board create, even a fully legitimate-looking one", async () => {
+    // alice owns wsA and pins herself as ownerId — everything the old rule asked
+    // for. Denied anyway: rules cannot count a workspace's boards.
+    await assertFails(
       setDoc(doc(db(ALICE), "boards/newA"), {
         workspaceId: "wsA",
         title: "New",
@@ -269,7 +343,7 @@ describe("board create", () => {
     );
   });
 
-  it("cannot plant a board in a workspace you don't belong to", async () => {
+  it("still cannot plant a board in a workspace you don't belong to", async () => {
     await assertFails(
       setDoc(doc(db(ALICE), "boards/newB"), {
         workspaceId: "wsB",
@@ -278,6 +352,160 @@ describe("board create", () => {
         adminId: ALICE,
         members: [ALICE],
         inviteCode: "BORD-CCCCCC",
+      })
+    );
+  });
+
+  it("denies a legacy (no-workspaceId) board create too", async () => {
+    // The pre-migration escape hatch is closed on CREATE. Existing workspace-less
+    // boards stay readable and writable (see the legacy-board tests above); only
+    // new ones are refused.
+    await assertFails(
+      setDoc(doc(db(ALICE), "boards/newLegacy"), {
+        title: "Legacy-ish",
+        ownerId: ALICE,
+        adminId: ALICE,
+        members: [ALICE],
+        inviteCode: null,
+      })
+    );
+  });
+
+  it("deleting a board is unaffected — only create is denied", async () => {
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "boards/boardPrivate")));
+  });
+});
+
+// ── M5 seat cap (collaboratorsPerBoard) ───────────────────────────────────────
+// The cap is a rules predicate rather than a callable because the invite-code
+// self-join path is a client `update` to `members`. Numbers come from
+// functions/src/billing/limits.ts: free 4, pro 25, edu 100 — held in agreement by
+// the drift test in functions/src/__tests__/limits.test.ts.
+describe("M5 seat cap", () => {
+  it("denies a self-join that would exceed the free cap", async () => {
+    // boardFull sits at 4/4 on free wsA; bob would be the 5th.
+    await assertFails(
+      updateDoc(doc(db(BOB), "boards/boardFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("allows a self-join under the free cap", async () => {
+    // boardCoded sits at 2/4 on free wsA; bob would be the 3rd.
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "boards/boardCoded"), {
+        members: [ALICE, EVIL, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("allows the same 5th self-join on a pro workspace (the cap reads the plan)", async () => {
+    // Identical shape to the denied case above, only the workspace's plan differs
+    // — this is what proves the rule resolves the plan instead of hardcoding 4.
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "boards/boardProFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies the board ADMIN adding a member past the cap (the share-by-email path)", async () => {
+    // The realistic bypass: the owner shares the board rather than a stranger
+    // self-joining. boardService.addMemberById/addMemberByEmail land here.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies a plain board MEMBER adding someone past the cap", async () => {
+    await assertFails(
+      updateDoc(doc(db(DAVE), "boards/boardFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("lets the admin still edit a board that is exactly at the cap", async () => {
+    // The cap must gate GROWTH only; an at-cap board is not frozen.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "boards/boardFull"), {
+        title: "Renamed",
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("lets a member leave a board that is already OVER cap (post-downgrade thaw)", async () => {
+    // boardOverCap has 6 members on a free (cap 4) workspace — the state a pro →
+    // free downgrade leaves behind. Shrinking to 5 is still over the cap, so this
+    // passes only via the `<= current size` clause. Without that clause the board
+    // would be permanently frozen.
+    await assertSucceeds(
+      updateDoc(doc(db(DAVE), "boards/boardOverCap"), {
+        members: [ALICE, CAROL, FRANK, EVIL, "extra1"],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("lets the admin still edit an over-cap board", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "boards/boardOverCap"), {
+        title: "Renamed while over cap",
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies growing an over-cap board even further", async () => {
+    await assertFails(
+      updateDoc(doc(db(BOB), "boards/boardOverCap"), {
+        members: [ALICE, CAROL, DAVE, FRANK, EVIL, "extra1", BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  // An unrecognized plan must fall back to the free cap — and must resolve, not
+  // error. These two tests together are what distinguish "fell back to 4" from
+  // "the predicate threw and denied everything", which would lock this
+  // workspace's members out of their own boards.
+  it("falls back to the free cap for an unrecognized plan (denies the 5th)", async () => {
+    await assertFails(
+      updateDoc(doc(db(BOB), "boards/boardWeirdFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("still allows a join UNDER the free cap on an unrecognized plan", async () => {
+    // Denial above must come from the size comparison, not from a throw.
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "boards/boardWeirdSmall"), {
+        members: [ALICE, DAVE, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("applies the free cap to a legacy board with no workspaceId (fails closed)", async () => {
+    // No workspace means no plan, so the smallest cap applies — the same
+    // fail-closed fallback limitFor uses on the Functions side. boardLegacy has 2
+    // members, so growth to 3 is allowed and this asserts the cap resolves at all
+    // rather than erroring on the missing workspaceId.
+    await assertSucceeds(
+      updateDoc(doc(db(EVIL), "boards/boardLegacy"), {
+        members: [ALICE, EVIL, "third"],
+        updatedAt: new Date(),
       })
     );
   });
@@ -302,8 +530,13 @@ describe("sessions inherit workspace", () => {
     await assertSucceeds(getDoc(doc(db(ALICE), "sessions/sessLegacy")));
   });
 
-  it("a workspace member can create a session stamped into that workspace", async () => {
-    await assertSucceeds(
+  // ── session create is Cloud-Function-only (M5) ──────────────────────────────
+  // Was: a workspace member could addDoc a session directly with any joinCode.
+  // Denied now — rules cannot read the workspace's monthly session counter, and
+  // the joinCode must be server-generated. functions/src/callable/createSession.ts
+  // writes via the Admin SDK and bypasses these rules.
+  it("denies a direct client session create, even a fully legitimate-looking one", async () => {
+    await assertFails(
       setDoc(doc(db(ALICE), "sessions/newSessA"), {
         workspaceId: "wsA",
         boardId: "boardPrivate",
@@ -314,7 +547,7 @@ describe("sessions inherit workspace", () => {
     );
   });
 
-  it("cannot plant a session in a workspace you don't belong to", async () => {
+  it("still cannot plant a session in a workspace you don't belong to", async () => {
     await assertFails(
       setDoc(doc(db(ALICE), "sessions/newSessB"), {
         workspaceId: "wsB",
@@ -326,8 +559,10 @@ describe("sessions inherit workspace", () => {
     );
   });
 
-  it("a legacy (no-workspaceId) session create is still allowed during the migration window", async () => {
-    await assertSucceeds(
+  it("denies a legacy (no-workspaceId) session create too", async () => {
+    // The callable requires a workspaceId, so no new workspace-less session can
+    // appear by any path. Existing ones stay readable (see the test above).
+    await assertFails(
       setDoc(doc(db(ALICE), "sessions/newSessLegacy"), {
         boardId: "boardLegacy",
         createdById: ALICE,
@@ -335,6 +570,19 @@ describe("sessions inherit workspace", () => {
         joinCode: "SESS-DDDDDD",
       })
     );
+  });
+
+  it("the joinCode self-join update still works — only create is denied", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "sessions/sessCoded"), { participantIds: [BOB] })
+    );
+  });
+
+  it("the creator can still update and delete their session", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "sessions/sessWsA"), { status: "active" })
+    );
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "sessions/sessWsA")));
   });
 });
 
@@ -773,6 +1021,121 @@ describe("embed token read path", () => {
   it("a signed-in non-member with no embed claim is still denied (claim is required)", async () => {
     // BOB is in a different workspace and holds no embed claim — the ordinary gate.
     await assertFails(getDoc(doc(db(BOB), "boards/boardPrivate")));
+  });
+});
+
+// ── M5: `plan` is not client-writable ─────────────────────────────────────────
+// The single highest-value field in the database. Every server-side quota gate
+// (checkAiQuota, handleCreateBoard, handleCreateSession, and the seat cap above)
+// reads workspace.plan, so a client that could write it would hand itself Pro and
+// every one of those gates would agree. The Stripe webhook writes it via the
+// Admin SDK, which bypasses these rules.
+describe("M5 workspace plan is not client-writable", () => {
+  it("denies the workspace OWNER setting plan to pro", async () => {
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { plan: "pro" })
+    );
+  });
+
+  it("denies the owner setting plan to edu", async () => {
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { plan: "edu" })
+    );
+  });
+
+  it("denies smuggling plan in alongside a legitimate field", async () => {
+    // The interesting attack: bury the field in an otherwise-valid rename.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { name: "Renamed", plan: "pro" })
+    );
+  });
+
+  it("denies DOWNGRADING plan too — clients don't write the field at all", async () => {
+    // Not a privilege escalation, but billing state belongs to the webhook. A rule
+    // that only blocked upgrades would still let a client desync from Stripe.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsPro"), { plan: "free" })
+    );
+  });
+
+  it("still lets the owner rename the workspace", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { name: "Alice WS renamed" })
+    );
+  });
+
+  it("still lets a plain member rename the workspace (the name-only arm)", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(DAVE), "workspaces/wsA"), { name: "Dave's rename" })
+    );
+  });
+
+  it("still lets the owner manage members and memberIds", async () => {
+    // workspaceService.addMember / addMemberByEmail / updateMemberRole /
+    // removeMember all land on this arm.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), {
+        "members.bob": "member",
+        memberIds: [ALICE, CAROL, DAVE, FRANK, BOB],
+      })
+    );
+  });
+
+  it("still lets the owner write an unrelated new field", async () => {
+    // The restriction is on the `plan` field, not a field allowlist — fields this
+    // rule has never heard of keep their existing role gate.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { settings: { theme: "dark" } })
+    );
+  });
+
+  it("allows a create that stamps the free plan (the signup path)", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(BOB), "workspaces/newFree"), {
+        name: "Personal",
+        ownerId: BOB,
+        members: { [BOB]: "owner" },
+        memberIds: [BOB],
+        plan: "free",
+      })
+    );
+  });
+
+  it("allows a create that omits plan entirely", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(BOB), "workspaces/newNoPlan"), {
+        name: "Personal",
+        ownerId: BOB,
+        members: { [BOB]: "owner" },
+        memberIds: [BOB],
+      })
+    );
+  });
+
+  it("denies a create that stamps a paid plan", async () => {
+    // Without this, the update rule is pointless: delete-and-recreate, or just
+    // create a fresh workspace, would mint Pro.
+    await assertFails(
+      setDoc(doc(db(BOB), "workspaces/newPro"), {
+        name: "Free Pro",
+        ownerId: BOB,
+        members: { [BOB]: "owner" },
+        memberIds: [BOB],
+        plan: "pro",
+      })
+    );
+  });
+
+  it("denies a create that stamps the edu plan", async () => {
+    await assertFails(
+      setDoc(doc(db(BOB), "workspaces/newEdu"), {
+        name: "Free Edu",
+        ownerId: BOB,
+        members: { [BOB]: "owner" },
+        memberIds: [BOB],
+        plan: "edu",
+      })
+    );
   });
 });
 

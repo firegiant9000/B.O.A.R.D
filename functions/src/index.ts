@@ -33,15 +33,18 @@ export { textToDiagram } from "./callable/textToDiagram";
 export { mintEmbedToken_fn as mintEmbedToken } from "./callable/mintEmbedToken";
 export { exchangeEmbedToken_fn as exchangeEmbedToken } from "./callable/exchangeEmbedToken";
 
-// Month 5 — plan enforcement. Board creation moved server-side so the free-tier
-// board cap cannot be bypassed by a patched client once firestore.rules denies
-// the direct client create; until then both paths are live.
+// Month 5 — plan enforcement. Board creation is server-side: this is the ONLY
+// way to create a board, since firestore.rules denies client board creates
+// outright, so the free-tier board cap cannot be bypassed by a patched client.
+// It must be deployed BEFORE those rules — see the warning at the top of
+// firestore.rules.
 export { createBoard } from "./callable/createBoard";
 
-// Month 5 — plan enforcement. Session creation moved server-side so the
-// free-tier monthly session cap cannot be bypassed by a patched client once
-// firestore.rules denies the direct client create; until then both paths are
-// live. Sessions are metered with a transactional monthly counter rather than
-// a live count (functions/src/billing/usage.ts), since a session is never
-// freed the way a deleted board is.
+// Month 5 — plan enforcement. Session creation is server-side: this is the ONLY
+// way to create a session, since firestore.rules denies client session creates
+// outright, so neither the free-tier monthly session cap nor the server-generated
+// join code can be bypassed. Sessions are metered with a transactional monthly
+// counter rather than a live count (functions/src/billing/usage.ts), since a
+// session is never freed the way a deleted board is. Same deploy-order
+// requirement as createBoard above.
 export { createSession } from "./callable/createSession";
