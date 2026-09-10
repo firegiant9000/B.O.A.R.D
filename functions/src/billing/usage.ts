@@ -33,12 +33,22 @@ export function applySessionUsage(
   return { sessions: current + 1, updatedAt: now };
 }
 
-function usageRef(db: Firestore, workspaceId: string, now: number) {
+/** The doc ref for a workspace's session-usage period bucket. Exported so
+ *  callers that must read-then-write inside one transaction (Task 6's session
+ *  create) resolve the same path this module uses internally, rather than
+ *  re-typing `workspaces/{id}/usage/{period}` by hand — the one string that
+ *  must also agree with firestore.rules' `match /usage/{period}` block. */
+export function sessionUsageRef(db: Firestore, workspaceId: string, now: number) {
   return db.doc(`workspaces/${workspaceId}/usage/${currentPeriod(now)}`);
 }
 
 /** Boards are a STOCK: live aggregation, so deleting a board frees a slot with
- *  no decrement path to get wrong. */
+ *  no decrement path to get wrong. Filters on `workspaceId`, which excludes
+ *  legacy (pre-Phase-2) boards that have none — by design: an unattributed
+ *  board can't honestly be charged against a workspace's cap. This under-counts
+ *  a workspace holding legacy boards until the M3 workspaceId migration cuts
+ *  over, and self-heals then, since every new board is created with a
+ *  workspaceId already stamped in. */
 export async function countBoards(db: Firestore, workspaceId: string): Promise<number> {
   const snap = await db
     .collection("boards")
@@ -48,19 +58,32 @@ export async function countBoards(db: Firestore, workspaceId: string): Promise<n
   return snap.data().count;
 }
 
-/** Sessions are a FLOW: monthly bucket, increment-only. */
+/** Sessions are a FLOW: monthly bucket, increment-only. `Number.isFinite`
+ *  (not `typeof === "number"`) guards the stored value: `NaN` is a legal
+ *  Firestore double and `typeof NaN === "number"`, so a `typeof`-only check
+ *  would return `NaN` verbatim on a corrupt/half-written doc — and a
+ *  downstream `count >= limit` gate evaluates `NaN >= 3` as `false`, granting
+ *  unlimited sessions. Mirrors the same guard in `applySessionUsage` above. */
 export async function readSessionCount(
   db: Firestore,
   workspaceId: string,
   now: number
 ): Promise<number> {
-  const snap = await usageRef(db, workspaceId, now).get();
+  const snap = await sessionUsageRef(db, workspaceId, now).get();
   const data = snap.exists ? (snap.data() as SessionUsageDoc) : undefined;
-  return typeof data?.sessions === "number" ? data.sessions : 0;
+  const sessions = data?.sessions;
+  return typeof sessions === "number" && Number.isFinite(sessions) ? sessions : 0;
 }
 
 /** Must run inside the same transaction as the session create so the count can
- *  never drift from the documents it counts. */
+ *  never drift from the documents it counts. `prev` is REQUIRED and must come
+ *  from `tx.get(sessionUsageRef(db, workspaceId, now))` inside that same
+ *  transaction — never from `readSessionCount`, which reads via `db` outside
+ *  any transaction and would let a concurrent increment get silently lost.
+ *  `tx.set` fully overwrites the period doc (no `merge: true`): this function
+ *  owns the doc's entire shape (`{sessions, updatedAt}`), so a future field
+ *  added to the same doc by another writer would need its own read-modify-
+ *  write here, not a blind merge that could mask a real conflict. */
 export function incrementSessionCount(
   tx: Transaction,
   db: Firestore,
@@ -68,5 +91,5 @@ export function incrementSessionCount(
   now: number,
   prev: SessionUsageDoc | undefined
 ): void {
-  tx.set(usageRef(db, workspaceId, now), applySessionUsage(prev, now));
+  tx.set(sessionUsageRef(db, workspaceId, now), applySessionUsage(prev, now));
 }

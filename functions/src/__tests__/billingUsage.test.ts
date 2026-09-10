@@ -1,4 +1,4 @@
-import { applySessionUsage, type SessionUsageDoc } from "../billing/usage";
+import { applySessionUsage, incrementSessionCount, type SessionUsageDoc } from "../billing/usage";
 import { currentPeriod } from "../ai/usage";
 
 const T = Date.UTC(2026, 8, 9, 12, 0, 0); // 2026-09-09
@@ -26,5 +26,22 @@ describe("period agreement", () => {
     // The AI meter and the session meter must never disagree about when a
     // month starts, or a user's two quotas reset on different days.
     expect(currentPeriod(T)).toBe("2026-09");
+  });
+});
+
+describe("incrementSessionCount", () => {
+  it("writes to the doc path firestore.rules locks (workspaces/{id}/usage/{period})", () => {
+    // Pins the one string that must agree with firestore.rules' `match
+    // /usage/{period}` block — a typo here is invisible to both tsc and the
+    // rules tests otherwise.
+    const tx = { set: jest.fn() };
+    const fakeDb: any = { doc: (path: string) => ({ path }) };
+
+    incrementSessionCount(tx as any, fakeDb, "ws1", T, undefined);
+
+    expect(tx.set).toHaveBeenCalledTimes(1);
+    const [ref, data] = tx.set.mock.calls[0];
+    expect(ref.path).toBe("workspaces/ws1/usage/2026-09");
+    expect(data).toEqual({ sessions: 1, updatedAt: T });
   });
 });

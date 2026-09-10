@@ -793,6 +793,17 @@ describe("M5 metering collections", () => {
     );
   });
 
+  // setDoc against an already-seeded doc exercises `update`; deleting the doc
+  // outright is a distinct verb and the highest-value attack on a monthly
+  // meter (wipe the doc, reset the quota) — mirrors the two-verb aiUsage gate.
+  it("denies a client deleting usage — the highest-value attack on a monthly meter", async () => {
+    await assertFails(deleteDoc(doc(db(ALICE), "workspaces/wsA/usage/2026-09")));
+  });
+
+  it("denies a client deleting billing", async () => {
+    await assertFails(deleteDoc(doc(db(ALICE), "workspaces/wsA/billing/subscription")));
+  });
+
   it("lets a workspace owner read usage", async () => {
     await assertSucceeds(getDoc(doc(db(ALICE), "workspaces/wsA/usage/2026-09")));
   });
