@@ -17,3 +17,13 @@ export const GOOGLE_VISION_API_KEY = defineSecret("GOOGLE_VISION_API_KEY");
 // before first deploy:
 //   firebase functions:secrets:set EMBED_JWT_SECRET
 export const EMBED_JWT_SECRET = defineSecret("EMBED_JWT_SECRET");
+
+// Stripe (Month 5). Secret key + webhook signing secret live only in the function
+// runtime. Set before first deploy:
+//   firebase functions:secrets:set STRIPE_SECRET_KEY
+//   firebase functions:secrets:set STRIPE_WEBHOOK_SECRET
+export const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
+export const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
+// The Pro price ID. Not a secret, but server-resolved so a client can never
+// choose the price it checks out at.
+export const STRIPE_PRO_PRICE_ID = defineSecret("STRIPE_PRO_PRICE_ID");

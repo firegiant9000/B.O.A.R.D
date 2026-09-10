@@ -50,3 +50,10 @@ export { createBoard } from "./callable/createBoard";
 // session is never freed the way a deleted board is. Same deploy-order
 // requirement as createBoard above.
 export { createSession } from "./callable/createSession";
+
+// Month 5 — starts a Stripe Checkout session for a workspace's Pro upgrade.
+// The Pro price is resolved server-side from the STRIPE_PRO_PRICE_ID secret;
+// the request carries no price field, so a client can't choose what it pays.
+// There is no Stripe account behind this yet, so this has not been exercised
+// against the real Checkout API — see functions/src/billing/stripe.ts.
+export { createCheckoutSession } from "./callable/createCheckoutSession";
