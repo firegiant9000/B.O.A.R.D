@@ -36,10 +36,12 @@ beforeEach(() => {
 });
 
 describe("createSession", () => {
-  // Server-enforced since M5 (Task 6): session creation and join-code
-  // generation moved into the `createSession` callable, so the client no
-  // longer writes the session doc directly. See
-  // functions/src/callable/createSession.ts.
+  // Since M5: this function now creates sessions through the `createSession`
+  // callable rather than writing the session doc directly. firestore.rules
+  // still allows a direct client write with no count condition and an
+  // arbitrary joinCode — see functions/src/callable/createSession.ts's
+  // header comment for that caveat; this file only covers what this
+  // function itself sends.
   it("calls the createSession callable with a millisecond scheduledAt, returning its sessionId", async () => {
     mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
 

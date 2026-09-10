@@ -91,10 +91,19 @@ describe("handleCreateSession", () => {
       .rejects.toMatchObject({ code: "invalid-argument" });
   });
 
+  it("rejects an implausible scheduledAtMs before it ever reaches Timestamp.fromMillis", async () => {
+    // 1e18ms is nowhere near a real calendar date; unbounded, this would
+    // reach `Timestamp.fromMillis` and throw a RangeError that surfaces as
+    // an opaque "internal" error instead of a clean "invalid-argument".
+    await expect(handleCreateSession(reqFor("u1", { ...base, scheduledAtMs: 1e18 }), deps({}), 0))
+      .rejects.toMatchObject({ code: "invalid-argument" });
+  });
+
   it('blocks the 4th session on a "__proto__" plan even genuinely under the real free cap', async () => {
     // Same fail-open PLAN_LIMITS["__proto__"] === Object.prototype trap as
-    // Task 5's board gate: limitFor("__proto__", ...) resolves through the
-    // object's own prototype chain rather than the `?? free` fallback, so
+    // handleCreateBoard's gate (functions/src/callable/createBoard.ts):
+    // limitFor("__proto__", ...) resolves through the object's own
+    // prototype chain rather than the `?? free` fallback, so
     // `["sessionsPerPeriod"]` off it is `undefined`. `used` here is a genuine
     // 2 — under the real free cap of 3 — so the old `used >= limit` form
     // (`2 >= undefined` -> `false`) would have created the session; only the
@@ -139,6 +148,27 @@ describe("handleCreateSession", () => {
     sessionDoc = sessionDocArgOf(d.runCreate);
     expect(sessionDoc).not.toHaveProperty("startedAt");
     expect(sessionDoc.status).toBe("scheduled");
+  });
+
+  it("sanitizes participantIds: drops non-string/empty entries and caps the list at 100", async () => {
+    const d = deps({ sessions: 0 });
+    const garbage = [
+      "u1",
+      42,
+      null,
+      "",
+      "   ",
+      "u2",
+      ...Array.from({ length: 150 }, (_, i) => `filler-${i}`),
+    ];
+    await handleCreateSession(reqFor("u1", { ...base, participantIds: garbage }), d, 0);
+    const sessionDoc = sessionDocArgOf(d.runCreate);
+    const participantIds = sessionDoc.participantIds as unknown[];
+
+    expect(participantIds.every((p) => typeof p === "string" && p.trim().length > 0)).toBe(true);
+    expect(participantIds.length).toBeLessThanOrEqual(100);
+    expect(participantIds).toContain("u1");
+    expect(participantIds).toContain("u2");
   });
 });
 
@@ -270,6 +300,37 @@ describe("makeRunCreate (the real transactional core)", () => {
     const { db } = fakeTransactionalDb({ sessions: 50, updatedAt: 0 });
     const runCreate = makeRunCreate(db);
     await expect(runCreate("ws1", sessionDocFixture, T, "pro")).resolves.toMatchObject({
+      sessionId: expect.any(String),
+    });
+  });
+
+  it("treats a corrupt (NaN) stored counter as 0 rather than denying — the Number.isFinite guard", async () => {
+    // A NaN `sessions` value is a legal Firestore double, so a typeof-only
+    // check would let it through as-is and a downstream `NaN < 3` comparison
+    // is false, which would wrongly deny. The guard resets it to 0 instead,
+    // which must actually ALLOW the create on free (the fail-open this guard
+    // exists to prevent is denying a workspace that's really at zero usage).
+    const { db, tx } = fakeTransactionalDb({ sessions: NaN, updatedAt: 0 });
+    const runCreate = makeRunCreate(db);
+
+    await expect(runCreate("ws1", sessionDocFixture, T, "free")).resolves.toMatchObject({
+      sessionId: expect.any(String),
+    });
+    const usageSetCall = tx.set.mock.calls.find(
+      ([ref]) => ref.path === `workspaces/ws1/usage/${currentPeriod(T)}`
+    );
+    // Counted up from the guarded 0, not from NaN (which would poison the sum).
+    expect(usageSetCall?.[1]).toEqual({ sessions: 1, updatedAt: T });
+  });
+
+  it("allows creation on free when no usage doc exists yet (missing doc + free plan)", async () => {
+    // Previously only exercised with plan "pro" (where any `used` value
+    // passes anyway) — pinned here specifically on "free" so a regression
+    // that mis-derives `used` from a missing doc as something other than 0
+    // would show up as a wrongful denial on the plan that actually enforces.
+    const { db } = fakeTransactionalDb(undefined);
+    const runCreate = makeRunCreate(db);
+    await expect(runCreate("ws1", sessionDocFixture, T, "free")).resolves.toMatchObject({
       sessionId: expect.any(String),
     });
   });

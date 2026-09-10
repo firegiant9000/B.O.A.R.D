@@ -29,13 +29,67 @@ export interface CreateSessionRequest {
   description?: string;
   createdByName?: string;
   participantIds?: string[];
-  status?: "scheduled" | "active" | "ended";
+  // "ended" deliberately excluded: a session is never created already ended
+  // (only startSession/endSession transition it there), and the handler
+  // below collapses anything but "active" to "scheduled" — this type should
+  // not advertise a value that would silently be dropped.
+  status?: "scheduled" | "active";
   agenda?: string;
 }
 
 export interface CreateSessionResponse {
   sessionId: string;
   joinCode: string;
+}
+
+// Bounds on client-supplied input, applied fail-closed (clamp/filter, not
+// trust) before anything is written. None of these are business-meaningful
+// limits — they exist so a client can't blow past a Firestore document-size
+// limit or feed garbage into the user-lookup/notification paths downstream
+// of `participantIds`.
+const MAX_TITLE_LENGTH = 200;
+const MAX_NAME_LENGTH = 200;
+const MAX_TEXT_LENGTH = 4000;
+const MAX_PARTICIPANTS = 100;
+// A generous absolute calendar window (not relative to `now`, so a session
+// scheduled further out than "now" doesn't false-positive): rejects garbage
+// like `1e18` before it reaches `Timestamp.fromMillis`, which would otherwise
+// throw a `RangeError` that surfaces as an opaque `internal` error instead of
+// a clean `invalid-argument`.
+const MIN_SCHEDULED_AT_MS = Date.UTC(2000, 0, 1);
+const MAX_SCHEDULED_AT_MS = Date.UTC(2100, 0, 1);
+
+function clampString(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.slice(0, maxLength) : "";
+}
+
+function sanitizeParticipantIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .slice(0, MAX_PARTICIPANTS);
+}
+
+/** One decision (the negated "provably under" comparison), applied to two
+ *  different `used` values by the two call sites below — the fail-fast
+ *  pre-check and the authoritative in-transaction re-check. Extracted so the
+ *  `__proto__`-safe comparison form can't drift between them: if this lived
+ *  as two copies and one were later "simplified" to `used >= limit`, that
+ *  copy would reopen the `PLAN_LIMITS["__proto__"] === Object.prototype`
+ *  fail-open (see createBoard.ts), and each test layer covers only its own
+ *  copy, so the regression could go unnoticed by the other. `limitFor` can
+ *  return `undefined` for a prototype-shaped plan value, and `used` could in
+ *  principle be non-finite; `!(used < limit)` denies on both, with no extra
+ *  branch needed for UNLIMITED (`Infinity`) — `used < Infinity` is simply
+ *  always true for a finite `used`. */
+function assertUnderSessionCap(used: number, plan: Plan): void {
+  const limit = limitFor(plan, "sessionsPerPeriod");
+  if (!(used < limit)) {
+    throw new HttpsError(
+      "resource-exhausted",
+      `You've reached your plan's session limit (${limit}) for this period. Upgrade for more.`
+    );
+  }
 }
 
 /** Injected so the handler unit-tests without Firestore, matching
@@ -75,8 +129,13 @@ export async function handleCreateSession(
   if (!title || !title.trim()) {
     throw new HttpsError("invalid-argument", "A session title is required.");
   }
-  if (typeof scheduledAtMs !== "number" || !Number.isFinite(scheduledAtMs)) {
-    throw new HttpsError("invalid-argument", "scheduledAtMs is required.");
+  if (
+    typeof scheduledAtMs !== "number" ||
+    !Number.isFinite(scheduledAtMs) ||
+    scheduledAtMs < MIN_SCHEDULED_AT_MS ||
+    scheduledAtMs > MAX_SCHEDULED_AT_MS
+  ) {
+    throw new HttpsError("invalid-argument", "scheduledAtMs is required and must be a plausible date.");
   }
   if (
     typeof durationMinutes !== "number" ||
@@ -99,39 +158,29 @@ export async function handleCreateSession(
   // `runCreate` re-reads the counter fresh inside its own transaction, and
   // that re-check is the only one that actually decides.
   const used = await deps.readSessionCount(workspaceId, now);
-  const limit = limitFor(plan, "sessionsPerPeriod");
-  // Deny unless PROVABLY under the cap (mirrors handleCreateBoard): `limitFor`
-  // can return `undefined` for a prototype-shaped plan value (e.g.
-  // "__proto__"), and `used` could in principle be non-finite; `!(used <
-  // limit)` denies on both, with no extra branch needed for UNLIMITED
-  // (`Infinity`) — `used < Infinity` is simply always true for a finite `used`.
-  if (!(used < limit)) {
-    throw new HttpsError(
-      "resource-exhausted",
-      `You've reached your plan's session limit (${limit}) for this period. Upgrade for more.`
-    );
-  }
+  assertUnderSessionCap(used, plan);
 
   const status: "scheduled" | "active" = data.status === "active" ? "active" : "scheduled";
   const sessionDoc: Record<string, unknown> = {
     workspaceId,
     boardId,
-    boardTitle: typeof data.boardTitle === "string" ? data.boardTitle : "",
-    title: title.trim(),
-    description: typeof data.description === "string" ? data.description : "",
+    boardTitle: clampString(data.boardTitle, MAX_TITLE_LENGTH),
+    title: title.trim().slice(0, MAX_TITLE_LENGTH),
+    description: clampString(data.description, MAX_TEXT_LENGTH),
     scheduledAt: Timestamp.fromMillis(scheduledAtMs),
     durationMinutes,
     // Derived from the auth token, never trusted from the client — mirrors
     // ownerId/adminId in handleCreateBoard, and matches what firestore.rules
     // already requires on the direct-write path (createdById == auth.uid).
     createdById: uid,
-    createdByName: typeof data.createdByName === "string" ? data.createdByName : "",
-    participantIds: Array.isArray(data.participantIds) ? data.participantIds : [],
+    createdByName: clampString(data.createdByName, MAX_NAME_LENGTH),
+    participantIds: sanitizeParticipantIds(data.participantIds),
     status,
     createdAt: FieldValue.serverTimestamp(),
   };
-  if (typeof data.agenda === "string" && data.agenda.trim()) {
-    sessionDoc.agenda = data.agenda;
+  const agenda = typeof data.agenda === "string" ? data.agenda.trim() : "";
+  if (agenda) {
+    sessionDoc.agenda = agenda.slice(0, MAX_TEXT_LENGTH);
   }
   if (status === "active") {
     // Mirrors the prior client-side behavior: a session created already
@@ -163,16 +212,10 @@ export function makeRunCreate(db: Firestore): CreateSessionDeps["runCreate"] {
       const prev = snap.exists ? (snap.data() as SessionUsageDoc) : undefined;
       const used =
         typeof prev?.sessions === "number" && Number.isFinite(prev.sessions) ? prev.sessions : 0;
-      const limit = limitFor(plan, "sessionsPerPeriod");
-      // Same negated "provably under" gate as the pre-flight above, re-run
+      // Same gate as the pre-flight above (see assertUnderSessionCap), re-run
       // against the value this transaction itself just read — this re-check
       // is what makes two concurrent creates at the boundary safe.
-      if (!(used < limit)) {
-        throw new HttpsError(
-          "resource-exhausted",
-          `You've reached your plan's session limit (${limit}) for this period. Upgrade for more.`
-        );
-      }
+      assertUnderSessionCap(used, plan);
 
       const sessionRef = db.collection("sessions").doc();
       // Generated here, never taken from `sessionDoc`: a client cannot choose

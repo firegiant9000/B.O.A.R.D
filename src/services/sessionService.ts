@@ -56,10 +56,16 @@ interface CreateSessionResponse {
 }
 
 /**
- * Server-enforced since M5: the `createSession` callable owns the free-tier
- * monthly session cap and generates the join code (a client can no longer
- * pick its own or forge `createdById`). The client signature is unchanged so
- * every call site keeps working untouched.
+ * Since M5: this function creates sessions through the `createSession`
+ * callable rather than writing the session doc directly, so a request that
+ * goes through it is capped and gets a server-generated join code. But
+ * firestore.rules still allows a signed-in workspace member to `addDoc` a
+ * session directly with no count condition and an arbitrary `joinCode` — a
+ * patched client or a raw REST call can still bypass this path and both
+ * limits; a later task closes that direct path. (`createdById` on that
+ * direct path is already locked to the auth uid by firestore.rules itself,
+ * not by this callable.) The client signature here is unchanged so every
+ * call site keeps working untouched.
  *
  * `scheduledAt` doesn't survive the callable boundary as a `Date`, so it's
  * converted to epoch milliseconds here; the function rebuilds the `Timestamp`
