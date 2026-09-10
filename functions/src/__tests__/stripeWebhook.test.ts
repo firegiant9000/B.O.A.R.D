@@ -6,6 +6,8 @@ import {
   applyStripeEventTransactionally,
   decidePlanWrite,
   handleStripeWebhook,
+  StripeWebhookPayloadError,
+  UnknownWorkspaceError,
   type ProcessedEventRecord,
   type StripeWebhookDeps,
   type StripeWebhookEvent,
@@ -13,9 +15,10 @@ import {
 } from "../http/stripeWebhook";
 import * as fx from "./fixtures/stripe-events";
 
-// Task 9 — the Stripe webhook. G3 (a Stripe account) is NOT met: there is no
-// key, product, price or registered endpoint, so no delivery from Stripe's
-// servers has ever reached this code. Two things follow for these tests:
+// Month 5 — the Stripe webhook. There is no Stripe account behind this repo:
+// no API key, no product, no price and no registered webhook endpoint, so no
+// delivery from Stripe's servers has ever reached this code. Two things follow
+// for these tests:
 //
 //   1. Signature verification is tested for real, not mocked past. The
 //      installed `stripe` package exposes `webhooks.generateTestHeaderString`
@@ -43,18 +46,35 @@ function sign(payload: string, opts: { secret?: string; timestamp?: number } = {
 }
 
 /** In-memory store honouring the same contract as the Firestore-backed one:
- *  `markProcessed` is what makes a later `alreadyProcessed` true, so the
- *  idempotency tests below exercise the handler's real short-circuit rather
- *  than a hard-coded mock answer. */
+ *  every write is READ BACK by the corresponding reader, so the tests below
+ *  exercise the handler's real short-circuits rather than a hard-coded mock
+ *  answer. Three of those loops matter:
+ *
+ *  - `markProcessed` is what makes a later `alreadyProcessed` true (replay).
+ *  - `setSubscription` is what makes a later `readSubscription` return a
+ *    `lastEventCreated` and a `currentPeriodEndMs` (out-of-order guard, and
+ *    the period-end carry-forward).
+ *  - `setPlan` actually mutates the stored plan, so a second event sees the
+ *    plan the first one wrote. Without that, an out-of-order test would pass
+ *    for the wrong reason: `decidePlanWrite` would skip the second write as
+ *    redundant and the guard itself would never be exercised. */
 function store(opts: { plan?: unknown; missingWorkspace?: boolean } = {}) {
   const seen = new Set<string>();
-  const workspace = opts.missingWorkspace ? null : { plan: opts.plan ?? "free" };
+  const workspace: { plan?: unknown } | null = opts.missingWorkspace
+    ? null
+    : { plan: opts.plan ?? "free" };
+  let subscription: { lastEventCreated?: unknown; currentPeriodEndMs?: unknown } | null = null;
   return {
     seen,
     readWorkspace: jest.fn(async (_workspaceId: string) => workspace),
+    readSubscription: jest.fn(async (_workspaceId: string) => subscription),
     alreadyProcessed: jest.fn(async (_workspaceId: string, eventId: string) => seen.has(eventId)),
-    setPlan: jest.fn(async (_workspaceId: string, _plan: Plan) => {}),
-    setSubscription: jest.fn(async (_workspaceId: string, _state: SubscriptionState) => {}),
+    setPlan: jest.fn(async (_workspaceId: string, plan: Plan) => {
+      if (workspace !== null) workspace.plan = plan;
+    }),
+    setSubscription: jest.fn(async (_workspaceId: string, state: SubscriptionState) => {
+      subscription = { ...state };
+    }),
     markProcessed: jest.fn(
       async (_workspaceId: string, eventId: string, _record: ProcessedEventRecord) => {
         seen.add(eventId);
@@ -105,9 +125,13 @@ describe("applyStripeEvent — upgrades", () => {
       statusSource: "checkout",
       stripeCustomerId: fx.CUSTOMER_ID,
       stripeSubscriptionId: fx.SUBSCRIPTION_ID,
+      // A Checkout Session carries no renewal date and this workspace has no
+      // previously recorded one, so there is nothing to carry forward. The
+      // carry-forward case has its own test below.
       currentPeriodEndMs: null,
       lastEventId: fx.checkoutCompleted.id,
       lastEventType: "checkout.session.completed",
+      lastEventCreated: fx.checkoutCompleted.created,
       updatedAt: T,
     });
   });
@@ -175,6 +199,31 @@ describe("applyStripeEvent — upgrades", () => {
     expect(s.setSubscription).toHaveBeenCalledWith(
       "ws1",
       expect.objectContaining({ currentPeriodEndMs: fx.PERIOD_END_MS })
+    );
+  });
+
+  it("carries a recorded period end forward across an event that carries none", async () => {
+    // `setSubscription` writes the whole document, and only a subscription
+    // object carries a renewal date — an Invoice and a Checkout Session do
+    // not. Without the carry-forward, every invoice.payment_failed and every
+    // checkout.session.completed would null a renewal date a previous
+    // subscription event had recorded, and a billing screen would show a blank
+    // renewal date precisely when the customer's payment had just failed.
+    const s = store({ plan: "pro" });
+
+    await applyStripeEvent(fx.subscriptionActive, s, T);
+    expect(s.setSubscription).toHaveBeenLastCalledWith(
+      "ws1",
+      expect.objectContaining({ currentPeriodEndMs: fx.PERIOD_END_MS })
+    );
+
+    await applyStripeEvent(fx.invoicePaymentFailedRetrying, s, T);
+    expect(s.setSubscription).toHaveBeenLastCalledWith(
+      "ws1",
+      expect.objectContaining({
+        statusSource: "invoice",
+        currentPeriodEndMs: fx.PERIOD_END_MS,
+      })
     );
   });
 
@@ -355,10 +404,100 @@ describe("applyStripeEvent — idempotency", () => {
   });
 });
 
+// ── applyStripeEvent: out-of-order deliveries ─────────────────────────────────
+//
+// A DIFFERENT mechanism from idempotency above, guarding a different failure.
+// Idempotency suppresses a redelivery of one event id; this suppresses a
+// genuinely different, genuinely older event that lost a race. Nothing keyed on
+// `event.id` could catch these — the events have different ids, so neither is a
+// duplicate of the other.
+
+describe("applyStripeEvent — out-of-order deliveries", () => {
+  it("ignores an event older than the state already applied, restoring nothing", async () => {
+    // The permanent defect this guards: `updated{active}` fails on a Firestore
+    // blip, `deleted` is delivered and applies (plan -> free), then the
+    // `active` retry finally succeeds. Applied, it would put the workspace
+    // back on Pro for a subscription that no longer exists — and Stripe has
+    // nothing further to send about a deleted subscription, so no later event
+    // would ever correct it.
+    const s = store({ plan: "pro" });
+
+    await applyStripeEvent(fx.subscriptionDeletedLate, s, T);
+    expect(s.setPlan).toHaveBeenCalledWith("ws1", "free");
+    s.setPlan.mockClear();
+
+    const res = await applyStripeEvent(fx.subscriptionActiveEarly, s, T);
+
+    expect(res.outcome).toBe("stale");
+    expect(s.setPlan).not.toHaveBeenCalled();
+    // The stale delivery writes NOTHING: rewriting the subscription document
+    // would replace the cancellation's state with the older event's.
+    expect(s.setSubscription).toHaveBeenCalledTimes(1);
+    expect(s.markProcessed).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies an event newer than the state already applied", async () => {
+    // The other direction, which a guard with its comparison the wrong way
+    // round would break: the cancellation must still land after the upgrade.
+    const s = store({ plan: "pro" });
+
+    await applyStripeEvent(fx.subscriptionActiveEarly, s, T);
+    const res = await applyStripeEvent(fx.subscriptionDeletedLate, s, T);
+
+    expect(res.outcome).toBe("applied");
+    expect(s.setPlan).toHaveBeenCalledWith("ws1", "free");
+    expect(s.setSubscription).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies an event stamped in the SAME second — a tie is not a drop", async () => {
+    // Strictly-newer-wins. `created` has one-second resolution, so two events
+    // of one checkout routinely tie; a `>=` comparison here would silently
+    // discard a legitimate event, which is the worse of the two errors.
+    const s = store({ plan: "pro" });
+
+    await applyStripeEvent(fx.subscriptionActiveEarly, s, T);
+    const res = await applyStripeEvent(fx.subscriptionDeletedSameSecond, s, T);
+
+    expect(res.outcome).toBe("applied");
+    expect(s.setPlan).toHaveBeenCalledWith("ws1", "free");
+  });
+
+  it("records event.created, which is the only thing a later delivery can be ordered against", async () => {
+    const s = store();
+    await applyStripeEvent(fx.subscriptionActiveEarly, s, T);
+    expect(s.setSubscription).toHaveBeenCalledWith(
+      "ws1",
+      // Unix SECONDS, stored exactly as Stripe sent it, so the comparison
+      // against an incoming `event.created` needs no conversion.
+      expect.objectContaining({ lastEventCreated: fx.CREATED_EARLY })
+    );
+  });
+
+  it("logs the stale delivery with a hashed workspace id and both timestamps", async () => {
+    const s = store({ plan: "pro" });
+    await applyStripeEvent(fx.subscriptionDeletedLate, s, T);
+    warnSpy.mockClear();
+
+    await applyStripeEvent(fx.subscriptionActiveEarly, s, T);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [, meta] = warnSpy.mock.calls[0] as [string, Record<string, unknown>];
+    expect(meta).toMatchObject({
+      eventCreated: fx.CREATED_EARLY,
+      appliedCreated: fx.CREATED_LATE,
+    });
+    expect(meta.workspaceHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(meta)).not.toContain('"ws1"');
+  });
+});
+
 // ── applyStripeEvent: unhandled types and fail-closed paths ───────────────────
 
 describe("applyStripeEvent — unhandled and malformed", () => {
   it("ignores an event type it does not handle, without touching the store at all", async () => {
+    // Also pins that the TYPE check comes first, and that an unhandled type
+    // needs no workspace id: `customer.created` legitimately carries none, and
+    // demanding one would turn every unrelated event into an error.
     const s = store();
     await expect(applyStripeEvent(fx.unhandledEvent, s, T)).resolves.toMatchObject({
       outcome: "ignored",
@@ -367,14 +506,8 @@ describe("applyStripeEvent — unhandled and malformed", () => {
     expect(s.setSubscription).not.toHaveBeenCalled();
     expect(s.markProcessed).not.toHaveBeenCalled();
     expect(s.readWorkspace).not.toHaveBeenCalled();
+    expect(s.readSubscription).not.toHaveBeenCalled();
     expect(s.alreadyProcessed).not.toHaveBeenCalled();
-  });
-
-  it("does not require a workspace id for an unhandled type", async () => {
-    // The type check has to come first: `customer.created` carries no
-    // workspace id and must not be treated as a malformed payload.
-    const s = store();
-    await expect(applyStripeEvent(fx.unhandledEvent, s, T)).resolves.toBeDefined();
   });
 
   it("throws when the event carries no workspace id", async () => {
@@ -446,6 +579,7 @@ describe("applyStripeEvent — unhandled and malformed", () => {
     const bad: StripeWebhookEvent = {
       id: "evt_invoice_no_workspace",
       type: "invoice.payment_failed",
+      created: fx.CREATED_EARLY,
       data: {
         object: {
           id: "in_TestInvoiceNoWorkspace",
@@ -466,6 +600,7 @@ describe("applyStripeEvent — unhandled and malformed", () => {
     const bad: StripeWebhookEvent = {
       id: "evt_malformed_payload",
       type: "customer.subscription.updated",
+      created: fx.CREATED_EARLY,
       data: { object: "not-an-object" },
     };
     await expect(applyStripeEvent(bad, s, T)).rejects.toThrow(/workspace/i);
@@ -675,10 +810,19 @@ describe("handleStripeWebhook — signature verification", () => {
     expect(d.apply).not.toHaveBeenCalled();
   });
 
-  it("rejects a request with no raw body", async () => {
+  it("answers 500 and logs at ERROR when there is no raw body to verify", async () => {
+    // Deliberately unlike the header check above, which is a 400. Stripe
+    // always POSTs a body, so an absent `rawBody` cannot be the caller's
+    // doing — it can only be the platform or runtime failing to attach the
+    // unparsed bytes, i.e. ours. If that assumption is ever wrong it is wrong
+    // for EVERY delivery, and a 400 logged at `warn` would be the worst
+    // available pair: Stripe does not retry a 400, and nothing alerts on
+    // `warn`. Every payment lost, silently.
     const d = deps();
     const res = await handleStripeWebhook(reqFor(undefined, "t=1,v1=deadbeef"), d, T);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(500);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
     expect(d.apply).not.toHaveBeenCalled();
   });
 
@@ -732,10 +876,13 @@ describe("handleStripeWebhook — response contract", () => {
     expect(res.status).toBe(200);
   });
 
-  it("returns 500 when applying the event fails, so Stripe retries it", async () => {
-    // A verified event we could not apply is money we owe the customer. A 2xx
-    // here would discard it silently; a 5xx keeps Stripe's retry schedule
-    // working and surfaces the failure on Stripe's own dashboard.
+  it("returns 500 and logs at ERROR when a TRANSIENT failure stops the event applying", async () => {
+    // A verified event we could not apply is money we owe the customer, and
+    // here a retry genuinely is the fix. A 2xx would discard it silently; a
+    // 5xx keeps Stripe's retry schedule working and surfaces the failure on
+    // Stripe's own dashboard. ERROR, not `warn`, because that argument depends
+    // on the failure being surfaced and GCP alerting policies fire on ERROR —
+    // at `warn` the mechanism the argument relies on does not exist.
     const payload = jsonEvent(fx.checkoutCompleted);
     const d = deps({
       apply: jest.fn(async () => {
@@ -744,6 +891,52 @@ describe("handleStripeWebhook — response contract", () => {
     });
     const res = await handleStripeWebhook(reqFor(Buffer.from(payload, "utf8"), sign(payload)), d, T);
     expect(res.status).toBe(500);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][1]).toMatchObject({ retryRequested: true });
+  });
+
+  it("returns 200 for a payload no retry could ever make applicable, and logs it at ERROR", async () => {
+    // Stripe DISABLES an endpoint after a sustained run of consecutive
+    // failures. Retrying an event whose bytes can never be acted on therefore
+    // does worse than nothing: its tail is the endpoint going dark, which
+    // costs every LATER event too — cancellations included. So it is
+    // acknowledged. 200 is not "ignore": the ERROR log is now the only thing
+    // that will surface it, since there is no retry left to do so.
+    const payload = jsonEvent(fx.checkoutCompletedNoWorkspace);
+    const d = deps({
+      apply: jest.fn(async () => {
+        throw new StripeWebhookPayloadError(
+          "could not resolve a usable workspace id from the event payload"
+        );
+      }),
+    });
+    const res = await handleStripeWebhook(reqFor(Buffer.from(payload, "utf8"), sign(payload)), d, T);
+    expect(res.status).toBe(200);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][1]).toMatchObject({
+      errorName: "StripeWebhookPayloadError",
+      retryRequested: false,
+    });
+  });
+
+  it("returns 200 for an event naming a workspace that no longer exists", async () => {
+    // A deleted workspace is not coming back, so three days of retries change
+    // nothing and only feed the consecutive-failure run.
+    const payload = jsonEvent(fx.checkoutCompleted);
+    const d = deps({
+      apply: jest.fn(async () => {
+        throw new UnknownWorkspaceError(
+          "the event names a workspace that does not exist; refusing to write"
+        );
+      }),
+    });
+    const res = await handleStripeWebhook(reqFor(Buffer.from(payload, "utf8"), sign(payload)), d, T);
+    expect(res.status).toBe(200);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][1]).toMatchObject({
+      errorName: "UnknownWorkspaceError",
+      retryRequested: false,
+    });
   });
 
   it("never puts an internal error message in the response body", async () => {
@@ -787,6 +980,26 @@ describe("stripeWebhook — logging hygiene", () => {
     expect(text).not.toContain(fx.SUBSCRIPTION_ID);
     expect(text).not.toContain('"ws1"');
     expect(text).not.toContain("workspaceId");
+  });
+
+  it("puts a hashed workspace id on the accepted-delivery log line", async () => {
+    // Without it the happy path is the one line support cannot correlate to a
+    // workspace — the duplicate short-circuit and the unrecognized-status
+    // warning both already carry one.
+    const payload = jsonEvent(fx.checkoutCompleted);
+    const s = store();
+    const d = deps({ apply: (event, now) => applyStripeEvent(event, s, now) });
+
+    const res = await handleStripeWebhook(reqFor(Buffer.from(payload, "utf8"), sign(payload)), d, T);
+    expect(res.status).toBe(200);
+
+    const accepted = infoSpy.mock.calls.find(
+      ([message]) => typeof message === "string" && message.includes("delivery accepted")
+    );
+    expect(accepted).toBeDefined();
+    const meta = accepted?.[1] as Record<string, unknown>;
+    expect(meta.workspaceHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(meta)).not.toContain("ws1");
   });
 
   it("logs a hashed workspace id, never the raw one, on the unknown-status path", async () => {
@@ -911,6 +1124,33 @@ describe("applyStripeEventTransactionally", () => {
     await expect(applyStripeEventTransactionally(db, fx.checkoutCompleted, T)).rejects.toThrow(
       /workspace/i
     );
+    expect(tx.set).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it("reads the prior subscription state from inside the same transaction as the writes", async () => {
+    // The out-of-order guard compares the incoming `event.created` against
+    // `lastEventCreated` on this document. Reading it outside the transaction
+    // would let a concurrent delivery commit between the comparison and the
+    // write, which is the whole failure the guard exists to prevent.
+    const { db, tx } = fakeTransactionalDb({ "workspaces/ws1": { plan: "free" } });
+    await applyStripeEventTransactionally(db, fx.checkoutCompleted, T);
+    const read = tx.get.mock.calls.map(([ref]) => ref.path);
+    expect(read).toContain("workspaces/ws1/billing/subscription");
+  });
+
+  it("writes nothing at all for an event older than the state already recorded", async () => {
+    const { db, tx } = fakeTransactionalDb({
+      "workspaces/ws1": { plan: "free" },
+      "workspaces/ws1/billing/subscription": {
+        lastEventId: fx.subscriptionDeletedLate.id,
+        lastEventCreated: fx.CREATED_LATE,
+      },
+    });
+
+    const res = await applyStripeEventTransactionally(db, fx.subscriptionActiveEarly, T);
+
+    expect(res.outcome).toBe("stale");
     expect(tx.set).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
   });

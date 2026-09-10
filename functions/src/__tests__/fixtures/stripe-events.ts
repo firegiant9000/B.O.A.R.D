@@ -64,12 +64,16 @@ export const CUSTOMER_EMAIL = "paying.customer@example.com";
 export const CUSTOMER_ID = "cus_TestCustomer123";
 export const SUBSCRIPTION_ID = "sub_TestSubscription123";
 
-function envelope(id: string, type: string, object: unknown): TestStripeEvent {
+/** `created` is UNIX SECONDS and defaults to one shared value, which is right
+ *  for every fixture whose test does not care about ordering. It is a
+ *  parameter because the out-of-order guard does care: see the trio at the
+ *  bottom of this file. */
+function envelope(id: string, type: string, object: unknown, created = CREATED): TestStripeEvent {
   return {
     id,
     object: "event",
     api_version: API_VERSION,
-    created: CREATED,
+    created,
     livemode: false,
     pending_webhooks: 1,
     request: { id: null, idempotency_key: null },
@@ -422,3 +426,47 @@ export const unhandledEvent = envelope("evt_unhandled_customer_created", "custom
   object: "customer",
   email: CUSTOMER_EMAIL,
 });
+
+// ── an out-of-order trio (the only fixtures that set `created` explicitly) ────
+//
+// The sequence Stripe can genuinely produce: `customer.subscription.updated`
+// with status `active` fails on a transient error and is retried for up to ~3
+// days, during which `customer.subscription.deleted` is delivered and applied.
+// The `active` retry then succeeds LAST. Applied in arrival order it would
+// restore Pro for a subscription that no longer exists, and Stripe has no
+// further event to send about a subscription it has already deleted — so
+// nothing would ever correct it. These are three distinct event ids, so the
+// event-id idempotency record cannot suppress any of them.
+
+/** One hour apart, so the relative order is obvious at each call site rather
+ *  than buried in arithmetic. */
+export const CREATED_EARLY = CREATED;
+export const CREATED_LATE = CREATED + 3600;
+
+/** The EARLIER event — the one a retry would be re-delivering late. */
+export const subscriptionActiveEarly = envelope(
+  "evt_subscription_active_early",
+  "customer.subscription.updated",
+  subscriptionObject("active"),
+  CREATED_EARLY
+);
+
+/** The LATER event that supersedes it. */
+export const subscriptionDeletedLate = envelope(
+  "evt_subscription_deleted_late",
+  "customer.subscription.deleted",
+  subscriptionObject("canceled", { canceled_at: CREATED_LATE, ended_at: CREATED_LATE }),
+  CREATED_LATE
+);
+
+/** A cancellation stamped in the SAME second as `subscriptionActiveEarly`.
+ *  `event.created` has one-second resolution, so this is not contrived — two
+ *  events of one checkout routinely tie. A tie must APPLY: discarding a
+ *  legitimate event because it shares a second with another is worse than
+ *  applying two whose order is genuinely ambiguous. */
+export const subscriptionDeletedSameSecond = envelope(
+  "evt_subscription_deleted_same_second",
+  "customer.subscription.deleted",
+  subscriptionObject("canceled", { canceled_at: CREATED_EARLY, ended_at: CREATED_EARLY }),
+  CREATED_EARLY
+);

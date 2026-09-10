@@ -24,7 +24,7 @@ import type { Plan } from "../billing/limits";
 // construction Stripe uses), and every event/plan transition is unit-tested.
 // See the report for the exact list of what a live account would still verify.
 //
-// Two things make or break this file:
+// Three things make or break this file:
 //
 //   1. RAW BODY. Signature verification MUST run against `req.rawBody` — the
 //      unparsed bytes. Firebase Functions v2 parses JSON bodies before the
@@ -46,6 +46,18 @@ import type { Plan } from "../billing/limits";
 //          no attempt to reconcile or cancel either. Reconciling duplicate
 //          subscriptions is a separate, registered problem and is deliberately
 //          not attempted here. Nothing in this file prevents a double charge.
+//        - It does NOT order anything. See item 3.
+//
+//   3. ORDERING. Stripe does not guarantee delivery order, and a delivery
+//      answered with a 5xx is retried for up to ~3 days while newer events
+//      keep being delivered — so a `subscription.updated{active}` that failed
+//      can land AFTER the `subscription.deleted` that superseded it. Applied
+//      in that order it would restore Pro for a subscription that no longer
+//      exists, and Stripe would send nothing further to correct it. Every
+//      applied event therefore records its `event.created`, and an event
+//      strictly older than the recorded one is discarded. Item 2's event-id
+//      record cannot cover this: those are two different events, so neither is
+//      a duplicate of the other.
 
 /** The narrow slice of a Stripe event this file reads. `Stripe.Event`
  *  satisfies it structurally, so the onRequest binding hands the real thing
@@ -56,6 +68,14 @@ import type { Plan } from "../billing/limits";
 export interface StripeWebhookEvent {
   id: string;
   type: string;
+  /** UNIX SECONDS, as Stripe sends it. The only ordering information a
+   *  delivery carries, and the whole basis of the out-of-order guard in
+   *  `applyStripeEvent` — Stripe does not guarantee delivery order, and an
+   *  event that fails is retried for days while newer events keep arriving.
+   *  Required because `Stripe.Event` always carries it; still read through
+   *  `readFiniteNumber` below, the same way `id` is, so a shape that somehow
+   *  lacks it degrades to "unorderable" rather than throwing. */
+  created: number;
   data: { object: unknown };
 }
 
@@ -78,6 +98,16 @@ export interface SubscriptionState {
   currentPeriodEndMs: number | null;
   lastEventId: string;
   lastEventType: string;
+  /** `event.created` of the newest event applied to this workspace, in UNIX
+   *  SECONDS (not milliseconds — it is stored exactly as Stripe sent it, so it
+   *  can be compared against an incoming `event.created` without a conversion
+   *  that could be got wrong in one direction only).
+   *
+   *  This field is what makes the out-of-order guard possible, so it is not
+   *  merely informational: an event whose `created` is OLDER than this is
+   *  discarded (see `applyStripeEvent`). `null` means "unorderable" — an event
+   *  arrived without a usable `created` — and never blocks a later event. */
+  lastEventCreated: number | null;
   updatedAt: number;
 }
 
@@ -94,12 +124,22 @@ export interface ProcessedEventRecord {
   processedAt: number;
 }
 
-export type StripeEventOutcome = "applied" | "duplicate" | "ignored";
+/** `stale` is the out-of-order case: a genuinely different, genuinely older
+ *  event that arrived after a newer one had already been applied. It is kept
+ *  distinct from `duplicate` (a redelivery of the SAME event id) because the
+ *  two say different things — a duplicate means Stripe retried, a stale event
+ *  means Stripe delivered out of order and this endpoint declined to move the
+ *  workspace backwards. */
+export type StripeEventOutcome = "applied" | "duplicate" | "ignored" | "stale";
 
 export interface ApplyStripeEventResult {
   outcome: StripeEventOutcome;
   /** Present only when this event actually changed `plan`. */
   planWritten?: Plan;
+  /** The hashed workspace id, present once one has been resolved from the
+   *  payload — so the request handler's accepted-delivery log line can be
+   *  correlated to a workspace. Hashed, never the raw id. */
+  workspaceHash?: string;
 }
 
 /** Injected so `applyStripeEvent` unit-tests with no Firestore mock at all,
@@ -109,12 +149,22 @@ export interface ApplyStripeEventResult {
  *  SCOPED: its reads are `tx.get` and its writes are `tx.set`/`tx.update` on
  *  one transaction. That is deliberate and load-bearing — it is what stops the
  *  idempotency record and the plan write from diverging. `applyStripeEvent`
- *  therefore calls both reads BEFORE any write, which Firestore requires. */
+ *  therefore calls every read BEFORE any write, which Firestore requires. */
 export interface StripeWebhookStore {
   /** True if this event id has already been applied for this workspace. */
   alreadyProcessed(workspaceId: string, eventId: string): Promise<boolean>;
   /** The workspace document, or null if it does not exist. */
   readWorkspace(workspaceId: string): Promise<{ plan?: unknown } | null>;
+  /** The subscription document as previously written, or null if this
+   *  workspace has never had one. Both fields are `unknown` rather than typed:
+   *  the doc can have been written by an older deploy, and both are read
+   *  through the tolerant readers. Two things need it, and both are inside the
+   *  same transaction as the writes — the out-of-order guard
+   *  (`lastEventCreated`) and carrying `currentPeriodEndMs` forward across an
+   *  event that does not carry one. */
+  readSubscription(
+    workspaceId: string
+  ): Promise<{ lastEventCreated?: unknown; currentPeriodEndMs?: unknown } | null>;
   setSubscription(workspaceId: string, state: SubscriptionState): Promise<void>;
   setPlan(workspaceId: string, plan: Plan): Promise<void>;
   markProcessed(
@@ -129,9 +179,10 @@ export interface StripeWebhookStore {
  *  risking a third-party error message reaching the logs. */
 export class StripeWebhookError extends Error {}
 
-/** The event's shape is not something we can act on, and never will be — a
- *  retry cannot fix it. Still answered with a 5xx: see the comment on the
- *  catch in `handleStripeWebhook`. */
+/** The event's shape is not something we can act on, and never will be — the
+ *  bytes are immutable, so a retry cannot fix it. One of the two retry-proof
+ *  classes: answered 200 + `logger.error`, see the comment on the catch in
+ *  `handleStripeWebhook`. */
 export class StripeWebhookPayloadError extends StripeWebhookError {
   constructor(message: string) {
     super(message);
@@ -139,7 +190,9 @@ export class StripeWebhookPayloadError extends StripeWebhookError {
   }
 }
 
-/** A verified event naming a workspace that does not exist. */
+/** A verified event naming a workspace that does not exist. The other
+ *  retry-proof class: a deleted workspace is not coming back, so no number of
+ *  retries makes this applicable. */
 export class UnknownWorkspaceError extends StripeWebhookError {
   constructor(message: string) {
     super(message);
@@ -393,9 +446,11 @@ function evaluateEvent(
     default:
       // Unreachable while this switch and HANDLED_EVENT_TYPES agree. Throwing
       // rather than returning "unchanged" is the point: if someone adds a type
-      // to the set and forgets this switch, the event fails loudly (500, Stripe
-      // retries, the failure shows on Stripe's dashboard) instead of being
-      // acknowledged and silently dropped.
+      // to the set and forgets this switch, every such event is logged at
+      // ERROR instead of being silently dropped as a no-op. It is a
+      // StripeWebhookPayloadError, so the delivery is acknowledged rather than
+      // retried: retrying a missing evaluator fixes nothing, the fix is a
+      // deploy, and the ERROR log is what prompts one.
       throw new StripeWebhookPayloadError(
         `event type ${eventType} is in HANDLED_EVENT_TYPES but has no evaluator`
       );
@@ -484,17 +539,24 @@ function outOfScopeReason(eventType: string, object: unknown): IgnoredReason | u
  *
  *   1. The event TYPE is checked first. An unhandled type must not be treated
  *      as a malformed payload — `customer.created` legitimately carries no
- *      workspace id, and demanding one would turn every unrelated event into a
- *      retrying 500.
+ *      workspace id, and demanding one would turn every unrelated event into
+ *      an error on an event this endpoint will never act on.
  *   2. Both ids are validated before any store call, so an id that is not
  *      usable as a document id never reaches a Firestore path.
- *   3. Both READS (`alreadyProcessed`, `readWorkspace`) precede every write.
- *      Firestore requires that inside a transaction, and the Firestore store
- *      is transaction-scoped.
+ *   3. Every READ (`alreadyProcessed`, `readWorkspace`, `readSubscription`)
+ *      precedes every write. Firestore requires that inside a transaction, and
+ *      the Firestore store is transaction-scoped.
  *
  * `markProcessed` is written on every applied event, including one that
  * changed no plan: a replay of a `past_due` event must still be recognized as
  * a replay.
+ *
+ * TWO INDEPENDENT SUPPRESSIONS, which are not the same mechanism:
+ *
+ *   - `alreadyProcessed` (`event.id`) suppresses a REDELIVERY of one event.
+ *   - `lastEventCreated` (`event.created`) suppresses a genuinely different but
+ *     OLDER event that lost a race. The event-id record cannot do this: the two
+ *     events have different ids, so neither is a duplicate of the other.
  */
 export async function applyStripeEvent(
   event: StripeWebhookEvent,
@@ -520,29 +582,78 @@ export async function applyStripeEvent(
     );
   }
 
+  const workspaceHash = hashWorkspaceId(workspaceId);
+  // `readFiniteNumber`, not `event.created` directly, for the same reason
+  // `event.id` goes through `readString`: the declared type says Stripe always
+  // sends it, and an event that somehow does not must degrade rather than
+  // throw. `undefined` here means "unorderable" and never drops the event.
+  const eventCreated = readFiniteNumber(event.created);
+
   // ── reads ──
   if (await store.alreadyProcessed(workspaceId, eventId)) {
     logger.info("stripeWebhook: event already applied; short-circuiting the redelivery", {
       eventType,
       eventId,
-      workspaceHash: hashWorkspaceId(workspaceId),
+      workspaceHash,
     });
-    return { outcome: "duplicate" };
+    return { outcome: "duplicate", workspaceHash };
   }
 
   const workspace = await store.readWorkspace(workspaceId);
   if (workspace === null) {
-    // Deliberate: do not create the workspace, and do not acknowledge the
-    // event either. Writing a plan for a workspace that does not exist would
-    // leave an orphan billing subtree, and swallowing a paid checkout is
-    // money taken for nothing.
+    // Deliberate: do not create the workspace, and do not write a plan for
+    // one that does not exist — that would leave an orphan billing subtree.
+    // The delivery is acknowledged rather than retried (see the catch in
+    // `handleStripeWebhook`) and logged at ERROR, because a paid checkout for
+    // a workspace that no longer exists is money taken for nothing and needs a
+    // human, not a retry.
     throw new UnknownWorkspaceError(
       "the event names a workspace that does not exist; refusing to write"
     );
   }
 
+  const priorState = await store.readSubscription(workspaceId);
+
+  // ── the out-of-order guard ──
+  //
+  // Stripe does NOT guarantee delivery order, and a delivery answered with a
+  // 500 is retried for up to ~3 days while newer events keep arriving. Without
+  // this guard: `customer.subscription.updated{active}` fails on a Firestore
+  // blip, `customer.subscription.deleted` arrives and applies (plan -> free),
+  // then the earlier `active` retry finally succeeds and puts the workspace
+  // back on `pro` for a subscription that no longer exists. Nothing would ever
+  // correct it, because Stripe has no further event to send about a
+  // subscription it has already deleted.
+  //
+  // STRICTLY-NEWER-WINS: drop only when the stored event is strictly newer.
+  // `created` has one-second resolution, so two events of the same checkout
+  // routinely tie; a tie APPLIES, because silently discarding a legitimate
+  // event is worse than applying two in an ambiguous order. The stale event's
+  // auxiliary fields (period end, ids) are skipped along with its plan
+  // decision, which is correct: the newer event is by definition the more
+  // current statement of both.
+  const priorCreated = readFiniteNumber(priorState?.lastEventCreated);
+  if (priorCreated !== undefined && eventCreated !== undefined && priorCreated > eventCreated) {
+    logger.warn("stripeWebhook: ignoring an out-of-order event older than the applied state", {
+      eventType,
+      eventId,
+      workspaceHash,
+      eventCreated,
+      appliedCreated: priorCreated,
+    });
+    return { outcome: "stale", workspaceHash };
+  }
+
   const evaluation = evaluateEvent(eventType, object, workspaceId);
   const planWritten = decidePlanWrite(workspace.plan, evaluation.planDecision);
+
+  // Carried forward rather than nulled: `resolvePeriodEndMs` reads the renewal
+  // date off a subscription, and neither a Checkout Session nor an Invoice
+  // carries one — so a full `set` of this document on either would erase a
+  // renewal date a previous subscription event had recorded. The prior value
+  // comes from the read above, inside this same transaction.
+  const currentPeriodEndMs =
+    resolvePeriodEndMs(object) ?? readFiniteNumber(priorState?.currentPeriodEndMs) ?? null;
 
   // ── writes ──
   await store.setSubscription(workspaceId, {
@@ -551,9 +662,10 @@ export async function applyStripeEvent(
     statusSource: evaluation.statusSource,
     stripeCustomerId: resolveCustomerId(object),
     stripeSubscriptionId: resolveSubscriptionId(object),
-    currentPeriodEndMs: resolvePeriodEndMs(object),
+    currentPeriodEndMs,
     lastEventId: eventId,
     lastEventType: eventType,
+    lastEventCreated: eventCreated ?? null,
     updatedAt: now,
   });
 
@@ -569,7 +681,9 @@ export async function applyStripeEvent(
     processedAt: now,
   });
 
-  return planWritten === undefined ? { outcome: "applied" } : { outcome: "applied", planWritten };
+  return planWritten === undefined
+    ? { outcome: "applied", workspaceHash }
+    : { outcome: "applied", planWritten, workspaceHash };
 }
 
 // ── the Firestore store ───────────────────────────────────────────────────────
@@ -616,6 +730,12 @@ function transactionStore(db: Firestore, tx: Transaction): StripeWebhookStore {
     readWorkspace: async (workspaceId) => {
       const snap = await tx.get(workspaceRef(db, workspaceId));
       return snap.exists ? ((snap.data() ?? {}) as { plan?: unknown }) : null;
+    },
+    readSubscription: async (workspaceId) => {
+      const snap = await tx.get(subscriptionRef(db, workspaceId));
+      return snap.exists
+        ? ((snap.data() ?? {}) as { lastEventCreated?: unknown; currentPeriodEndMs?: unknown })
+        : null;
     },
     setSubscription: async (workspaceId, state) => {
       tx.set(subscriptionRef(db, workspaceId), state);
@@ -694,22 +814,34 @@ export interface StripeWebhookReply {
  * verification — unit-tests without express, the Functions runtime, or a
  * Stripe account. It never throws: every exit is a deliberate status code.
  *
- * The status codes are chosen around one fact: a non-2xx makes Stripe retry.
+ * The status codes are chosen around two facts, and the second one is the
+ * reason the catch below is split rather than a blanket 500:
  *
- *   200 — verified and applied, verified and deduped, or an event type this
- *         endpoint does not handle. All three are "done"; retrying any of them
- *         achieves nothing.
- *   400 — the delivery did not verify (bad signature, wrong secret, stale
- *         timestamp, missing header, missing raw body). Nothing is processed.
+ *   (a) A non-2xx makes Stripe retry, for up to ~3 days.
+ *   (b) Stripe DISABLES an endpoint after a sustained run of consecutive
+ *       failures — it emails first, then stops delivering. So answering a
+ *       class of event that can never succeed with a 500 does not merely make
+ *       noise: its tail is the endpoint going dark, which converts one
+ *       permanently-unapplicable event into the loss of every subsequent good
+ *       event, cancellations included.
+ *
+ *   200 — verified and applied, verified and deduped, an out-of-order event
+ *         declined, an event type this endpoint does not handle, or a verified
+ *         event that is PROVABLY unapplicable however many times it arrives
+ *         (see the catch). All of them are "done"; retrying any of them
+ *         achieves nothing, and the last one is logged at ERROR so that being
+ *         done is not the same as being unnoticed.
+ *   400 — the CALLER's delivery did not verify: bad signature, wrong secret,
+ *         stale timestamp, missing or unusable signature header. Nothing is
+ *         processed. Stripe does not retry a 400, which is correct — the same
+ *         bytes with the same signature will never verify.
  *   405 — not a POST. Stripe only ever POSTs.
- *   500 — configuration is missing, or a verified event could not be applied.
+ *   500 — configuration is missing, the request arrived with no raw body to
+ *         verify (a platform fault, not a caller fault — see below), or a
+ *         verified event could not be applied for a reason a retry might fix.
  *         Deliberately retryable: a verified event we failed to apply is a
  *         payment we owe the customer, and Stripe's retry schedule plus the
- *         failed-delivery list on Stripe's own dashboard is the only thing that
- *         will surface it. A 2xx here would discard it silently. That includes
- *         a malformed payload, which no retry can fix — the alternative is
- *         acknowledging a paid checkout we could not attribute, and a bounded
- *         run of retries ending in a visible failed delivery beats that.
+ *         failed-delivery list on Stripe's own dashboard is what surfaces it.
  */
 export async function handleStripeWebhook(
   req: StripeWebhookRequest,
@@ -740,10 +872,21 @@ export async function handleStripeWebhook(
   }
 
   // req.rawBody — NOT req.body. See item 1 in this file's header comment.
+  //
+  // ERROR and 500, not warn and 400, and the asymmetry with the header check
+  // above is the point. Stripe always POSTs a body, so an absent `rawBody`
+  // cannot be caused by the caller: it can only be the platform or the runtime
+  // failing to attach the unparsed bytes, which is OURS. If that ever happens
+  // it happens to EVERY delivery, and a 400 would be both un-retried and
+  // un-alerted — every payment lost, silently. A 500 keeps Stripe's retries
+  // alive long enough for a fix to land, and ERROR is what an alerting policy
+  // fires on.
   const rawBody = req.rawBody;
   if (rawBody === undefined || rawBody.length === 0) {
-    logger.warn("stripeWebhook: rejected a delivery with no raw body to verify");
-    return { status: 400, body: "invalid signature" };
+    logger.error(
+      "stripeWebhook: delivery arrived with no raw body to verify; the runtime did not attach one"
+    );
+    return { status: 500, body: "no raw body" };
   }
 
   let event: StripeWebhookEvent;
@@ -778,18 +921,56 @@ export async function handleStripeWebhook(
       eventId: event.id,
       outcome: result.outcome,
       planWritten: result.planWritten ?? "none",
+      // Hashed, per the Global Constraint. Absent on an outcome that resolved
+      // no workspace at all (an unhandled type, or an out-of-scope payload) —
+      // there is nothing to correlate in that case.
+      workspaceHash: result.workspaceHash ?? "none",
     });
     return { status: 200, body: "ok" };
   } catch (err) {
-    logger.warn("stripeWebhook: verified delivery could not be applied; asking Stripe to retry", {
-      eventType: event.type,
-      eventId: event.id,
-      errorName: err instanceof Error ? err.name : typeof err,
-      // Only messages this file authored. A third-party error's message could
-      // contain anything, including a connection string.
-      detail: err instanceof StripeWebhookError ? err.message : undefined,
-    });
-    return { status: 500, body: "could not process event" };
+    // Split by ONE question: can a retry possibly help?
+    //
+    // Both of these classes are provably retry-proof. The event bytes are
+    // immutable, so a payload this endpoint cannot act on will not become
+    // actionable on the fourth delivery of the same bytes; and a deleted
+    // workspace is not coming back. Retrying either for three days achieves
+    // nothing — and, worse than nothing, feeds the consecutive-failure run
+    // that makes Stripe disable the endpoint. Losing the endpoint would lose
+    // every LATER event too, including the cancellations this file exists to
+    // apply. So they are acknowledged with a 200.
+    //
+    // 200 does not mean "ignore": each one is logged at ERROR, because an
+    // event this endpoint could not attribute may be a payment owed a
+    // customer, and with no retry left to surface it the log line is the only
+    // thing that will. ERROR specifically, because that is what a GCP alerting
+    // policy fires on.
+    //
+    // Everything else — a Firestore blip, transaction contention exhausted, an
+    // unexpected throw — keeps the 500. Those are exactly the cases where
+    // retrying IS the fix, and where a 2xx would discard a verified event.
+    //
+    // The two classes are named individually rather than matched on their
+    // shared `StripeWebhookError` base, so that adding a third subclass has to
+    // make this decision explicitly instead of inheriting "unretryable".
+    const unretryable =
+      err instanceof StripeWebhookPayloadError || err instanceof UnknownWorkspaceError;
+    logger.error(
+      unretryable
+        ? "stripeWebhook: verified delivery can never be applied; acknowledging it rather than risking the endpoint"
+        : "stripeWebhook: verified delivery could not be applied; asking Stripe to retry",
+      {
+        eventType: event.type,
+        eventId: event.id,
+        errorName: err instanceof Error ? err.name : typeof err,
+        // Only messages this file authored. A third-party error's message could
+        // contain anything, including a connection string.
+        detail: err instanceof StripeWebhookError ? err.message : undefined,
+        retryRequested: !unretryable,
+      }
+    );
+    return unretryable
+      ? { status: 200, body: "acknowledged" }
+      : { status: 500, body: "could not process event" };
   }
 }
 
