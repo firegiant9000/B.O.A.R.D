@@ -9,10 +9,12 @@ import {
 import { STRIPE_SECRET_KEY, STRIPE_PRO_PRICE_ID } from "../config";
 import type { Plan } from "../billing/limits";
 
-// Month 5 — starts a Stripe Checkout session that upgrades a workspace to
-// Pro. This is the first callable in the plan that lets a user actually pay
-// to lift the plan limits Tasks 2-7 enforce; the webhook that writes `plan`
-// from a completed checkout is a separate, later piece of work, not this one.
+// Month 5 — starts a Stripe Checkout session that is meant to upgrade a
+// workspace to Pro once paid, lifting the plan limits enforced in
+// functions/src/billing/limits.ts; the webhook that writes `plan` from a
+// completed checkout is a separate, later piece of work, not this one. There
+// is no Stripe account behind this yet — no product, no live price, no
+// webhook endpoint — so no payment actually completes anywhere today.
 //
 // The price ID is resolved entirely server-side from STRIPE_PRO_PRICE_ID
 // (functions/src/config.ts) — this request type carries no price field at

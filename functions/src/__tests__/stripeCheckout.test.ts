@@ -1,4 +1,4 @@
-import type Stripe from "stripe";
+import Stripe from "stripe";
 import { HttpsError } from "firebase-functions/v2/https";
 import { handleCreateCheckoutSession } from "../callable/createCheckoutSession";
 import {
@@ -27,8 +27,10 @@ const deps = (opts: { role?: string; plan?: unknown } = {}) => {
 
 describe("handleCreateCheckoutSession", () => {
   it("rejects an unauthenticated caller", async () => {
+    // Asserts the actual error code, not merely that something threw — a
+    // bare `.rejects.toThrow()` would also pass on an unrelated TypeError.
     await expect(handleCreateCheckoutSession(reqFor(undefined, { workspaceId: "ws1" }), deps()))
-      .rejects.toThrow();
+      .rejects.toMatchObject({ code: "unauthenticated" });
   });
 
   it("rejects a non-owner", async () => {
@@ -42,7 +44,10 @@ describe("handleCreateCheckoutSession", () => {
       .resolves.toEqual({ url: "https://checkout.stripe.test/s/1" });
   });
 
-  it("stamps the workspace id as client_reference_id", async () => {
+  it("passes the workspace id and the token's uid through to createSession", async () => {
+    // `client_reference_id` itself is a billing/stripe.ts-level detail (see
+    // the "createCheckoutSession (billing/stripe.ts)" tests below) — at the
+    // handler level, all that's observable is what reaches the dep.
     const d = deps();
     await handleCreateCheckoutSession(reqFor("u1", { workspaceId: "ws1" }), d);
     expect(d.createSession).toHaveBeenCalledWith(
@@ -153,6 +158,15 @@ describe("createCheckoutSession (billing/stripe.ts)", () => {
     expect(params.line_items).toEqual([{ price: "price_server_resolved", quantity: 1 }]);
     expect(params.client_reference_id).toBe("ws1");
     expect(params.metadata).toEqual({ workspaceId: "ws1", uid: "u1" });
+    // Load-bearing for a live call (Stripe's hosted Checkout rejects a
+    // session with no success_url at runtime, even though the TS types mark
+    // it optional for the embedded-ui_mode case this app doesn't use) — a
+    // later refactor that dropped these would break checkout with a Stripe
+    // 4xx and nothing here would go red without this assertion.
+    expect(typeof params.success_url).toBe("string");
+    expect(params.success_url).toBeTruthy();
+    expect(typeof params.cancel_url).toBe("string");
+    expect(params.cancel_url).toBeTruthy();
   });
 
   it("throws when Stripe returns a session with no url, instead of returning an empty URL", async () => {
@@ -162,5 +176,47 @@ describe("createCheckoutSession (billing/stripe.ts)", () => {
     await expect(
       createCheckoutSession(fakeStripe, "price_123", { workspaceId: "ws1", uid: "u1" })
     ).rejects.toMatchObject({ code: "internal" });
+  });
+
+  it("maps a StripeInvalidRequestError to a caller-safe failed-precondition, not a leaked Stripe message", async () => {
+    // Simulates a real misconfiguration Stripe would reject at the API level
+    // (an archived price, a one-time price used with mode: "subscription",
+    // ...) rather than something a fake client just makes up. The raw Stripe
+    // message can name the price id or key mode, so it must not reach the
+    // caller verbatim -- only the error CODE is asserted here.
+    const stripeErr = new Stripe.errors.StripeInvalidRequestError({
+      message: "This price is not a recurring price and cannot be used with mode=subscription.",
+      type: "invalid_request_error",
+    } as never);
+    const fakeStripe: StripeCheckoutClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn(async () => {
+            throw stripeErr;
+          }),
+        },
+      },
+    };
+
+    await expect(
+      createCheckoutSession(fakeStripe, "price_bad", { workspaceId: "ws1", uid: "u1" })
+    ).rejects.toMatchObject({ code: "failed-precondition" });
+  });
+
+  it("does not map a non-Stripe error, letting it propagate for the default internal scrub", async () => {
+    const networkErr = new Error("ECONNRESET");
+    const fakeStripe: StripeCheckoutClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn(async () => {
+            throw networkErr;
+          }),
+        },
+      },
+    };
+
+    await expect(
+      createCheckoutSession(fakeStripe, "price_123", { workspaceId: "ws1", uid: "u1" })
+    ).rejects.toBe(networkErr);
   });
 });

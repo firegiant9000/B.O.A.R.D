@@ -79,14 +79,32 @@ export async function createCheckoutSession(
   priceId: string,
   params: CreateCheckoutSessionParams
 ): Promise<{ url: string }> {
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    line_items: [{ price: priceId, quantity: 1 }],
-    client_reference_id: params.workspaceId,
-    metadata: { workspaceId: params.workspaceId, uid: params.uid },
-    success_url: CHECKOUT_SUCCESS_URL,
-    cancel_url: CHECKOUT_CANCEL_URL,
-  });
+  let session: { url: string | null };
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      line_items: [{ price: priceId, quantity: 1 }],
+      client_reference_id: params.workspaceId,
+      metadata: { workspaceId: params.workspaceId, uid: params.uid },
+      success_url: CHECKOUT_SUCCESS_URL,
+      cancel_url: CHECKOUT_CANCEL_URL,
+    });
+  } catch (err) {
+    // A malformed session request — an archived price, a one-time price used
+    // with mode: "subscription", a live/test key mismatch — is a server-side
+    // configuration problem, not something the caller did wrong, and not
+    // something worth exposing (Stripe's raw message can name the price id
+    // or key mode). Map it to one caller-safe, non-leaking message; anything
+    // else (network errors, rate limits, ...) propagates unchanged, which
+    // firebase-functions scrubs to a bare `internal` for the caller.
+    if (err instanceof Stripe.errors.StripeInvalidRequestError) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Checkout is temporarily unavailable. Please try again later."
+      );
+    }
+    throw err;
+  }
 
   if (!session.url) {
     throw new HttpsError("internal", "Stripe did not return a checkout URL.");
