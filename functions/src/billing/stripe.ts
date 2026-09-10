@@ -25,9 +25,10 @@ const STRIPE_API_VERSION: Stripe.LatestApiVersion = "2026-08-26.dahlia";
 // used to point at boardapp://billing/success and boardapp://billing/cancel
 // — the app's custom URL scheme (APP_SCHEME in src/lib/deepLinks.ts) — from
 // back when no billing screen existed anywhere in the app. That screen now
-// exists (app/pricing.web.tsx, Month 5/6), and it is reachable ONLY on web
-// (see that file's header): checkout itself is started only from that page,
-// via src/services/billingService.ts#startCheckout, so a customer who just
+// exists (app/pricing.tsx, Month 5/6, rendering src/components/
+// PricingBody.tsx on web only — see those files' headers): checkout itself
+// is started only from that page, via
+// src/services/billingService.ts#startCheckout, so a customer who just
 // completed (or canceled) a hosted Checkout session was, by construction,
 // already in a web browser. Redirecting them to a custom URL scheme instead
 // of back to that web page would either prompt an unwanted "open app?"
@@ -41,9 +42,9 @@ const STRIPE_API_VERSION: Stripe.LatestApiVersion = "2026-08-26.dahlia";
 // alongside that constant once a real domain is provisioned.
 // `{CHECKOUT_SESSION_ID}` is a literal Stripe template token; Stripe
 // substitutes it, this code does not. The `?checkout=success|cancel` query
-// param is read by app/pricing.web.tsx to show an honest, non-committal
-// banner — it does not claim the plan already changed, since that write
-// happens asynchronously via the webhook (functions/src/http/
+// param is read by src/components/PricingBody.tsx to show an honest,
+// non-committal banner — it does not claim the plan already changed, since
+// that write happens asynchronously via the webhook (functions/src/http/
 // stripeWebhook.ts), not via this redirect.
 const CHECKOUT_REDIRECT_DOMAIN = "boardapp.example.com";
 const CHECKOUT_SUCCESS_URL = `https://${CHECKOUT_REDIRECT_DOMAIN}/pricing?checkout=success&session_id={CHECKOUT_SESSION_ID}`;

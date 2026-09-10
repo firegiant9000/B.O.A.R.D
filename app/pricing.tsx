@@ -1,45 +1,29 @@
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import PricingBody from "../src/components/PricingBody";
 
-// Platform-extension FALLBACK, required by expo-router's own route-tree
-// resolution — NOT a design choice made here. expo-router (getRoutesCore.js
-// in this project's installed version) requires every route that has a
-// platform-suffixed sibling (the web-only variant of this route) to also
-// have a file with no platform extension; the web-only file with no bare
-// sibling throws "does not have a fallback sibling file without a platform
-// extension" at route-tree build time — verified empirically against this
-// exact package version (see the task report), not assumed from the
-// framework's naming convention alone. This file IS what a native build
-// resolves for this route: the web-only variant overrides it only on web.
+// A SINGLE bare route — deliberately not split into pricing.tsx +
+// pricing.web.tsx. That earlier layout was reviewed and found to leak the
+// real, cost-figure-bearing page into the native bundle: expo-router discovers
+// routes via a Metro `require.context` that is NOT platform-filtered (its
+// generated context module emits a literal `require("./pricing.web.tsx")`
+// regardless of target platform), unlike Metro's ordinary MODULE
+// resolution, which genuinely excludes a `.native`/bare counterpart when
+// something is imported by name. A `.web.tsx` ROUTE file is reachable code
+// in every bundle even though expo-router only ever navigates to it on web —
+// "unreachable" is not "absent", and the plan's compliance property is
+// about the binary's contents, not just what a user can tap to.
 //
-// Because this file IS reachable from a native build, it must carry the
-// same store-compliance invariant as src/components/UpsellModal.native.tsx
-// (see that file's header comment): no cost figure, no currency amount, no
-// external-purchase affordance, no billing-service import, nothing that
-// could read as facilitating a purchase from outside the native binary. The
-// route it stands in for is never linked to from anywhere in this app's
-// native navigation — there is no button, tab, or menu item that pushes it
-// on iOS/Android — so this only renders if something opens the matching URL
-// directly (e.g. a stray deep link).
-export default function PricingNotAvailable() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.text}>Pricing isn't available in the app.</Text>
-    </View>
-  );
+// The fix: keep routing platform-agnostic (one route, no platform
+// extension — so the mandatory-fallback-sibling requirement documented on
+// the old pricing.tsx never applies either) and push the platform split
+// down to a plain, IMPORTED component, where Metro's real per-platform
+// module resolution takes over — the exact mechanism
+// src/components/UpsellModal.tsx / UpsellModal.native.tsx already uses and
+// that a native build genuinely cannot see the web sibling for. See
+// src/components/PricingBody.tsx (web body, the bare/default file Metro
+// resolves for any non-native platform) and
+// src/components/PricingBody.native.tsx (native body — no cost figure or
+// external-purchase affordance, same invariant as UpsellModal.native.tsx)
+// for the actual content.
+export default function Pricing() {
+  return <PricingBody />;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: "#fff",
-  },
-  text: {
-    fontSize: 15,
-    color: "#374151",
-    textAlign: "center",
-  },
-});

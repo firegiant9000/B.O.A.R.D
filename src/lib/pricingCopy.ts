@@ -2,17 +2,21 @@ import { PLAN_LIMITS, UNLIMITED, type PlanLimits } from "./planLimits";
 import type { Plan } from "../types";
 
 // Shared, price-bearing pricing copy — read by BOTH web-only billing
-// surfaces: the pricing page (app/pricing.web.tsx) and the web upsell modal
+// surfaces: the pricing page (app/pricing.tsx renders
+// src/components/PricingBody.tsx on web) and the web upsell modal
 // (src/components/UpsellModal.tsx). Consolidated into one file so those two
 // surfaces can never drift into quoting two different placeholder prices —
 // the same reasoning the plan gives for limits ("a page that disagrees with
 // the enforced limits is worse than no page") applies just as much to price.
 //
-// This module must NEVER be imported by src/components/UpsellModal.native.tsx
-// or src/components/upsellCopy.ts — see UpsellModal.native.tsx's own header
-// comment for the store-compliance invariant (no price, no checkout
-// affordance, reachable from a native build) this file's PRICE constant
-// would violate if it ever reached that file's import graph.
+// This module must NEVER be imported by src/components/UpsellModal.native.tsx,
+// src/components/PricingBody.native.tsx, or src/components/upsellCopy.ts —
+// see UpsellModal.native.tsx's own header comment for the store-compliance
+// invariant (no price, no checkout affordance, reachable from a native
+// build) this file's PRICE constant would violate if it ever reached any of
+// those files' import graphs. Guarded by tests in
+// src/lib/__tests__/pricingCopy.test.ts and
+// src/components/__tests__/PricingBody.test.tsx.
 //
 // Every LIMIT figure below is read from PLAN_LIMITS (src/lib/planLimits.ts),
 // never retyped as a literal — see describeCount/planFeatures. The one
@@ -28,6 +32,46 @@ import type { Plan } from "../types";
 // placeholder) so a future price change is a one-line edit, not a hunt
 // across files that may have drifted apart in the meantime.
 export const PENDING_PRO_PRICE_LABEL = "$5/month";
+
+/** User-VISIBLE caveat shown beside the Pro price on the pricing page —
+ *  deliberately not left as a code comment nobody but a developer reads. A
+ *  pricing page is exactly the surface where an unqualified number reads as
+ *  a done deal; this string exists so it doesn't. Update alongside
+ *  PENDING_PRO_PRICE_LABEL once a real price is approved (Gate G4). */
+export const PRICE_PROVISIONAL_NOTE = "Pricing is provisional and not final.";
+
+/** Whether Stripe checkout is actually live. Hard-coded `false` — this is
+ *  NOT an environment-configurable flag (there is exactly one Stripe
+ *  account this app will ever have, or none), just a single switch flipped
+ *  by hand once Gate G3 (a real Stripe account: an API key, a product, a
+ *  live price, a registered webhook — see src/services/billingService.ts's
+ *  module header) is actually met. Consumers (src/components/
+ *  PricingBody.tsx) must gate the checkout CTA on this rather than
+ *  presenting a button that looks like a working purchase when nothing is
+ *  behind it — the account not existing is a fact about the world, not a
+ *  per-deploy setting, so this is not read from `EXPO_PUBLIC_*`. */
+export const BILLING_LIVE = false;
+
+/** Whether the Pro checkout action may actually be pressed. Pure function
+ *  (no rendering) so both branches are unit-testable directly, including
+ *  the one — `billingLive: true` — that today's real `BILLING_LIVE` never
+ *  reaches: this precedence is meant to already be correct for the day
+ *  `BILLING_LIVE` flips, not just for today's `false`. */
+export function canCheckoutNow(billingLive: boolean, hasWorkspace: boolean): boolean {
+  return billingLive && hasWorkspace;
+}
+
+/** The Pro card's checkout button label for the given state. "Not live" is
+ *  checked before "no workspace" because it's the more fundamental
+ *  blocker — independent of which workspace (if any) is active, there is
+ *  still no Stripe account for a checkout to reach (Gate G3). Never returns
+ *  a label that reads as a working purchase unless `canCheckoutNow` for the
+ *  same two inputs is also true. */
+export function checkoutCtaLabel(billingLive: boolean, hasWorkspace: boolean): string {
+  if (!billingLive) return "Checkout isn't available yet";
+  if (!hasWorkspace) return "Sign in to a workspace to upgrade";
+  return "Upgrade to Pro";
+}
 
 /** Renders a PLAN_LIMITS count as display copy, spelling out the UNLIMITED
  *  sentinel (`Number.POSITIVE_INFINITY` — see planLimits.ts) as the word
@@ -70,6 +114,10 @@ export interface PlanCardCopy {
   id: Plan;
   label: string;
   priceLabel: string;
+  /** User-visible caveat rendered directly beside `priceLabel`. Only the
+   *  Pro card carries one today — Free's "Free" and Edu's "Granted to
+   *  verified schools" are not numeric placeholders needing a caveat. */
+  priceNote?: string;
   tagline: string;
   features: string[];
   /** Only Pro carries a checkout action. Free is what a new workspace
@@ -99,6 +147,7 @@ export const PLAN_CARDS: PlanCardCopy[] = [
     id: "pro",
     label: "Pro",
     priceLabel: PENDING_PRO_PRICE_LABEL,
+    priceNote: PRICE_PROVISIONAL_NOTE,
     tagline: "For teams that have outgrown the free limits.",
     features: planFeatures("pro"),
     ctaLabel: "Upgrade to Pro",

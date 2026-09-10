@@ -1,7 +1,28 @@
 import fs from "fs";
 import path from "path";
 import { PLAN_LIMITS, UNLIMITED } from "../planLimits";
-import { PLAN_CARDS, PENDING_PRO_PRICE_LABEL, planFeatures } from "../pricingCopy";
+import {
+  PLAN_CARDS,
+  PENDING_PRO_PRICE_LABEL,
+  PRICE_PROVISIONAL_NOTE,
+  BILLING_LIVE,
+  planFeatures,
+  canCheckoutNow,
+  checkoutCtaLabel,
+} from "../pricingCopy";
+
+// Files that must never import this module at all — each carries the same
+// store-compliance invariant as UpsellModal.native.tsx (no price, no
+// checkout affordance, reachable from a native build). Single-file source
+// scans, not an import-graph walk: a price reaching a native-reachable file
+// THROUGH one of these would be caught by nothing else, which is exactly
+// why upsellCopy.ts is listed even though PricingBody.native.tsx doesn't
+// import it either — the guard is what keeps both facts true.
+const MUST_NEVER_IMPORT_PRICING_COPY: Array<[label: string, relPath: string]> = [
+  ["UpsellModal.native.tsx", "../../components/UpsellModal.native.tsx"],
+  ["upsellCopy.ts", "../../components/upsellCopy.ts"],
+  ["PricingBody.native.tsx", "../../components/PricingBody.native.tsx"],
+];
 
 describe("planFeatures — driven by PLAN_LIMITS, never retyped", () => {
   it("renders the free tier's boards and sessions limits verbatim from PLAN_LIMITS", () => {
@@ -100,11 +121,64 @@ describe("PENDING_PRO_PRICE_LABEL — the single source of truth for the placeho
     expect(source).not.toMatch(/const\s+PENDING_PRO_PRICE_LABEL\s*=/);
   });
 
-  it("UpsellModal.native.tsx never imports pricingCopy.ts (it must carry no price — see that file's header)", () => {
-    const source = fs.readFileSync(
-      path.join(__dirname, "../../components/UpsellModal.native.tsx"),
-      "utf8"
-    );
-    expect(source).not.toMatch(/pricingCopy/);
+  it.each(MUST_NEVER_IMPORT_PRICING_COPY)(
+    "%s never imports pricingCopy.ts (it must carry no price — see that file's header)",
+    (_label, relPath) => {
+      const source = fs.readFileSync(path.join(__dirname, relPath), "utf8");
+      expect(source).not.toMatch(/pricingCopy/);
+    }
+  );
+});
+
+describe("BILLING_LIVE and PRICE_PROVISIONAL_NOTE — no button may present as a working purchase while G3/G4 are unmet", () => {
+  it("BILLING_LIVE is false — there is no live Stripe account behind this app yet", () => {
+    // Not `expect(...).toBeFalsy()`: a `false` boolean is the ONLY value
+    // that renders "false" as gating-code intent — this must be a real
+    // gate, not an undefined/empty-string stand-in that a strict `!==
+    // false` check elsewhere would treat as truthy.
+    expect(BILLING_LIVE).toBe(false);
+  });
+
+  it("the Pro card carries a user-visible provisional-pricing note; Free and Edu (non-numeric prices) do not", () => {
+    expect(PLAN_CARDS.find((c) => c.id === "pro")?.priceNote).toBe(PRICE_PROVISIONAL_NOTE);
+    expect(PLAN_CARDS.find((c) => c.id === "free")?.priceNote).toBeUndefined();
+    expect(PLAN_CARDS.find((c) => c.id === "edu")?.priceNote).toBeUndefined();
+  });
+
+  it("the provisional note actually says the price isn't final, not just something non-empty", () => {
+    expect(PRICE_PROVISIONAL_NOTE).toMatch(/provisional|not final|subject to change/i);
+  });
+});
+
+describe("canCheckoutNow / checkoutCtaLabel — the CTA gate, unit-tested independently of any rendering or of today's real BILLING_LIVE value", () => {
+  it("never permits checkout while billing isn't live, with or without a workspace", () => {
+    expect(canCheckoutNow(false, true)).toBe(false);
+    expect(canCheckoutNow(false, false)).toBe(false);
+  });
+
+  it("permits checkout only once billing is live AND a workspace is active", () => {
+    expect(canCheckoutNow(true, false)).toBe(false);
+    expect(canCheckoutNow(true, true)).toBe(true);
+  });
+
+  it("labels the button honestly for each of the three reachable states, never claiming it works when canCheckoutNow says it can't", () => {
+    expect(checkoutCtaLabel(false, true)).toMatch(/not.*available|isn't available/i);
+    expect(checkoutCtaLabel(false, false)).toMatch(/not.*available|isn't available/i);
+    expect(checkoutCtaLabel(true, false)).toMatch(/sign in|workspace/i);
+    expect(checkoutCtaLabel(true, true)).toBe("Upgrade to Pro");
+  });
+
+  it("every label EXCEPT the one for the fully-permitted state differs from the real 'Upgrade to Pro' action text", () => {
+    // Guards against a future edit accidentally making the "not live" or
+    // "no workspace" label collide with the live, working button's own
+    // text — which would make the two indistinguishable to a user.
+    expect(checkoutCtaLabel(false, true)).not.toBe("Upgrade to Pro");
+    expect(checkoutCtaLabel(false, false)).not.toBe("Upgrade to Pro");
+    expect(checkoutCtaLabel(true, false)).not.toBe("Upgrade to Pro");
+  });
+
+  it("today's real BILLING_LIVE denies checkout regardless of workspace state, and the button says so", () => {
+    expect(canCheckoutNow(BILLING_LIVE, true)).toBe(false);
+    expect(checkoutCtaLabel(BILLING_LIVE, true)).toBe("Checkout isn't available yet");
   });
 });

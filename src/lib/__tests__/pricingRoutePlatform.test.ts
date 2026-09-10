@@ -1,46 +1,47 @@
 import fs from "fs";
 import path from "path";
 // The EXACT function expo-router's own runtime calls to build the route
-// tree — functions/build/global-state/router-store.js's `useStore` calls
+// tree — expo-router/build/global-state/router-store.js's `useStore` calls
 // `getRoutes_1.getRoutes(context, { ...config, skipGenerated: true,
 // ignoreEntryPoints: true, platform: Platform.OS, preserveRedirectAndRewrites:
 // true })`. This test calls the identical function with the identical
-// option shape (confirmed by reading that file — see the task report), not
-// a hand-rolled substitute, so a false pass here would mean expo-router
-// itself is broken, not this test.
+// option shape, not a hand-rolled substitute.
 import { getRoutes } from "expo-router/build/getRoutes";
 import type { RequireContext } from "expo-router/build/types";
 
-// This is the empirical verification the task explicitly asked for: does
-// expo-router honour a platform-extension route file (`pricing.web.tsx`) in
-// THIS installed version (expo-router 55.0.7), and — the property that
-// actually matters for store compliance — can a native build ever resolve
-// the real, price-bearing page?
+// PRIOR LAYOUT (superseded — kept here as institutional memory, not
+// current behavior): this suite used to prove that `pricing.web.tsx`
+// resolved only on a web platform and `pricing.tsx` only on native,
+// relying on expo-router's per-platform ROUTE resolution. Review caught
+// that this was the wrong layer to split on: expo-router discovers routes
+// via a Metro `require.context` that is NOT platform-filtered (its
+// generated context module — expo-router/_ctx.ios.js — matches
+// `pricing.web.tsx` on an iOS build too, and Metro's context-file matching
+// takes no `platform` parameter), so a `.web.tsx` ROUTE file is bundled
+// into a native build as dead-but-present code even though expo-router
+// never navigates to it there. "Unreachable" is not "absent" — the plan's
+// compliance property is about the binary's contents.
 //
-// The answer this test proves is NOT the naive one. Probing getRoutes
-// directly (see the task report) showed that a `.web.tsx` file with NO bare
-// sibling throws at route-tree build time — "The file ./pricing.web.tsx
-// does not have a fallback sibling file without a platform extension" — on
-// the WEB build itself, not just on native. expo-router requires a
-// non-platform-suffixed fallback file to exist for every platform-suffixed
-// route. app/pricing.tsx is that mandatory fallback, and because expo-router
-// resolves it as the ONLY candidate for iOS/Android (pricing.web.tsx is
-// skipped for any platform that doesn't match "web"/"native"), that fallback
-// file IS what a native build resolves for `/pricing` — so it must itself
-// carry the same no-price/no-checkout invariant as
-// src/components/UpsellModal.native.tsx. This test verifies BOTH halves:
-// which file resolves per platform, AND that whichever one resolves for a
-// native build is safe.
+// CURRENT LAYOUT: a single, platform-agnostic route, `app/pricing.tsx`,
+// which renders an IMPORTED component (`src/components/PricingBody.tsx` /
+// `PricingBody.native.tsx`) — Metro's real per-platform MODULE resolution
+// (not expo-router's route discovery) is what genuinely excludes the web
+// body from a native bundle, the same mechanism
+// src/components/UpsellModal.tsx / UpsellModal.native.tsx already relies
+// on (see src/components/__tests__/UpsellModal.test.tsx and
+// PricingBody.test.tsx for that proof). This file now verifies the
+// route-tree half of that claim: there is exactly one route file for
+// `pricing`, it has no platform extension, and it resolves identically on
+// every platform — i.e., the vulnerable layout has not crept back in.
 
 const APP_DIR = path.join(__dirname, "../../../app");
 
 /** Builds a Metro-shaped `RequireContext` from the REAL files on disk under
  *  app/ — not a synthetic fixture — so this test tracks the actual route
- *  tree this app ships, the same way Metro's generated context would.
- *  `loadRoute` is never invoked by anything this test calls (see the
- *  `getRoutes` options below), so the context function itself never needs
- *  to actually load a module. */
-function realAppContext() {
+ *  tree this app ships. `loadRoute` is never invoked by anything this test
+ *  calls, so the context function itself never needs to actually load a
+ *  module. */
+function realAppContext(): RequireContext {
   const keys: string[] = [];
   const walk = (dir: string, prefix: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -61,9 +62,6 @@ function realAppContext() {
 }
 
 function routesForPlatform(platform: "web" | "ios" | "android") {
-  // Same option shape router-store.js passes at runtime (see header
-  // comment), aside from `config` (this app's app.json has no
-  // `expo.extra.router` overrides to spread in).
   const tree = getRoutes(realAppContext(), {
     skipGenerated: true,
     ignoreEntryPoints: true,
@@ -74,50 +72,26 @@ function routesForPlatform(platform: "web" | "ios" | "android") {
   return tree.children;
 }
 
-// Matches the same "no payment content anywhere in source" invariant
-// src/components/__tests__/UpsellModal.test.tsx enforces on
-// UpsellModal.native.tsx — reused here against whichever file resolves for
-// the `pricing` route on a native platform.
-const NO_PAYMENT_CONTENT = /\$(?!\{)|https?:|stripe|checkout|price/i;
-
-describe("the `pricing` route — platform-extension resolution, verified against this project's actual installed expo-router (not assumed)", () => {
-  it("on a web build, resolves to app/pricing.web.tsx — the real, price-bearing page", () => {
-    const pricing = routesForPlatform("web").find((r) => r.route === "pricing");
-    expect(pricing).toBeDefined();
-    expect(pricing!.contextKey).toBe("./pricing.web.tsx");
+describe("the `pricing` route — a single, platform-agnostic route file (not split by a `.web` route extension)", () => {
+  it("app/pricing.web.tsx does not exist — the layout review found unsafe", () => {
+    expect(fs.existsSync(path.join(APP_DIR, "pricing.web.tsx"))).toBe(false);
   });
 
-  it.each(["ios", "android"] as const)(
-    "on a %s build, never resolves app/pricing.web.tsx for the `pricing` route",
-    (platform) => {
-      const pricing = routesForPlatform(platform).find((r) => r.route === "pricing");
-      // Either no `pricing` route exists at all for this platform, or (since
-      // app/pricing.tsx is a mandatory fallback — see header comment) it
-      // resolves to that bare file — never the `.web` one.
-      if (pricing) {
-        expect(pricing.contextKey).not.toMatch(/\.web\.tsx$/);
-      }
-    }
-  );
-
-  it.each(["ios", "android"] as const)(
-    "whatever file DOES resolve for `pricing` on a %s build contains no price, checkout, or Stripe reference in its source — the property that actually matters, independent of filename",
-    (platform) => {
-      const pricing = routesForPlatform(platform).find((r) => r.route === "pricing");
-      if (!pricing) return; // no route at all is equally compliant
-      const filePath = path.join(APP_DIR, pricing.contextKey.replace(/^\.\//, ""));
-      const source = fs.readFileSync(filePath, "utf8");
-      expect(source).not.toMatch(NO_PAYMENT_CONTENT);
-      expect(source.toLowerCase()).not.toContain("billingservice");
-    }
-  );
-
-  it("app/pricing.tsx (the mandatory fallback) is a real file on disk — expo-router throws without it", () => {
-    // Guards the premise the rest of this suite depends on: without this
-    // file, `routesForPlatform("web")` above would throw "does not have a
-    // fallback sibling file without a platform extension" instead of
-    // returning a tree to inspect at all (verified in the task report).
+  it("app/pricing.tsx exists and carries no platform extension", () => {
     expect(fs.existsSync(path.join(APP_DIR, "pricing.tsx"))).toBe(true);
-    expect(fs.existsSync(path.join(APP_DIR, "pricing.web.tsx"))).toBe(true);
+  });
+
+  it.each(["web", "ios", "android"] as const)(
+    "resolves the `pricing` route to app/pricing.tsx on a %s build — the SAME file on every platform",
+    (platform) => {
+      const pricing = routesForPlatform(platform).find((r) => r.route === "pricing");
+      expect(pricing).toBeDefined();
+      expect(pricing!.contextKey).toBe("./pricing.tsx");
+    }
+  );
+
+  it("app/pricing.tsx itself contains no price, checkout, or Stripe reference — the platform split lives one layer down, in the component it renders", () => {
+    const source = fs.readFileSync(path.join(APP_DIR, "pricing.tsx"), "utf8");
+    expect(source).not.toMatch(/\$(?!\{)|https?:|stripe|checkout|price/i);
   });
 });
