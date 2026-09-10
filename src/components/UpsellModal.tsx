@@ -16,6 +16,7 @@ import {
   RESOURCE_LABEL,
   type UpsellModalProps,
 } from "./upsellCopy";
+import { PENDING_PRO_PRICE_LABEL } from "../lib/pricingCopy";
 import type { Plan } from "../types";
 
 // Web body of the plan-limit upsell — the platform-extension DEFAULT (bare
@@ -30,15 +31,12 @@ import type { Plan } from "../types";
 // G3 (no live Stripe account) and G4 (no decided price) are both unmet as of
 // this writing. `startCheckout`/`openBillingPortal` are real calls into
 // billingService, but nothing in this app has ever exercised a live Stripe
-// redirect. PENDING_PRO_PRICE_LABEL below is a placeholder, not an approved
-// price — see its own comment.
+// redirect. PENDING_PRO_PRICE_LABEL is a placeholder, not an approved price —
+// imported from src/lib/pricingCopy.ts (also read by app/pricing.web.tsx) so
+// this modal and the pricing page can never quote two different figures; see
+// that constant's own comment.
 
 export type { UpsellModalProps };
-
-// PLACEHOLDER — Gate G4 (pricing) is unmet; no price has been approved. This
-// value is not a business decision made here; a later, pricing-owning task
-// must replace this single constant once a real price is approved.
-const PENDING_PRO_PRICE_LABEL = "$5/month";
 
 interface CheckoutError {
   message: string;

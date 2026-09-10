@@ -157,6 +157,12 @@ function RootNavigator() {
       <Stack.Screen name="notifications" options={{ presentation: "modal" }} />
       {/* Read-only AI usage / cost telemetry page (Month 4, Phase 2). */}
       <Stack.Screen name="ai-usage" options={{ presentation: "modal" }} />
+      {/* Pricing (Month 5/6). Route name only — no price or checkout logic
+          lives here. Which physical file backs it is platform-dependent:
+          app/pricing.web.tsx (the real page) on web, app/pricing.tsx (a
+          price-free fallback expo-router requires) on iOS/Android — see
+          those files' headers. */}
+      <Stack.Screen name="pricing" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

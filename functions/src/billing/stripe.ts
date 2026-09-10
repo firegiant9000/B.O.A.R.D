@@ -21,14 +21,33 @@ import { HttpsError } from "firebase-functions/v2/https";
  *  here is a compile error, not a silent mismatch. */
 const STRIPE_API_VERSION: Stripe.LatestApiVersion = "2026-08-26.dahlia";
 
-// Placeholder redirect targets. No billing screen exists in the app yet (that
-// is a later task's job), so these point at the same custom URL scheme the
-// rest of the app already uses for deep links (APP_SCHEME in
-// src/lib/deepLinks.ts) rather than a real route. They are not wired to any
-// screen today — update them here once one exists. `{CHECKOUT_SESSION_ID}` is
-// a literal Stripe template token; Stripe substitutes it, this code does not.
-const CHECKOUT_SUCCESS_URL = "boardapp://billing/success?session_id={CHECKOUT_SESSION_ID}";
-const CHECKOUT_CANCEL_URL = "boardapp://billing/cancel";
+// Redirect targets Stripe sends a customer to after hosted Checkout. These
+// used to point at boardapp://billing/success and boardapp://billing/cancel
+// — the app's custom URL scheme (APP_SCHEME in src/lib/deepLinks.ts) — from
+// back when no billing screen existed anywhere in the app. That screen now
+// exists (app/pricing.web.tsx, Month 5/6), and it is reachable ONLY on web
+// (see that file's header): checkout itself is started only from that page,
+// via src/services/billingService.ts#startCheckout, so a customer who just
+// completed (or canceled) a hosted Checkout session was, by construction,
+// already in a web browser. Redirecting them to a custom URL scheme instead
+// of back to that web page would either prompt an unwanted "open app?"
+// dialog or fail outright on a device with the app not installed — the
+// dangling behavior this comment used to warn about, just moved one step
+// later instead of fixed. These now point back at that page's own https
+// route, using the same placeholder-domain convention `getLinkDomain()` /
+// `LINK_DOMAIN_PLACEHOLDER` already establishes in src/lib/deepLinks.ts
+// (functions/ cannot import from the app's src/ tree, so this is the same
+// literal value kept in sync by convention, not by a shared import) — update
+// alongside that constant once a real domain is provisioned.
+// `{CHECKOUT_SESSION_ID}` is a literal Stripe template token; Stripe
+// substitutes it, this code does not. The `?checkout=success|cancel` query
+// param is read by app/pricing.web.tsx to show an honest, non-committal
+// banner — it does not claim the plan already changed, since that write
+// happens asynchronously via the webhook (functions/src/http/
+// stripeWebhook.ts), not via this redirect.
+const CHECKOUT_REDIRECT_DOMAIN = "boardapp.example.com";
+const CHECKOUT_SUCCESS_URL = `https://${CHECKOUT_REDIRECT_DOMAIN}/pricing?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
+const CHECKOUT_CANCEL_URL = `https://${CHECKOUT_REDIRECT_DOMAIN}/pricing?checkout=cancel`;
 
 export interface CreateCheckoutSessionParams {
   workspaceId: string;
