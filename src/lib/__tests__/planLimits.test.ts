@@ -19,9 +19,18 @@ describe("planLimits mirror", () => {
     const limitEnd = src.indexOf("};", limitStart) + 2;
     const limitSource = src.substring(limitStart, limitEnd);
 
-    // Extract each plan's block and parse its resources
-    const plans = ["free", "pro", "edu"];
-    for (const plan of plans) {
+    // Discover plan blocks from the source by finding top-level plan: { patterns
+    // Match lines with whitespace + plan_name + colon + brace
+    const planBlockMatches = Array.from(
+      limitSource.matchAll(/^\s*(\w+):\s*\{/gm)
+    );
+    const discoveredPlans = planBlockMatches.map((m) => m[1]);
+
+    // Guard: fail if parser found nothing (indicates parse failure or malformed table)
+    expect(discoveredPlans.length).toBeGreaterThan(0);
+
+    // Extract each discovered plan's block and parse its resources
+    for (const plan of discoveredPlans) {
       const blockStart = limitSource.indexOf(`${plan}: {`);
       const blockEnd = limitSource.indexOf("}", blockStart);
       const blockSource = limitSource.substring(blockStart, blockEnd);
