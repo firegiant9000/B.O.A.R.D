@@ -1,13 +1,22 @@
 // ⚠️ ADVISORY ONLY — NOT AN ENFORCEMENT POINT.
 //
-// This module exists so the UI can warn a user *before* a create fails. The real
-// gate lives server-side: board/session creates go through Cloud Function
-// callables (functions/src/callable/createBoard.ts, createSession.ts) and
-// firestore.rules denies direct client creates. AI is gated in
-// functions/src/ai/usage.ts#checkAiQuota.
+// This module exists so the UI can warn a user *before* a create fails.
 //
-// Never add a limit here and consider it enforced. A patched bundle skips this
-// file entirely; that is exactly why the M5 enforcement moved.
+// AI calls ARE gated server-side today: functions/src/ai/usage.ts#checkAiQuota
+// reads the workspace's plan and period usage and denies past the cap.
+//
+// Board and session limits are NOT enforced server-side yet. As of this
+// writing, firestore.rules lets a signed-in workspace member create a board
+// or session directly with no count or plan condition, and nothing else
+// intercepts either create path — so the `boards` / `sessionsPerPeriod`
+// numbers this module compares against are backed by nothing server-side.
+// A create-time server check and a matching rules denial for both are
+// expected on this branch later; when they land, update this comment to say
+// so rather than trusting this note to still be accurate.
+//
+// Never add a limit here and consider it enforced without independently
+// confirming the server side actually denies it. A patched bundle skips this
+// file entirely.
 
 import { limitFor } from "../lib/planLimits";
 import type { Plan } from "../types";
@@ -66,6 +75,13 @@ export async function checkQuota(
  * advisory pre-flight above thinks the quota is exhausted. This is UX only —
  * catching or not catching this error changes nothing about server
  * enforcement, which happens independently in the callable / `checkAiQuota`.
+ *
+ * TODO(quota-wiring): the production call sites (`boardService.createBoard`,
+ * `sessionService.createSession`) currently call this with 2 args, so `plan`
+ * and `currentCount` fall back to `"free"`/`0` and `checkQuota` always
+ * evaluates `0 < limit` -> true. The comparison logic above is exercised only
+ * by this file's own tests until those call sites are wired to pass the
+ * workspace's real plan and current count.
  */
 export async function assertQuota(
   workspaceId: string,

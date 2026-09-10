@@ -1,4 +1,6 @@
 import type { Firestore } from "firebase-admin/firestore";
+import { logger } from "firebase-functions/v2";
+import { createHash } from "node:crypto";
 import type { ChatUsage } from "./provider";
 import { limitFor, type Plan } from "../billing/limits";
 
@@ -163,56 +165,35 @@ export async function recordAiUsage(
   return { period, costUsd };
 }
 
+/** First 16 hex chars of a sha256 of `workspaceId`, for logging without
+ *  transmitting the raw identifier (Global Constraint: hashed workspace id
+ *  only, never a raw id or user identifier). */
+function hashWorkspaceId(workspaceId: string): string {
+  return createHash("sha256").update(workspaceId).digest("hex").slice(0, 16);
+}
+
 /**
- * Pure quota comparison, split out for unit testing without Firestore. A
- * missing/unknown plan is passed through as `"free"` before reaching `limitFor`,
- * which *also* falls back to `free` for anything it doesn't recognize — so a
- * corrupt or future plan value fails closed twice over, not by accident.
- *
- * `callsThisPeriod < limit` (rather than `>= limit` for the block case) is the
- * deliberate direction: pro/edu are `UNLIMITED` (`Infinity`), and
- * `anything < Infinity` is always `true` with no special-casing needed. Callers
- * must still pass an already-guarded, finite `callsThisPeriod` — see
- * `checkAiQuota` below — since comparing a corrupt value here is not a
- * substitute for validating it at the read site.
+ * Pure quota comparison, split out for unit testing without Firestore.
+ * `callsThisPeriod < limit` is deliberately branch-free for `UNLIMITED`
+ * (`Infinity`): `anything < Infinity` is always `true`, so pro/edu need no
+ * special case. A missing/unrecognized plan reaches `limitFor` as `"free"`.
  */
 export function isWithinAiQuota(plan: Plan | undefined, callsThisPeriod: number): boolean {
   return callsThisPeriod < limitFor((plan ?? "free") as Plan, "aiCallsPerPeriod");
 }
 
 /**
- * Function-side AI quota gate (Month 4 Phase 2 seam, live as of M5). Reads the
- * live period counter *and* the workspace's plan, then denies past the cap.
- * The in-function token-bucket (rateLimit.ts) + dashboard caps remain an
- * additional backstop; this is now the actual quota enforcement point — the
- * client `quotaService` is advisory only (see its module header).
+ * Function-side AI quota gate, live as of M5. Reads the live period counter
+ * *and* the workspace's plan, then denies past the cap; this is now the real
+ * enforcement point (the client `quotaService` is advisory only).
  *
- * Two different "the data isn't there" cases are deliberately given different
- * fail-closed defaults, not the same one:
- *   - No usage doc (or the doc exists but never got a `calls` field) genuinely
- *     means zero AI calls so far this period — 0 is the correct reading, not a
- *     fallback.
- *   - A `calls` field that exists but isn't a finite number (`NaN` — a legal
- *     Firestore double — a string, etc.) is corrupt data, and defaulting THAT
- *     to 0 would be the exact fail-open trap this task calls out: a counter
- *     that gets corrupted and never self-heals (`recordAiUsage`'s
- *     accumulation is `base.calls + 1`, so once `calls` is `NaN` it stays
- *     `NaN` forever) would then read as "0 calls" on every single check,
- *     forever, silently granting unlimited AI to a free workspace. So corrupt
- *     data instead fails closed to `Number.POSITIVE_INFINITY` — guaranteed to
- *     land on the deny side of `isWithinAiQuota`'s `< limit` comparison for
- *     every *finite* plan limit, with no knowledge of which plan is in play
- *     required at this read site.
- * `typeof x === "number" && Number.isFinite(x)` is required (not
- * `Number.isFinite` alone, which isn't a type predicate and won't narrow
- * under this repo's strict mode) to actually catch `NaN`, since
- * `typeof NaN === "number"`.
- *
- * The workspace's `plan` field gets the same treatment: missing/non-string is
- * passed through as `undefined`, which `isWithinAiQuota` maps to `"free"`;
- * a defined-but-unrecognized plan string is deliberately *not* filtered here
- * and instead relies on `limitFor`'s own `?? PLAN_LIMITS.free` fallback — one
- * intentional fail-closed path, not two independent ones drifting apart.
+ * Missing data and corrupt data get different fail-closed defaults, and the
+ * order below is load-bearing: an absent doc/field (or explicit `null`, which
+ * a partial write can leave behind) genuinely means zero calls so far and
+ * must be checked *before* the type guard, or every workspace's first-ever
+ * call would be denied. A `calls` value that exists but isn't a finite number
+ * is untrustworthy, not zero, so it fails to `Number.POSITIVE_INFINITY`
+ * instead — denying without needing to know the caller's plan limit here.
  */
 export async function checkAiQuota(
   db: Firestore,
@@ -226,12 +207,24 @@ export async function checkAiQuota(
   ]);
 
   const rawCalls = usageSnap.exists ? usageSnap.data()?.calls : undefined;
-  const calls =
-    rawCalls === undefined
-      ? 0
-      : typeof rawCalls === "number" && Number.isFinite(rawCalls)
-        ? rawCalls
-        : Number.POSITIVE_INFINITY;
+  let calls: number;
+  if (rawCalls == null) {
+    // Absent doc, absent field, or explicit null all read as "no usage yet".
+    calls = 0;
+  } else if (typeof rawCalls === "number" && Number.isFinite(rawCalls)) {
+    calls = rawCalls;
+  } else {
+    calls = Number.POSITIVE_INFINITY;
+    // Fail-closed is silent by default; without a log line, a pro customer
+    // whose counter corrupts just sees "quota exceeded" with no lead for
+    // support to chase. No raw workspace id or usage value, per the
+    // no-identifiers Global Constraint.
+    logger.warn("checkAiQuota: corrupt aiUsage.calls, denying (fail closed)", {
+      workspaceHash: hashWorkspaceId(workspaceId),
+      period,
+      rawCallsType: typeof rawCalls,
+    });
+  }
 
   const rawPlan = workspaceSnap.exists ? workspaceSnap.data()?.plan : undefined;
   const plan = typeof rawPlan === "string" ? (rawPlan as Plan) : undefined;
