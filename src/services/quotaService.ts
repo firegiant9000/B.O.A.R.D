@@ -9,10 +9,15 @@
 // (functions/src/callable/createBoard.ts) reads the live board count and denies
 // past the plan's cap before writing, and firestore.rules now denies client
 // board creates outright (`allow create: if false`), so the callable is the only
-// create path. One real gap remains: the callable's board count filters on
-// `workspaceId`, so boards predating the workspace migration are invisible to it
-// and don't consume a slot — the cap undercounts for those accounts until the
-// backfill runs. The cap cannot be bypassed; it can be undercounted.
+// create path. The cap rests on a second rule as well: firestore.rules pins a
+// board's `workspaceId` on update, because the callable counts boards by
+// workspace and a client that could unset that field would hide its boards from
+// the count and earn a fresh allowance.
+//
+// Remaining caveat: boards predating the workspace migration have no
+// `workspaceId`, so the count cannot see them and they don't consume a slot —
+// the cap undercounts for those accounts until the backfill runs. That is
+// existing data, not a route a client can take.
 //
 // Sessions ARE gated server-side: the `createSession` callable
 // (functions/src/callable/createSession.ts) bumps the workspace's monthly

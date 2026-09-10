@@ -11,10 +11,17 @@ import { limitFor, type Plan } from "../billing/limits";
 // makes this function load-bearing — it must be deployed before those rules, or
 // board creation goes down (see the warning at the top of firestore.rules).
 //
-// Known gap: `countBoards` filters on `workspaceId`, so boards predating the
-// workspace migration are invisible to the count and don't consume a slot. The
-// cap undercounts for those accounts until the backfill runs; it is not
-// bypassable.
+// The cap depends on TWO rules, not just this one. `countBoards` filters on
+// `workspaceId`, so it only counts what is stamped into the workspace — which
+// means firestore.rules must also pin a board's `workspaceId` on update
+// (`workspaceIdUnchanged`). Without that pin a client could unset the field on
+// its existing boards, which stay usable, hide them from this count and earn a
+// fresh allowance each time. Do not relax either rule in isolation.
+//
+// Remaining honest caveat: boards that predate the workspace migration have no
+// `workspaceId`, so this count cannot see them and they don't consume a slot.
+// The cap undercounts for those accounts until the backfill runs. That is a
+// property of existing data, not a route a client can take.
 
 const INVITE_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const INVITE_CODE_LENGTH = 6;

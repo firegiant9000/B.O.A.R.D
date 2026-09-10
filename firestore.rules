@@ -13,6 +13,13 @@ rules_version = '2';
 //
 // Rolling back is the mirror image: roll rules back BEFORE removing the
 // functions, never after.
+//
+// ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the two `allow create` blocks
+// (boards and sessions) to their pre-M5 predicates. Do NOT `git revert` the
+// commit that introduced them — it landed as one commit, so reverting it would
+// also make `plan` client-writable again (handing anyone Pro for a single write)
+// and drop the collaborator cap entirely. The create rules are the emergency
+// surface; the rest of that commit must stay.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -197,14 +204,45 @@ service cloud.firestore {
     // counts the whole `members` array (the owner included) — that is the unit
     // both this rule and the limits table use.
     //
-    // The second clause lets a board that is ALREADY over cap (a workspace that
-    // downgraded from pro, say) still shrink or hold steady. Without it such a
-    // board freezes permanently: no one could rename it, and a member could not
-    // even leave.
+    // The plan is resolved from the STORED workspaceId (`board`, not `next`), so a
+    // write cannot re-parent a board into a richer workspace and be measured
+    // against that workspace's cap in the same operation. `workspaceIdUnchanged`
+    // below closes re-parenting outright; this makes the cap safe even if that
+    // rule is ever relaxed.
+    //
+    // The second clause permits any update that does not GROW the membership —
+    // shrinking it, leaving it the same size, or swapping one member for another.
+    // It exists for the board that is ALREADY over cap (what a pro → free
+    // downgrade leaves behind): without it such a board freezes permanently, and
+    // a member could not even leave. A same-size swap is allowed as a consequence;
+    // it never increases the seat count, so it is not a way around the cap.
     function withinSeatCap(board, next) {
       let nextSize = next.get('members', []).size();
       return nextSize <= planSeatLimit(board.get('workspaceId', null)) ||
         nextSize <= board.get('members', []).size();
+    }
+
+    // A board's `workspaceId` is immutable from the client: a board that has one
+    // keeps it, and a legacy board that has none stays that way. Only the ADMIN
+    // arm of the board `update` rule below can write arbitrary fields, so without
+    // this it could re-parent a board — and that breaks two gates at once:
+    //
+    //   • The board cap. `countBoards` (functions/src/billing/usage.ts) counts
+    //     `boards where workspaceId == ws`, so a patched client could unset
+    //     `workspaceId` on each of its 5 boards and they would STAY USABLE —
+    //     `inBoardWorkspace` treats a null workspaceId as permitted and the board
+    //     list deliberately keeps such boards visible. The count would then return
+    //     0 and the callable would grant 5 more boards, repeatable indefinitely.
+    //   • The seat cap, if it ever resolved the plan from the incoming write
+    //     rather than the stored doc (see `withinSeatCap` above).
+    //
+    // Safe for every real path: no client writes this field on update
+    // (boardService.updateBoard accepts only title/adminId/backgroundTemplate),
+    // creates are Cloud-Function-only, and the Phase 9 backfill stamps it via the
+    // Admin SDK, which bypasses these rules. This pins the TRANSITION, so existing
+    // legacy boards keep working and the backfill is unaffected.
+    function workspaceIdUnchanged(board, next) {
+      return next.get('workspaceId', null) == board.get('workspaceId', null);
     }
 
     // ── users ─────────────────────────────────────────────────────────────────
@@ -255,6 +293,12 @@ service cloud.firestore {
     // writer of `plan` after signup. Note the restriction is on the FIELD, not on
     // a field allowlist: every other workspace field (name, members, memberIds,
     // settings, anything added later) keeps its existing role gate untouched.
+    //
+    // One trap to know about: `affectedKeys()` counts REMOVALS as well as
+    // changes, so a full-document `setDoc` that simply omits `plan` is denied too.
+    // No client path does that today (every workspace write is an `updateDoc`),
+    // and the behaviour is the safe direction — but a future full-overwrite writer
+    // would have to carry `plan` through unchanged.
     match /workspaces/{workspaceId} {
       allow read:   if isSignedIn() && request.auth.uid in resource.data.members;
       allow create: if isSignedIn() &&
@@ -344,11 +388,16 @@ service cloud.firestore {
       // a patched bundle or a raw REST call. See the deploy-order warning at the
       // top of this file: the callable must be live before this is deployed.
       //
-      // Known gap, tracked elsewhere and deliberately not addressed here: the
-      // function's `countBoards` filters on `workspaceId`, so boards predating the
-      // Phase 2 migration are invisible to the count and don't consume a slot.
-      // That undercounts the cap until the backfill runs; it does not open a
-      // create path, since every create now goes through the function.
+      // The cap holds because of two rules together: every create goes through
+      // the function, AND `workspaceIdUnchanged` pins a board's workspaceId on
+      // update. Without the second, a client could unset `workspaceId` on its
+      // existing boards to hide them from the function's `countBoards` filter and
+      // earn a fresh allowance — see that helper for the full route.
+      //
+      // Remaining honest caveat: boards that predate the Phase 2 migration have
+      // no `workspaceId`, so `countBoards` cannot see them and they don't consume
+      // a slot. That undercounts the cap for those accounts until the backfill
+      // runs. It is a property of existing data, not a route a client can take.
       allow create: if false;
       // Admin can change anything (incl. the per-board `roles` map — Phase 6);
       // an effective editor can change the shared backgroundTemplate (Phase 12);
@@ -363,11 +412,13 @@ service cloud.firestore {
       // does not grow `members` always satisfies the predicate, so no pre-existing
       // legitimate edit changes behavior.
       //
-      // The cap is ANDed last on purpose: an unauthorized caller is rejected by
-      // the arms without ever paying for `planSeatLimit`'s workspace get(). For an
-      // authorized caller the arms have already loaded that same doc, and the
-      // rules engine caches document access within one evaluation, so the cap adds
-      // no read to the requests that reach it.
+      // The two trailing predicates are ANDed last on purpose: an unauthorized
+      // caller is rejected by the arms without ever paying for `planSeatLimit`'s
+      // workspace get(). For an authorized caller the arms have already loaded
+      // that same doc, and the rules engine caches document access within one
+      // evaluation, so the cap adds no read to the requests that reach it.
+      // `workspaceIdUnchanged` comes first of the two because it reads no
+      // documents at all.
       allow update: if (
                       isBoardAdmin(boardId) ||
                       (isBoardEditor(boardId) &&
@@ -381,7 +432,9 @@ service cloud.firestore {
                         request.resource.data.members.size() == resource.data.members.size() + 1 &&
                         request.resource.data.members.hasAny([request.auth.uid])
                       )
-                    ) && withinSeatCap(resource.data, request.resource.data);
+                    ) &&
+                    workspaceIdUnchanged(resource.data, request.resource.data) &&
+                    withinSeatCap(resource.data, request.resource.data);
       allow delete: if isBoardAdmin(boardId);
 
       // Canvas content (paths, notes, textElements, shapes, images, snapshots):

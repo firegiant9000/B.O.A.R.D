@@ -174,8 +174,9 @@ export async function handleCreateSession(
     scheduledAt: Timestamp.fromMillis(scheduledAtMs),
     durationMinutes,
     // Derived from the auth token, never trusted from the client — mirrors
-    // ownerId/adminId in handleCreateBoard, and matches what firestore.rules
-    // already requires on the direct-write path (createdById == auth.uid).
+    // ownerId/adminId in handleCreateBoard. There is no client create path to
+    // agree with any more: firestore.rules denies session creates outright, so
+    // this is the only place the field is ever set, and it is set from the token.
     createdById: uid,
     createdByName: clampString(data.createdByName, MAX_NAME_LENGTH),
     participantIds: sanitizeParticipantIds(data.participantIds),

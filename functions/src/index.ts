@@ -35,9 +35,11 @@ export { exchangeEmbedToken_fn as exchangeEmbedToken } from "./callable/exchange
 
 // Month 5 — plan enforcement. Board creation is server-side: this is the ONLY
 // way to create a board, since firestore.rules denies client board creates
-// outright, so the free-tier board cap cannot be bypassed by a patched client.
-// It must be deployed BEFORE those rules — see the warning at the top of
-// firestore.rules.
+// outright. The free-tier board cap holds on that plus one more rule — those
+// rules also pin a board's `workspaceId` on update, without which a client could
+// hide its boards from this function's per-workspace count (see the header of
+// callable/createBoard.ts). Must be deployed BEFORE those rules — see the
+// warning at the top of firestore.rules.
 export { createBoard } from "./callable/createBoard";
 
 // Month 5 — plan enforcement. Session creation is server-side: this is the ONLY

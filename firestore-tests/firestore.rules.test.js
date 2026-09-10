@@ -28,6 +28,7 @@ const {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
 } = require("firebase/firestore");
 
 const ALICE = "alice";
@@ -186,6 +187,16 @@ beforeEach(async () => {
       adminId: ALICE,
       members: [ALICE, DAVE],
       inviteCode: "BORD-WEIRDS",
+    });
+    //   boardLegacyFull — no workspaceId AND at the free cap, so the legacy
+    //   fallback can be pinned to 4 rather than merely "resolves to something"
+    await setDoc(doc(db, "boards/boardLegacyFull"), {
+      // no workspaceId — a board created before the Phase 2 migration
+      title: "Legacy Full",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE, CAROL, DAVE, FRANK],
+      inviteCode: "BORD-LEGFUL",
     });
 
     // Phase 7 — comment fixtures (one per board), authored by alice.
@@ -424,9 +435,23 @@ describe("M5 seat cap", () => {
     );
   });
 
-  it("denies a plain board MEMBER adding someone past the cap", async () => {
+  it("denies a board EDITOR adding someone past the cap", async () => {
+    // dave is a wsA member with no override, so he resolves to editor on
+    // boardFull — this is the editor arm.
     await assertFails(
       updateDoc(doc(db(DAVE), "boards/boardFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies a plain board MEMBER adding someone past the cap", async () => {
+    // carol is a wsA *viewer*, so she fails isEffectiveEditor and reaches the
+    // rule only through the member arm (members/updatedAt bookkeeping). That is
+    // the arm this test is here to cover.
+    await assertFails(
+      updateDoc(doc(db(CAROL), "boards/boardFull"), {
         members: [ALICE, CAROL, DAVE, FRANK, BOB],
         updatedAt: new Date(),
       })
@@ -497,16 +522,109 @@ describe("M5 seat cap", () => {
     );
   });
 
-  it("applies the free cap to a legacy board with no workspaceId (fails closed)", async () => {
-    // No workspace means no plan, so the smallest cap applies — the same
-    // fail-closed fallback limitFor uses on the Functions side. boardLegacy has 2
-    // members, so growth to 3 is allowed and this asserts the cap resolves at all
+  // A legacy board has no workspaceId, so no plan: the smallest cap applies, the
+  // same fail-closed fallback limitFor uses on the Functions side. These two
+  // together pin the fallback at exactly 4 — the success case alone would pass at
+  // any cap >= 3, and the denial alone could be a throw.
+  it("caps a legacy board with no workspaceId at the free limit (denies the 5th)", async () => {
+    // boardLegacyFull has 4 members and no workspaceId.
+    await assertFails(
+      updateDoc(doc(db(BOB), "boards/boardLegacyFull"), {
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("still allows a join UNDER the free cap on a legacy board", async () => {
+    // boardLegacy has 2 members, so growth to 3 is allowed — the cap resolves
     // rather than erroring on the missing workspaceId.
     await assertSucceeds(
       updateDoc(doc(db(EVIL), "boards/boardLegacy"), {
         members: [ALICE, EVIL, "third"],
         updatedAt: new Date(),
       })
+    );
+  });
+});
+
+// ── M5: a board's workspaceId is pinned on update ─────────────────────────────
+// The board cap counts boards per workspace (countBoards filters on
+// workspaceId), and a workspace-less board stays fully usable — inBoardWorkspace
+// permits a null workspaceId and the board list keeps such boards visible. So a
+// client able to unset the field could hide its boards from the count and earn a
+// fresh allowance, repeatedly. Only the admin arm can write arbitrary fields, so
+// that is the route these tests close.
+describe("M5 board workspaceId is pinned", () => {
+  it("denies the board admin UNSETTING workspaceId (the countBoards bypass)", async () => {
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardPrivate"), {
+        workspaceId: deleteField(),
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies the board admin setting workspaceId to null", async () => {
+    // Same bypass, written the other way: countBoards' equality filter misses a
+    // null just as it misses a missing field.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardPrivate"), {
+        workspaceId: null,
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies re-parenting a board into another workspace", async () => {
+    // alice owns wsPro too, so this is a write she is otherwise authorized for.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardPrivate"), { workspaceId: "wsPro" })
+    );
+  });
+
+  it("denies re-parenting into a Pro workspace to shop for a bigger seat cap", async () => {
+    // The combined attack: move the board to a pro workspace and add the 5th
+    // member in the same write. Denied twice over — the cap resolves the plan
+    // from the STORED workspaceId, and the re-parent itself is refused.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardFull"), {
+        workspaceId: "wsPro",
+        members: [ALICE, CAROL, DAVE, FRANK, BOB],
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("denies stamping a workspaceId onto a legacy board from the client", async () => {
+    // The Phase 9 backfill does this via the Admin SDK, which bypasses rules.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardLegacy"), { workspaceId: "wsA" })
+    );
+  });
+
+  it("still allows an ordinary admin edit that leaves workspaceId alone", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "boards/boardPrivate"), {
+        title: "Renamed",
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  it("still allows an update that re-sends the SAME workspaceId", async () => {
+    // The pin compares values, so an idempotent write is not collateral damage.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "boards/boardPrivate"), {
+        workspaceId: "wsA",
+        title: "Renamed again",
+      })
+    );
+  });
+
+  it("still allows a legacy board's ordinary edits (workspaceId stays absent)", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "boards/boardLegacy"), { title: "Legacy renamed" })
     );
   });
 });
