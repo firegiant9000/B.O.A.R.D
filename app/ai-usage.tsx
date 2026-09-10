@@ -37,8 +37,8 @@ import {
 import { limitFor, UNLIMITED } from "../src/lib/planLimits";
 import type { Subscription } from "../src/types";
 
-// Read-only usage dashboard (Month 4 Phase 2 AI meter, extended Month 5/6 —
-// Task 12 — with boards, sessions and overall plan headroom). Surfaces this
+// Read-only usage dashboard (Month 4 Phase 2 AI meter, extended Month 5/6
+// with boards, sessions and overall plan headroom). Surfaces this
 // period's AI calls / tokens / $ estimate + a per-feature breakdown + recent
 // calls, plus used/limit for every metered plan resource. Owner/admin only —
 // mirrors the aiUsage/aiLog/usage/billing read rules in firestore.rules.
@@ -62,8 +62,8 @@ function headroomValueText(h: Headroom): string {
 }
 
 /** Plain-language text for the (unenforced) `workspaces` plan limit — never
- *  a raw `Infinity`. `limitFor` is a pure function (Task 2), safe to call
- *  directly from the UI; it isn't a Firestore/network call. */
+ *  a raw `Infinity`. `limitFor` is a pure function, safe to call directly
+ *  from the UI; it isn't a Firestore/network call. */
 function workspacesLimitText(plan: Parameters<typeof limitFor>[0]): string {
   const n = limitFor(plan, "workspaces");
   return n === UNLIMITED ? "unlimited workspaces" : `${n} workspace${n === 1 ? "" : "s"}`;
@@ -248,17 +248,31 @@ export default function AiUsageScreen() {
             <HeadroomRow
               label="Boards"
               headroom={workspaceUsage.boards}
-              note="Counts boards billed to this workspace — the same number a new board is checked against. Boards from before workspaces existed aren't included here even though they still appear in your board list."
+              note="Counts boards in this workspace that also have a join code — the same number a new board is checked against. A legacy board moved into this workspace without ever getting a join code still counts toward your limit but won't show up in this number, even though it's still in your board list."
             />
             <HeadroomRow label="Sessions this period" headroom={workspaceUsage.sessions} />
             <HeadroomRow label="AI calls this period" headroom={workspaceUsage.aiCalls} />
-            <HeadroomRow
-              label="Collaborators"
-              headroom={workspaceUsage.collaborators}
-              note={`Your plan allows up to ${
-                workspaceUsage.collaborators.unlimited ? "unlimited" : workspaceUsage.collaborators.limit
-              } people per board. This counts everyone currently in the workspace, not any one board.`}
-            />
+
+            {/* Collaborators is a PER-BOARD cap (collaboratorsPerBoard), but
+                this page has no active board to measure it against — it's a
+                workspace-wide dashboard reached with no boardId. Rendering
+                the workspace's total member count as a HeadroomRow's "X of
+                Y" + filled bar would look exactly like a real breach (e.g.
+                10 workspace members against a free plan's 4-per-board cap
+                shows "10 of 4" at a 100% bar) even when no single board is
+                actually over — nothing is enforced against that number.
+                Plain text instead, same choice already made for the
+                `workspaces` row below: real information, no false breach
+                signal. */}
+            <View style={styles.usageRow}>
+              <Text style={styles.usageLabel}>Collaborators</Text>
+              <Text style={styles.usageNote}>
+                Each board allows up to{" "}
+                {workspaceUsage.collaborators.unlimited ? "unlimited" : workspaceUsage.collaborators.limit}{" "}
+                collaborators. This workspace has {workspaceUsage.collaborators.used}{" "}
+                {workspaceUsage.collaborators.used === 1 ? "person" : "people"} total across all boards.
+              </Text>
+            </View>
 
             {/* Workspaces (brief requirement): PLAN_LIMITS lists a number for
                 this, but nothing enforces it — firestore.rules lets a client

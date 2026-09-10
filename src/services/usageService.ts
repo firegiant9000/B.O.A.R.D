@@ -11,17 +11,17 @@ import { getAiUsage, periodFor } from "./aiUsageService";
 import { limitFor, UNLIMITED } from "../lib/planLimits";
 import type { Plan } from "../types";
 
-// Month 5/6 — the usage dashboard's read path (Task 12). Extends the M4 AI
+// Month 5/6 — the usage dashboard's read path. Extends the M4 AI
 // meter (aiUsageService.ts) with the other three plan resources: boards,
 // sessions, and workspace headroom in general. UI components (app/ai-usage.tsx)
 // call only this module, never Firestore directly (Global Constraint).
 //
 // Every number here is DISPLAY, not enforcement. The real gates are the
 // Cloud Functions (createBoard.ts, createSession.ts) and firestore.rules —
-// this module reads the same counters those gates read (or, for boards, the
-// closest a client is permitted to get to them) so the dashboard doesn't
-// drift from what a create would actually do, but nothing here denies
-// anything.
+// this module reads the same counters those gates read, or, for boards, the
+// closest a client is permitted to get to them. That "closest" has one known
+// gap after the workspace-migration backfill runs — see the long comment on
+// `countWorkspaceBoards` below. Nothing in this module denies anything.
 
 export interface Headroom {
   used: number;
@@ -90,16 +90,32 @@ export function toHeadroom(used: number, limit: number): Headroom {
  *  Adding `where("inviteCode","!=",null)` lets Firestore prove the third
  *  rule branch directly from the query, so the request succeeds — also
  *  verified against the emulator. This does not change WHICH boards get
- *  counted in practice: `boards/{boardId}` can only ever be created through
- *  the `createBoard` callable (firestore.rules: `allow create: if false`
- *  on a direct client write), and that callable always stamps a freshly
- *  generated `inviteCode` on every board it writes — no path in this app
- *  ever clears it back to null afterward (the board `update` rule doesn't
- *  allow touching `inviteCode` at all). So this count equals the server's
- *  `countBoards` for every board this app can create today; it would only
- *  under-count relative to enforcement for a hypothetical board written
- *  before invite codes existed, a state this codebase has no create path
- *  back into and no evidence of.
+ *  counted for a board CREATED through the app: `boards/{boardId}` can only
+ *  ever be created through the `createBoard` callable (firestore.rules:
+ *  `allow create: if false` on a direct client write), and that callable
+ *  always stamps a freshly generated `inviteCode` on every board it writes
+ *  — no path in this app's own create/update flow ever clears it back to
+ *  null afterward (the board `update` rule doesn't allow touching
+ *  `inviteCode` at all).
+ *
+ *  There IS a real, non-hypothetical path to a `workspaceId`-set,
+ *  `inviteCode`-null board, though: `scripts/migrate-workspaces.js` (the M3
+ *  backfill — a pending gate, not run yet) stamps `workspaceId` onto every
+ *  legacy board it finds (`b.ref.update({ workspaceId: wsId })`, in its
+ *  boards-scan step) and never touches `inviteCode` — a legacy board with no invite code
+ *  (`boardService.ts`'s own `mapBoard` defaults it to `""`, i.e. it can be
+ *  genuinely absent) keeps that absence straight through the migration.
+ *  After that backfill runs, such a board IS included in the server's
+ *  `countBoards` (`workspaceId` alone) but NOT in this function's count —
+ *  this dashboard UNDER-counts relative to real enforcement for exactly
+ *  those boards, showing headroom the workspace doesn't actually have. This
+ *  divergence is accepted, not fixed, here: the client provably cannot run
+ *  the server's exact query (see above), reading the server's real count
+ *  needs a new callable, and widening the read rule is out of scope for
+ *  this module. `firestore-tests/firestore.rules.test.js` has a regression
+ *  test seeding exactly this shape (`workspaceId` set, `inviteCode` null)
+ *  and asserting this query's shape excludes it, so this divergence stays
+ *  mechanically visible rather than resting on this comment alone.
  *
  *  This DOES mean the query is answerable by any signed-in user for any
  *  workspaceId, not just that workspace's owner/admin — the same is already

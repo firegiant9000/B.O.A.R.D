@@ -29,6 +29,11 @@ const {
   updateDoc,
   deleteDoc,
   deleteField,
+  collection,
+  query,
+  where,
+  getDocs,
+  getCountFromServer,
 } = require("firebase/firestore");
 
 const ALICE = "alice";
@@ -197,6 +202,23 @@ beforeEach(async () => {
       adminId: ALICE,
       members: [ALICE, CAROL, DAVE, FRANK],
       inviteCode: "BORD-LEGFUL",
+    });
+
+    // Usage-dashboard regression fixture — the shape scripts/migrate-workspaces.js
+    // (the M3 backfill) produces for a legacy board: workspaceId stamped in,
+    // inviteCode untouched and still null. src/services/usageService.ts's
+    // countWorkspaceBoards can't run the server's exact `countBoards` query
+    // (workspaceId alone — see that function's doc comment for why), so it adds
+    // an `inviteCode != null` filter to satisfy the rules' provability check.
+    // This board proves that filter's cost: it HAS a workspaceId (the server's
+    // countBoards would include it) but the client aggregation below must not.
+    await setDoc(doc(db, "boards/boardMigratedNoCode"), {
+      workspaceId: "wsA",
+      title: "Migrated, never got an invite code",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE],
+      inviteCode: null,
     });
 
     // Phase 7 — comment fixtures (one per board), authored by alice.
@@ -1305,5 +1327,49 @@ describe("M5 metering collections", () => {
   it("denies a non-member reading usage or billing", async () => {
     await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/usage/2026-09")));
     await assertFails(getDoc(doc(db(BOB), "workspaces/wsA/billing/subscription")));
+  });
+});
+
+// ── usage-dashboard board count (src/services/usageService.ts) ──────────────
+// countWorkspaceBoards cannot run the server's exact countBoards query
+// (`workspaceId==X` alone) — Firestore's query-provability check rejects that
+// filter because the board read rule's ownerId/members disjuncts aren't
+// provable from it, so it adds `inviteCode != null` to make the rule's third
+// disjunct provable instead. That filter has a real cost: scripts/migrate-
+// workspaces.js (the M3 backfill) stamps workspaceId onto legacy boards
+// without ever touching inviteCode, so a migrated board can have workspaceId
+// set and inviteCode null — counted by the server's countBoards, NOT by this
+// query. This suite proves that divergence mechanically rather than resting
+// on a comment, using the boardMigratedNoCode fixture seeded above.
+describe("usage-dashboard board count excludes a migrated board with no invite code", () => {
+  it("workspaceId + inviteCode!=null does not return a board whose workspaceId was backfilled without ever getting an invite code", async () => {
+    const q = query(
+      collection(db(ALICE), "boards"),
+      where("workspaceId", "==", "wsA"),
+      where("inviteCode", "!=", null)
+    );
+
+    const snap = await getDocs(q);
+    const ids = snap.docs.map((d) => d.id);
+    expect(ids).not.toContain("boardMigratedNoCode");
+    // Sanity: the query isn't vacuously empty (which would make the assertion
+    // above trivially true) — it does return wsA boards that DO carry an
+    // invite code, so the exclusion is specifically about the missing code,
+    // not about the whole query failing.
+    expect(ids).toContain("boardCoded");
+
+    // getCountFromServer (the actual aggregation usageService.ts calls) must
+    // agree with the getDocs-based membership check above, not just return
+    // some other number.
+    const countSnap = await getCountFromServer(q);
+    expect(countSnap.data().count).toBe(ids.length);
+  });
+
+  it("a bare workspaceId filter (the server's own countBoards shape) is rejected outright for the client", async () => {
+    // The other half of the divergence this suite documents: the server can
+    // run `workspaceId==X` alone (Admin SDK, bypasses rules) and would count
+    // boardMigratedNoCode; a client cannot run that query at all.
+    const q = query(collection(db(ALICE), "boards"), where("workspaceId", "==", "wsA"));
+    await assertFails(getCountFromServer(q));
   });
 });
