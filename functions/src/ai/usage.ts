@@ -167,8 +167,11 @@ export async function recordAiUsage(
 
 /** First 16 hex chars of a sha256 of `workspaceId`, for logging without
  *  transmitting the raw identifier (Global Constraint: hashed workspace id
- *  only, never a raw id or user identifier). */
-function hashWorkspaceId(workspaceId: string): string {
+ *  only, never a raw id or user identifier). Exported so other modules that
+ *  log a workspace (functions/src/http/stripeWebhook.ts) use this one
+ *  implementation — a second copy could drift to a different digest or length
+ *  and make log lines from the two impossible to correlate. */
+export function hashWorkspaceId(workspaceId: string): string {
   return createHash("sha256").update(workspaceId).digest("hex").slice(0, 16);
 }
 

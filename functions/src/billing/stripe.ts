@@ -86,6 +86,16 @@ export async function createCheckoutSession(
       line_items: [{ price: priceId, quantity: 1 }],
       client_reference_id: params.workspaceId,
       metadata: { workspaceId: params.workspaceId, uid: params.uid },
+      // Stripe does NOT copy the session's `metadata` onto the subscription it
+      // creates, and `client_reference_id` exists only on the session. Without
+      // this, every later `customer.subscription.*` and `invoice.*` event for
+      // this customer would arrive with no way to tell which workspace it
+      // belongs to — so the webhook could grant Pro at checkout but never
+      // revoke it on a cancellation or a failed payment. See
+      // WORKSPACE_ID_PATHS in functions/src/http/stripeWebhook.ts, which reads
+      // this metadata back off the subscription and off the snapshot of it
+      // that Stripe puts on each invoice.
+      subscription_data: { metadata: { workspaceId: params.workspaceId, uid: params.uid } },
       success_url: CHECKOUT_SUCCESS_URL,
       cancel_url: CHECKOUT_CANCEL_URL,
     });

@@ -158,6 +158,12 @@ describe("createCheckoutSession (billing/stripe.ts)", () => {
     expect(params.line_items).toEqual([{ price: "price_server_resolved", quantity: 1 }]);
     expect(params.client_reference_id).toBe("ws1");
     expect(params.metadata).toEqual({ workspaceId: "ws1", uid: "u1" });
+    // Load-bearing for the webhook, not for checkout: Stripe does not copy
+    // session metadata onto the subscription, and subscription/invoice events
+    // carry neither `client_reference_id` nor the session's metadata. Drop
+    // this and every downgrade path in functions/src/http/stripeWebhook.ts
+    // loses its only way to identify the workspace.
+    expect(params.subscription_data?.metadata).toEqual({ workspaceId: "ws1", uid: "u1" });
     // Load-bearing for a live call (Stripe's hosted Checkout rejects a
     // session with no success_url at runtime, even though the TS types mark
     // it optional for the embedded-ui_mode case this app doesn't use) — a

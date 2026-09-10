@@ -57,3 +57,20 @@ export { createSession } from "./callable/createSession";
 // There is no Stripe account behind this yet, so this has not been exercised
 // against the real Checkout API — see functions/src/billing/stripe.ts.
 export { createCheckoutSession } from "./callable/createCheckoutSession";
+
+// Month 5 — the Stripe webhook (POST /stripeWebhook). Turns a Stripe
+// subscription's lifecycle into `workspaces/{id}.plan`, and is the only writer
+// of that field after signup: firestore.rules denies `plan` on every client
+// update and permits only 'free' on create, so the plan gates cannot be
+// self-granted. Upgrades on a subscription becoming active, returns the
+// workspace to 'free' on cancellation, expiry or exhausted payment retries,
+// and dedupes Stripe's redeliveries on `event.id` — the plan write and that
+// dedupe record share one transaction so they cannot diverge.
+//
+// This endpoint is unauthenticated by necessity (Stripe carries no Google
+// identity); the HMAC signature over the request's raw bytes is what
+// authenticates a caller. Nothing is registered on the Stripe side yet and
+// STRIPE_WEBHOOK_SECRET does not exist, so until an endpoint is registered and
+// its signing secret set, this answers 500 "not configured" — it has never
+// received a delivery from Stripe. See functions/src/http/stripeWebhook.ts.
+export { stripeWebhook } from "./http/stripeWebhook";
