@@ -65,10 +65,19 @@ export async function handleCreateBoard(
 
   const plan = (ws.plan ?? "free") as Plan;
   const used = await deps.countBoards(workspaceId);
-  if (used >= limitFor(plan, "boards")) {
+  const limit = limitFor(plan, "boards");
+  // Deny unless PROVABLY under the cap, rather than allow unless provably at
+  // it. `limitFor` can return `undefined` for a prototype-shaped plan value
+  // (e.g. "__proto__" — PLAN_LIMITS["__proto__"] is truthy, so the `?? free`
+  // fallback never fires, and `["boards"]` off it is undefined) and `used`
+  // could in principle be `NaN`; `used >= limit` evaluates `false` for both,
+  // which would grant. The negated form denies on both instead, with no
+  // extra branch needed for `UNLIMITED` (`Infinity`) — `used < Infinity` is
+  // simply always true for a finite `used`.
+  if (!(used < limit)) {
     throw new HttpsError(
       "resource-exhausted",
-      `You've reached your plan's board limit (${limitFor(plan, "boards")}). Upgrade for more.`
+      `You've reached your plan's board limit (${limit}). Upgrade for more.`
     );
   }
 

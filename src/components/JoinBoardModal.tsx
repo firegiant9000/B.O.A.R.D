@@ -123,7 +123,7 @@ export default function JoinBoardModal({
               isDeepLink && styles.inputReadOnly,
               error ? styles.inputError : null,
             ]}
-            placeholder="BORD-XXXXXX"
+            placeholder="XXXXXX"
             placeholderTextColor="#bbb"
             value={code}
             onChangeText={handleChangeCode}

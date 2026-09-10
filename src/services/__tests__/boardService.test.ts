@@ -1,8 +1,9 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
 jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
 const mockCallable = jest.fn();
+const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
 jest.mock("firebase/functions", () => ({
-  httpsCallable: () => mockCallable,
+  httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
 }));
 
 import * as fs from "firebase/firestore";
@@ -44,6 +45,19 @@ describe("createBoard", () => {
 
     expect(spy).toHaveBeenCalledWith("ws-1", "board");
     spy.mockRestore();
+  });
+
+  it("binds httpsCallable to the \"createBoard\" function name", async () => {
+    // Pins the callable's name against the mock factory's own second
+    // argument, not just the mock's configured return value — a typo here
+    // (e.g. "createboard") would still satisfy every other assertion in this
+    // block while breaking every board create in production.
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
+
+    await boardService.createBoard("My Board", "owner-1", "ws-1");
+
+    expect(mockHttpsCallable).toHaveBeenCalled();
+    expect(mockHttpsCallable.mock.calls[0][1]).toBe("createBoard");
   });
 });
 

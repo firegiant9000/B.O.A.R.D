@@ -29,6 +29,13 @@ describe("handleCreateBoard", () => {
       .rejects.toThrow(/not a member/i);
   });
 
+  it("rejects a request with no workspaceId", async () => {
+    const d = deps({});
+    await expect(handleCreateBoard(reqFor("u1", { title: "T" }), d, 0))
+      .rejects.toMatchObject({ code: "invalid-argument" });
+    expect(d.writeBoard).not.toHaveBeenCalled();
+  });
+
   it("rejects when the workspace does not exist", async () => {
     const d = deps({});
     d.getWorkspace.mockResolvedValueOnce(null as never);
@@ -72,6 +79,21 @@ describe("handleCreateBoard", () => {
     expect(d.writeBoard).not.toHaveBeenCalled();
   });
 
+  it("fails closed on a \"__proto__\" plan value even genuinely under the free cap", async () => {
+    // Unlike the numeric-garbage case above, "__proto__" is a string key that
+    // resolves through the object's own prototype chain: PLAN_LIMITS["__proto__"]
+    // is Object.prototype (truthy), so limitFor()'s `?? PLAN_LIMITS.free`
+    // fallback never fires, and `["boards"]` off Object.prototype is
+    // `undefined`. Board count here is a genuine 4 — under the real free cap
+    // of 5 — so the old `used >= limit` form (`4 >= undefined` -> `false`)
+    // would have created the board; only the negated `!(used < limit)` form
+    // denies here. This is the fail-open the hardening closed.
+    const d = deps({ plan: "__proto__", boardCount: 4 });
+    await expect(handleCreateBoard(reqFor("u1", { workspaceId: "ws1", title: "T" }), d, 0))
+      .rejects.toMatchObject({ code: "resource-exhausted" });
+    expect(d.writeBoard).not.toHaveBeenCalled();
+  });
+
   it("rejects a blank title", async () => {
     await expect(handleCreateBoard(reqFor("u1", { workspaceId: "ws1", title: "   " }), deps({}), 0))
       .rejects.toThrow(/title/i);
@@ -91,6 +113,22 @@ describe("handleCreateBoard", () => {
     const written = d.writeBoard.mock.calls[0][0];
     expect(written.inviteCode).toBe(res.inviteCode);
     expect(written.inviteCode).not.toBe("HACKED");
+  });
+
+  it("derives ownerId/adminId from the auth token, ignoring any client-supplied values", async () => {
+    const d = deps({ boardCount: 0 });
+    await handleCreateBoard(
+      reqFor("u1", { workspaceId: "ws1", title: "T", ownerId: "victim", adminId: "victim" }),
+      d,
+      0
+    );
+    // Assert on what was actually written, not on the response — that is what
+    // makes this a real spoofing test.
+    const written = d.writeBoard.mock.calls[0][0];
+    expect(written.ownerId).toBe("u1");
+    expect(written.adminId).toBe("u1");
+    expect(written.ownerId).not.toBe("victim");
+    expect(written.adminId).not.toBe("victim");
   });
 });
 

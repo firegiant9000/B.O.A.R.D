@@ -34,6 +34,6 @@ export { mintEmbedToken_fn as mintEmbedToken } from "./callable/mintEmbedToken";
 export { exchangeEmbedToken_fn as exchangeEmbedToken } from "./callable/exchangeEmbedToken";
 
 // Month 5 — plan enforcement. Board creation moved server-side so the free-tier
-// board cap cannot be bypassed by a patched client (firestore.rules denies
-// direct client creates; see Task 7).
+// board cap cannot be bypassed by a patched client once firestore.rules denies
+// the direct client create; until then both paths are live.
 export { createBoard } from "./callable/createBoard";
