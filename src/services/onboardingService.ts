@@ -22,33 +22,61 @@ import type { SessionSummary } from "../types";
  * Three deliberate design calls, each answering a question the brief itself
  * raises rather than settles:
  *
- * 1. QUOTA — this seeds the example board and the finished session through
- *    the SAME capped, Cloud-Function-enforced paths every other create goes
- *    through (`boardService.createBoard`, `sessionService.createSession`),
- *    not a server-side bypass. That means a brand-new free-tier user starts
- *    at 1/5 boards and 1/3 sessions before doing anything themselves. Accepted
- *    deliberately: the alternative is inventing a "this doesn't count toward
- *    the cap" exemption in functions/src/billing/usage.ts, which (a) touches
- *    the anti-drift-tested quota-enforcement surface for a seeding feature,
- *    and (b) creates a bypass shape (documents that are real but uncounted)
- *    that is exactly the kind of asymmetry the "deny unless provably under"
- *    discipline elsewhere in this codebase exists to avoid. A free user still
- *    has 4 boards and 2 sessions left for their own work, and both seeded
- *    items are ordinary, deletable documents — deleting the sample board
- *    frees its slot back up immediately, since the cap counts live documents.
+ * 1. QUOTA — boards and sessions are metered by two DIFFERENT mechanisms, so
+ *    this cost is real for one and unavoidable for the other; conflating them
+ *    would misstate the tradeoff, so they're spelled out separately:
+ *    - BOARDS: `countBoards` (functions/src/billing/usage.ts) is a LIVE
+ *      count — `.where("workspaceId","==",id).count()` over whatever
+ *      documents currently exist. There is no way to create a real board
+ *      under this workspace, admin-written or not, without it counting —
+ *      going through the capped `boardService.createBoard` here costs
+ *      nothing extra over any other route, since every route costs the
+ *      same slot. It's also refundable: deleting the sample board later
+ *      frees that slot back immediately, because the count is live.
+ *    - SESSIONS: the cap is a STORED MONTHLY COUNTER
+ *      (`workspaces/{id}/usage/{period}`, bumped only inside
+ *      `createSession`'s own transaction —
+ *      functions/src/callable/createSession.ts), not a live count. An
+ *      Admin-SDK seed writing a session document directly would NOT touch
+ *      that counter and would genuinely bypass the cap. Going through the
+ *      real `sessionService.createSession` here was therefore a CHOICE, not
+ *      a forced one — made for consistency with the board's honest path
+ *      (one creation mechanism for both resource types, not a bypass for one
+ *      and not the other) — and it has a real, non-trivial cost: free tier
+ *      is 3 sessions per period, so this seed spends A THIRD of a new user's
+ *      first month before they've done anything themselves. Unlike the
+ *      board, this is NOT refundable — deleting the seeded session does not
+ *      give the counter slot back, since the counter only ever increments.
+ *    Accepted anyway, as a product-cost judgment rather than a correctness
+ *    bug: the alternative (an Admin-SDK bypass for sessions specifically, or
+ *    a "doesn't count" exemption in functions/src/billing/usage.ts) touches
+ *    the anti-drift-tested quota-enforcement surface for a seeding feature
+ *    and creates the same "real but uncounted document" asymmetry the "deny
+ *    unless provably under" discipline elsewhere in this codebase exists to
+ *    avoid. Flagged separately for a product call on whether the session
+ *    cost is worth revisiting (e.g. a higher free-tier session limit).
  *
  * 2. WHERE THIS RUNS — client-side, calling the real callables, subject to
- *    the real caps. A server-side seed (an Auth `onCreate` trigger writing
- *    with the Admin SDK) would bypass firestore.rules, but would NOT bypass
- *    the board/session caps either (they're just document counts scoped by
- *    workspaceId — an Admin SDK write still counts), so it buys no quota
- *    relief, only a second, rules-bypassing creation path to keep in sync
- *    with the real one. Not worth it for a seed.
+ *    the real caps described above. For boards this is free (see above — an
+ *    Admin-SDK path would cost the same live-counted slot anyway). For
+ *    sessions a server-side Admin-SDK seed genuinely WOULD have bypassed the
+ *    cap for free — that was a real option, not a non-option — and it was
+ *    deliberately not taken, so the session's non-refundable cost stays
+ *    honest and visible rather than hidden behind a bypass a future reader
+ *    would have to rediscover, and so there's exactly one creation mechanism
+ *    for both resource types instead of a board/session split.
  *
- * 3. NO AI CALL — the "AI summary" on the seeded session is the canned
- *    `SAMPLE_SESSION_SUMMARY` below, written directly via
- *    `sessionService.updateSessionSummary`. Nothing here calls
- *    `generateSummary` or any other AI callable. The copy is written to read
+ * 3. NO AI CALL (a deliberate divergence from ROADMAP.md's literal wording,
+ *    "a finished session with an AI summary") — the "AI summary" on the
+ *    seeded session is the canned `SAMPLE_SESSION_SUMMARY` below, written
+ *    directly via `sessionService.updateSessionSummary`. Nothing here calls
+ *    `generateSummary` or any other AI callable. Reasons, per the brief's own
+ *    warning: the four AI callables cost real money per call, are
+ *    quota-gated (would spend a brand-new account's `aiCallsPerPeriod`
+ *    analyzing placeholder template text before they've done anything), and
+ *    their feature flags are off. There's also a trust reason independent of
+ *    cost: presenting a fake "we analyzed your session" as though real
+ *    analysis occurred is itself a problem, so the copy is written to read
  *    as an example ("this is what a recap looks like"), never as though the
  *    seed board's placeholder template text was actually analyzed.
  *
@@ -77,6 +105,35 @@ import type { SessionSummary } from "../types";
  * account is ever re-provisioned) converges: either everything from a prior
  * attempt was already cleaned up and it seeds fresh, or it was fully seeded
  * and this is a no-op.
+ *
+ * Side benefit of that same choice: skipping `createBoardFromTemplate` also
+ * means this seed never fires `track("board_created", …)` (that call lives
+ * at templateService.ts:274, inside `createBoardFromTemplate` specifically —
+ * `applyTemplateToBoard` alone does not call it), and neither
+ * `boardService.createBoard` nor `sessionService.createSession`/`endSession`/
+ * `updateSessionSummary` fire `track()` internally either. So the seeded
+ * board/session never inflate the `board_created` / `session_scheduled` /
+ * `session_completed` funnel counters Month 6's analytics work (ROADMAP's
+ * A1) depends on for a clean pre-launch baseline. This is a STRUCTURAL
+ * guarantee, not just a promise kept today — but it depends on staying off
+ * `createBoardFromTemplate`, so don't "simplify" this function back onto it
+ * without re-checking that call site's `track()` call first.
+ *
+ * Known gaps, disclosed rather than fixed:
+ *  - If a first seeding attempt fails AND its own rollback also fails (a true
+ *    double failure), the account is left permanently unseeded: seeding is
+ *    gated on `isNewAccount` in authService.ts, which is only ever true once
+ *    per uid (the moment the `users/{uid}` profile doc is created), so there
+ *    is no later retry. Chosen over a broader "always attempt, check the
+ *    flag" gate specifically to guarantee the more important property: an
+ *    EXISTING account is never retroactively seeded on a later sign-in.
+ *  - `getDoc` and the final `updateDoc` below are not wrapped in a Firestore
+ *    transaction, so two genuinely simultaneous sign-ins for the same
+ *    brand-new account (e.g. two devices completing signup at the same
+ *    instant) could both read `sampleSeededAt` as unset and both seed,
+ *    double-creating the sample board/session. Sequential re-entry ("signing
+ *    in twice") is fully handled by the marker check; true concurrency is
+ *    not.
  */
 
 const SAMPLE_TEMPLATE_ID = "cornell-notes";
@@ -145,6 +202,12 @@ export async function seedSampleWorkspace(
   uid: string,
   displayName: string = ""
 ): Promise<void> {
+  // This read and the `sampleSeededAt` write far below are NOT wrapped in a
+  // Firestore transaction — see the module header's "known gaps" note. Two
+  // genuinely simultaneous calls for the same brand-new workspace could both
+  // pass this check before either write lands, and both seed. Sequential
+  // re-entry (this account's next sign-in reading what a prior, already-
+  // finished call wrote) is what this guards, and does so correctly.
   const wsRef = doc(db, "workspaces", workspaceId);
   const wsSnap = await getDoc(wsRef);
   if (!wsSnap.exists()) return;
@@ -161,6 +224,16 @@ export async function seedSampleWorkspace(
   try {
     // Board phase: create (capped, same path as any user-initiated create),
     // then apply the template's elements, then the mock-roster sticky note.
+    // The literal `"free", 0` below (and the `{ plan: "free", currentCount: 0 }`
+    // on the session create further down) are correct ONLY because this
+    // workspace was just created and genuinely has zero prior boards/sessions
+    // — they are not a safe default to reuse anywhere else `boardService`/
+    // `sessionService` are called from. `assertQuota` (quotaService.ts) is a
+    // client-side ADVISORY pre-flight only; the real callable re-derives the
+    // authoritative plan/count itself, so a stale value passed here would
+    // fail safe (at worst a pointless round trip), not open a hole — but a
+    // future caller copying this literal into a context where it might be
+    // wrong would not get that same protection for free.
     boardId = await boardService.createBoard(template.title, uid, workspaceId, "free", 0);
     await templateService.applyTemplateToBoard(boardId, uid, template);
     await pathService.saveTextNote(boardId, {
@@ -171,7 +244,9 @@ export async function seedSampleWorkspace(
     });
 
     // Session phase: create (capped), then transition straight to "ended"
-    // with a canned summary — never a real generateSummary call.
+    // with a canned summary — never a real generateSummary call. Same
+    // fresh-workspace-only caveat as the board create above applies to the
+    // `{ plan: "free", currentCount: 0 }` quota hint just below.
     sessionId = await sessionService.createSession(
       {
         workspaceId,

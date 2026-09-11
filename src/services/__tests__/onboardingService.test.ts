@@ -113,13 +113,31 @@ describe("seedSampleWorkspace", () => {
     });
 
     it("signing in twice (calling seedSampleWorkspace twice in a row) only seeds once", async () => {
-      // First call: not yet seeded -> seeds, and (per the mock) "writes" the marker.
-      getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", {}));
+      // A tiny STATEFUL fake of the one workspace doc seedSampleWorkspace
+      // reads and writes, so the second call's `getDoc` genuinely reflects
+      // what the first call's `updateDoc` wrote — proving the causal chain,
+      // not two independently-stubbed reads. (Review fix, Important 2: the
+      // prior version of this test hardcoded both `getDoc` returns
+      // separately, so it kept passing even when the field `updateDoc` wrote
+      // didn't match the field this function checks on read — verified by
+      // mutation in the task-28 fix-round-1 report.) `firestoreMock.ts`
+      // itself is stateless by design (shared by many unrelated test files),
+      // so the state lives locally in this one test instead of in that
+      // shared mock.
+      let wsData: Record<string, unknown> = {};
+      getDoc.mockImplementation(async () => makeDocSnap("ws-1", wsData));
+      updateDoc.mockImplementation(async (_ref: unknown, data: Record<string, unknown>) => {
+        wsData = { ...wsData, ...data };
+      });
+
       await seedSampleWorkspace("ws-1", "u1", "Arlo");
       expect(mockCreateBoard).toHaveBeenCalledTimes(1);
+      // The first call's write genuinely landed in the same store the
+      // second call's read will see.
+      expect(wsData.sampleSeededAt).toBeDefined();
 
-      // Second call ("signing in twice"): the workspace doc now reflects the marker.
-      getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { sampleSeededAt: { seconds: 1 } }));
+      // "Signing in twice": same workspace doc, now carrying whatever the
+      // first call actually wrote, read again by a second call.
       await seedSampleWorkspace("ws-1", "u1", "Arlo");
 
       expect(mockCreateBoard).toHaveBeenCalledTimes(1);

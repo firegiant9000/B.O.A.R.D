@@ -55,6 +55,13 @@ export async function ensureUserProvisioned(
   // header), but this stays wrapped in its own try/catch as defense in
   // depth: a populated sample workspace is a nice-to-have, never a
   // sign-in blocker.
+  //
+  // Disclosed gap: `isNewAccount` is true only ONCE per uid (the instant this
+  // profile doc is created), so if this attempt fails AND seedSampleWorkspace's
+  // own rollback also fails, this account is left permanently unseeded — there
+  // is no later retry. That's the accepted cost of guaranteeing the opposite
+  // (and more important) property: an EXISTING account is never retroactively
+  // seeded on some later, unrelated sign-in.
   if (isNewAccount && workspaceId) {
     try {
       await seedSampleWorkspace(workspaceId, user.uid, displayName ?? user.displayName ?? "");
