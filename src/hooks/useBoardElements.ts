@@ -48,6 +48,7 @@ import {
 import * as pathService from "../services/pathService";
 import * as shapeService from "../services/shapeService";
 import * as imageService from "../services/imageService";
+import * as audioService from "../services/audioService";
 import * as snapshotService from "../services/snapshotService";
 import { captureException } from "../lib/errorReporting";
 import { reportSyncState } from "../lib/connectivity";
@@ -1998,6 +1999,14 @@ export function useBoardElements(
       pathService.clearBoardTextElements(boardId),
       shapeService.clearBoardShapes(boardId),
       imageService.clearBoardImages(boardId),
+      // Month 5 — voice notes are Storage-backed like images, so clear-board
+      // must remove their objects too or they orphan exactly like the M2
+      // carry-forward defect fixed for images this task (see imageService's
+      // clearBoardImages comment). Voice notes aren't part of this hook's own
+      // element state (no selection/multi-delete wiring yet — Month 5 scope
+      // is record/play only), so this is the only call site that needs to
+      // know about them.
+      audioService.clearBoardVoiceNotes(boardId),
     ]);
 
   const resetLocalElements = () => {

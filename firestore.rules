@@ -437,7 +437,7 @@ service cloud.firestore {
                     withinSeatCap(resource.data, request.resource.data);
       allow delete: if isBoardAdmin(boardId);
 
-      // Canvas content (paths, notes, textElements, shapes, images, snapshots):
+      // Canvas content (paths, notes, textElements, shapes, images, audio, snapshots):
       // any board member reads; only an effective editor writes (Phase 6 —
       // viewer/commenter are read-only on the canvas). This is the "viewer write
       // denied" gate the rules tests assert.
@@ -462,6 +462,18 @@ service cloud.firestore {
       }
 
       match /images/{imageId} {
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow write: if isBoardEditor(boardId);
+      }
+
+      // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9). Same
+      // member-read / editor-write gate as every other canvas-content
+      // subcollection above — no `plan` predicate here. Voice notes are
+      // billed Pro-tier but that is enforced NOWHERE server-side today; see
+      // src/services/audioService.ts's `canRecordVoiceNotes` header. The
+      // matching storage.rules block for the audio bytes carries the same
+      // caveat.
+      match /audio/{audioId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }

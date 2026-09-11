@@ -50,6 +50,7 @@
     "@sentry/react-native": "~7.11.0",
     "@types/rbush": "^4.0.0",
     "expo": "~55.0.8",
+    "expo-audio": "~55.0.18",
     "expo-auth-session": "~55.0.16",
     "expo-clipboard": "~55.0.13",
     "expo-constants": "~55.0.9",

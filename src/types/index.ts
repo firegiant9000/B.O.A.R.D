@@ -433,6 +433,33 @@ export interface ImageElement {
   createdAt: Date;
 }
 
+// Month 5 (ROADMAP.md:583-587, roadmap item 9). A voice note anchored to
+// another canvas element — a stroke, sticky, text, or image. The audio bytes
+// (AAC/.m4a, capped at 60s — see audioService.MAX_DURATION_MS) live in
+// Firebase Storage at `storagePath`; `downloadUrl` is the resolved download
+// URL persisted alongside it so playback has a usable source without an
+// async lookup per element, mirroring ImageElement's url/thumbnailUrl split.
+// `anchorElementId` names the element (of any kind, any collection) the note
+// is attached to; `x`/`y` are the note's own board-space position for the
+// speaker-icon affordance, independent of the anchor's own geometry/box shape
+// so placing and hit-testing the icon never needs to know the anchor's kind.
+// `schemaVersion: 1` from inception — see the Global Constraint on new
+// element types; readers tolerate a missing/partial doc (`data?.field ??
+// default`), same as every other element kind here.
+export interface AudioElement {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  userId: string;
+  anchorElementId: string;
+  storagePath: string;
+  downloadUrl: string;
+  durationMs: number;
+  x: number;
+  y: number;
+  createdAt: Date;
+}
+
 // Phase 10 (roadmap item 9). In-app notification, stored per-recipient under
 // `users/{recipientId}/notifications/{id}`. Created by the actor at mention time
 // (the rules pin `actorId` to the writer and `recipientId` to the path owner,

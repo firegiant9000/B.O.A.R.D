@@ -1,6 +1,7 @@
 rules_version = '2';
 
-// Firebase Storage rules (Month 2, Phase 9 — image elements).
+// Firebase Storage rules (Month 2, Phase 9 — image elements; Month 5 adds
+// voice notes below).
 //
 // Image originals/thumbnails live under boards/{boardId}/images/{imageId}/.
 // Read + write are gated by board membership, resolved cross-service from the
@@ -29,6 +30,32 @@ service firebase.storage {
     match /boards/{boardId}/images/{imageId}/{fileName} {
       allow read:  if isBoardMember(boardId);
       allow write: if isBoardMember(boardId) && isValidImageUpload();
+      allow delete: if isBoardMember(boardId);
+    }
+
+    // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9). One .m4a
+    // object per note under boards/{boardId}/audio/{audioId}/ (audioService.ts
+    // names the file note.m4a). Same access model as the image block above —
+    // board-membership gated cross-service via the board doc's `members`, so
+    // the doc (firestore.rules' `boards/{boardId}/audio` match) and the bytes
+    // share one predicate. The 60s recording cap (~80KB/10s per ROADMAP.md)
+    // puts a full-length note under 1 MB; 2 MB leaves headroom for a lower
+    // bitrate device/encoder without opening this up to arbitrary uploads.
+    //
+    // NOTE: this rule, like the image block above, gates on board membership
+    // ONLY — it does not check plan. Voice notes are billed as Pro-tier
+    // (ROADMAP.md item 9) but that is enforced NOWHERE server-side today; see
+    // audioService.ts's `canRecordVoiceNotes` header for the full advisory-only
+    // rationale. Do not read this rule's presence as proof the tier is
+    // enforced.
+    function isValidAudioUpload() {
+      return request.resource.size < 2 * 1024 * 1024 &&
+             request.resource.contentType.matches('audio/.*');
+    }
+
+    match /boards/{boardId}/audio/{audioId}/{fileName} {
+      allow read:  if isBoardMember(boardId);
+      allow write: if isBoardMember(boardId) && isValidAudioUpload();
       allow delete: if isBoardMember(boardId);
     }
 
