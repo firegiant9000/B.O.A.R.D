@@ -122,18 +122,24 @@ export default function ClassroomHome() {
     }
   };
 
+  // Fix round 3, B — rosterError previously reset only at the top of
+  // handleRemoveStudent, so failing a removal on one class, closing its
+  // roster, and opening a DIFFERENT class's roster showed that class the
+  // first one's stale error. Cleared here too, on every toggle.
   const toggleRoster = (classId: string) => {
     setOpenRosterClassId((prev) => (prev === classId ? null : classId));
+    setRosterError(null);
   };
 
   // Fix round 2, S2 — this was `try { … } finally { … }` with no `catch`,
   // called from a floating `onPress`: any rejection (e.g. a stale roster
   // racing another device's removal, or a genuine network failure) was an
   // unhandled promise rejection and a silent dead end — the student stayed
-  // in the list with no explanation. firestore.rules' removal arm now
-  // tolerates the specific "already gone" case as a no-op (see that rule's
-  // own comment), but a `catch` is still needed for every OTHER failure
-  // mode this can hit.
+  // in the list with no explanation. A stale "already gone" removal DOES
+  // still succeed as a no-op (see firestore.rules' removal-arm comment for
+  // exactly which OTHER arms grant that, redundantly — not this arm), but
+  // a `catch` is still needed for every genuine failure this can hit
+  // (permission denial, network error).
   const handleRemoveStudent = async (classId: string, uid: string) => {
     setRoster({ classId, loading: false, removingUid: uid });
     setRosterError(null);

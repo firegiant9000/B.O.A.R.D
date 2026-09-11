@@ -66,7 +66,10 @@ export interface CreateClassResponse {
  *  Takes a join code to try FIRST, but returns the code actually written —
  *  the two can differ after a retry (see makeWriteClass below), and the
  *  caller must return the REAL one or an instructor would be handed a code
- *  that doesn't resolve to anything. */
+ *  that doesn't resolve to anything. `classDoc` deliberately carries NO
+ *  `joinCode` field of its own (fix round 3, D) — `makeWriteClass` is the
+ *  SOLE place that ever stamps that field onto the class document, so
+ *  there is nothing here that could go stale across a retry. */
 export interface CreateClassDeps {
   writeClass(
     classDoc: Record<string, unknown>,
@@ -88,7 +91,8 @@ export async function handleCreateClass(
 
   // Generated here, never taken from req.data: a client cannot choose its
   // own join code (see this file's header, and generateInviteCode's own
-  // header on createBoard.ts).
+  // header on createBoard.ts). NOT included in the classDoc object below —
+  // see CreateClassDeps's own doc comment for why.
   const joinCode = generateInviteCode();
   const result = await deps.writeClass(
     {
@@ -96,7 +100,6 @@ export async function handleCreateClass(
       // Derived from the auth token, never trusted from the client — mirrors
       // ownerId/adminId in handleCreateBoard.
       instructorId: uid,
-      joinCode,
       // Enrollment is self-service only (see this file's header) — starts
       // empty and grows only through the `classes/{classId}` self-enroll
       // rules arm, never through this function.
@@ -113,7 +116,12 @@ export async function handleCreateClass(
 
 /** True for the Admin SDK's ALREADY_EXISTS failure (gRPC status code 6) —
  *  what `batch.create()` throws when `joinCodes/{code}` already has a
- *  document, i.e. a real collision on the join-code keyspace. */
+ *  document, i.e. a real collision on the join-code keyspace. Deliberately
+ *  numeric-only: the Admin SDK reports gRPC status codes as numbers, never
+ *  as the string codes the CLIENT SDK uses (e.g. "already-exists") — see
+ *  this file's own tests pinning both a different numeric code and a
+ *  string-coded error as NOT matching, so a future widening of this check
+ *  (or dropping it) can't silently turn an unrelated failure into a retry. */
 function isAlreadyExistsError(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === 6;
 }
@@ -124,8 +132,20 @@ function isAlreadyExistsError(err: unknown): boolean {
  *  so a class is never created without its lookup entry, or vice versa —
  *  and the lookup entry is `create`d, never `set`, so a collision fails the
  *  batch instead of silently overwriting another class's code (see this
- *  file's header). On that failure, regenerates a fresh code and retries,
- *  up to `MAX_JOIN_CODE_ATTEMPTS` times, before giving up. */
+ *  file's header).
+ *
+ *  On an ALREADY_EXISTS collision, regenerates a fresh code and retries, up
+ *  to `MAX_JOIN_CODE_ATTEMPTS` times. Any OTHER failure (a genuine
+ *  permission/network error, not a collision) propagates immediately,
+ *  regardless of which attempt it happened on — only a real collision
+ *  consumes a retry. After `MAX_JOIN_CODE_ATTEMPTS` genuine collisions (an
+ *  astronomically unlikely event — see this file's header), the function
+ *  gives up and throws a friendly, actionable error: this path is
+ *  genuinely reachable (fix round 3, D — an earlier version of this
+ *  function re-threw the raw ALREADY_EXISTS error on final exhaustion
+ *  instead, which made the "friendly" message dead code no caller could
+ *  ever see; this version doesn't re-throw on the LAST attempt, so the
+ *  loop falls through to the throw below instead). */
 export function makeWriteClass(db: Firestore): CreateClassDeps["writeClass"] {
   return async (classDoc, initialJoinCode) => {
     let code = initialJoinCode;
@@ -139,16 +159,20 @@ export function makeWriteClass(db: Firestore): CreateClassDeps["writeClass"] {
         await batch.commit();
         return { classId: classRef.id, joinCode: code };
       } catch (err) {
-        if (attempt < MAX_JOIN_CODE_ATTEMPTS && isAlreadyExistsError(err)) {
+        // A non-collision failure (permission, network, anything else)
+        // propagates immediately — it is never worth retrying, and
+        // retrying it would just spend the collision budget on an
+        // unrelated problem.
+        if (!isAlreadyExistsError(err)) throw err;
+        if (attempt < MAX_JOIN_CODE_ATTEMPTS) {
           code = generateInviteCode();
           continue;
         }
-        throw err;
+        // Final attempt, still a genuine collision: fall through to the
+        // friendly error below rather than re-throwing the raw one — see
+        // this function's own doc comment.
       }
     }
-    // Unreachable — the loop above always returns or throws — kept so
-    // TypeScript sees every path return, and so a future refactor that
-    // breaks that invariant fails loudly instead of returning `undefined`.
     throw new HttpsError("internal", "Could not allocate a unique join code. Please try again.");
   };
 }

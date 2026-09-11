@@ -150,14 +150,19 @@ export async function getEnrolledClasses(uid: string): Promise<ClassRoom[]> {
  * function.
  *
  * `arrayRemove` of a uid already gone from the roster (stale list, another
- * device got there first) computes an UNCHANGED array — firestore.rules'
- * removal arm itself denies that (it's not a size-1 shrink), but the
- * self-enroll arm's own pre-existing idempotent branch (`next == prev`,
- * open to any signed-in caller touching only `studentIds`/`updatedAt`)
- * already allows the resulting no-op write, so this still succeeds. Fix
- * round 2, S2's actual gap was purely client-side: this function's caller
- * (ClassroomHome's `handleRemoveStudent`) had no `catch` at all, so any
- * OTHER failure (a genuine denial, a network error) was an unhandled
+ * device got there first) computes an UNCHANGED array — this arm's OWN
+ * shrink-by-one clause denies that outright (it's not a size-1 shrink),
+ * but the write still succeeds, REDUNDANTLY, via two OTHER arms:
+ * firestore.rules' rename arm (an unchanged-`studentIds` write has an
+ * EMPTY, or `updatedAt`-only, `affectedKeys()` diff, which its
+ * `hasOnly(['name','updatedAt'])` accepts vacuously) and the self-enroll
+ * arm's own `next == prev` branch (open to any signed-in caller, not
+ * instructor-specific). Fix round 3 — an earlier version of this comment
+ * attributed this to the self-enroll arm alone; see firestore.rules' own
+ * removal-arm comment for the corrected, arm-isolation-verified account.
+ * Fix round 2, S2's actual gap was purely client-side: this function's
+ * caller (ClassroomHome's `handleRemoveStudent`) had no `catch` at all, so
+ * any OTHER failure (a genuine denial, a network error) was an unhandled
  * rejection.
  */
 export async function removeStudentFromClass(classId: string, uid: string): Promise<void> {

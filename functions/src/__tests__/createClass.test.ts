@@ -57,7 +57,12 @@ describe("handleCreateClass", () => {
     expect(written.instructorId).not.toBe("victim");
   });
 
-  it("ignores any client-supplied joinCode and generates its own", async () => {
+  // Fix round 3, D — classDoc no longer carries a joinCode field at all
+  // (makeWriteClass is the sole place that stamps it, via the second
+  // argument); this proves that directly rather than just checking the
+  // response, so a future regression that reintroduces a stale field in
+  // classDoc would be caught here.
+  it("ignores any client-supplied joinCode, generates its own, and never puts it in classDoc", async () => {
     const d = deps();
     const res = await handleCreateClass(
       reqFor("instructor1", { name: "CS 101", joinCode: "HACKED" }),
@@ -65,9 +70,11 @@ describe("handleCreateClass", () => {
       0
     );
     expect(res.joinCode).not.toBe("HACKED");
+    expect(res.joinCode).toMatch(/^[A-Z0-9]{6}$/);
     const written = d.writeClass.mock.calls[0][0];
-    expect(written.joinCode).toBe(res.joinCode);
-    expect(written.joinCode).not.toBe("HACKED");
+    expect(written).not.toHaveProperty("joinCode");
+    expect(d.writeClass.mock.calls[0][1]).toBe(res.joinCode);
+    expect(d.writeClass.mock.calls[0][1]).not.toBe("HACKED");
   });
 
   it("ignores any client-supplied studentIds — a class always starts with none enrolled", async () => {
@@ -128,6 +135,15 @@ describe("makeWriteClass", () => {
     return err;
   }
 
+  /** Makes every `batch()` call's `commit()` reject with `err`. */
+  function failEveryCommitWith(fakeDb: ReturnType<typeof makeFakeDb>["fakeDb"], batches: ReturnType<typeof makeFakeDb>["batches"], err: unknown) {
+    (fakeDb.batch as jest.Mock).mockImplementation(() => {
+      const b = { create: jest.fn(), set: jest.fn(), commit: jest.fn(async () => { throw err; }) };
+      batches.push(b);
+      return b;
+    });
+  }
+
   // Fix round 1, I4 — the class doc and its joinCodes lookup entry must be
   // written atomically (one batch), never as two independent writes that
   // could diverge if the second failed. Fix round 2 — the lookup entry
@@ -178,19 +194,69 @@ describe("makeWriteClass", () => {
     // and that the SECOND batch is the one that actually committed.
     expect(res.joinCode).toMatch(/^[A-Z0-9]{6}$/);
     expect(res.classId).toBeTruthy();
+    // Fix round 3, D — the retried batch's WRITTEN classDoc must carry the
+    // NEW code, not the stale original ("ABC123") that just collided. This
+    // is what makes the `{...classDoc, joinCode: code}` spread load-bearing
+    // rather than decorative; a future regression that forgot to override
+    // it here would still return the right `res.joinCode` (the return
+    // value is independent) but would write the WRONG one to Firestore.
+    expect(batches[1].set).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ joinCode: res.joinCode })
+    );
+    expect(res.joinCode).not.toBe("ABC123");
   });
 
-  it("gives up after MAX_JOIN_CODE_ATTEMPTS (3) collisions rather than retrying forever", async () => {
+  it("gives up after MAX_JOIN_CODE_ATTEMPTS (3) collisions, surfacing a friendly error rather than the raw one", async () => {
     const { fakeDb, batches } = makeFakeDb();
-    (fakeDb.batch as jest.Mock).mockImplementation(() => {
-      const b = { create: jest.fn(), set: jest.fn(), commit: jest.fn(async () => { throw alreadyExistsError(); }) };
-      batches.push(b);
-      return b;
-    });
+    failEveryCommitWith(fakeDb, batches, alreadyExistsError());
     const writeClass = makeWriteClass(fakeDb as never);
 
-    await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toMatchObject({ code: 6 });
+    // Fix round 3, D — the tail error is now genuinely reachable (an
+    // earlier version re-threw the raw ALREADY_EXISTS error on the final
+    // attempt instead, making this HttpsError dead code). Asserting on
+    // `code: "internal"` here — not `{code: 6}` — is what actually proves
+    // that.
+    await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toMatchObject({
+      code: "internal",
+    });
     // Exactly 3 attempts — bounded, not 2, not unbounded.
     expect(batches).toHaveLength(3);
+  });
+
+  // Fix round 3, C — nothing previously pinned that a NON-collision
+  // failure propagates immediately (no retry spent on an unrelated
+  // problem) rather than being swallowed into the retry loop. Each case
+  // below is a shape `isAlreadyExistsError` must NOT match.
+  describe("does not retry a non-collision failure", () => {
+    it("propagates a different gRPC code (7, PERMISSION_DENIED) after exactly one attempt", async () => {
+      const { fakeDb, batches } = makeFakeDb();
+      const err = Object.assign(new Error("7 PERMISSION_DENIED"), { code: 7 });
+      failEveryCommitWith(fakeDb, batches, err);
+      const writeClass = makeWriteClass(fakeDb as never);
+
+      await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toBe(err);
+      expect(batches).toHaveLength(1);
+    });
+
+    it("propagates a bare Error with no `.code` at all after exactly one attempt", async () => {
+      const { fakeDb, batches } = makeFakeDb();
+      const err = new Error("network down");
+      failEveryCommitWith(fakeDb, batches, err);
+      const writeClass = makeWriteClass(fakeDb as never);
+
+      await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toBe(err);
+      expect(batches).toHaveLength(1);
+    });
+
+    it("propagates a STRING-coded error (the client SDK's shape, e.g. \"already-exists\") after exactly one attempt", async () => {
+      const { fakeDb, batches } = makeFakeDb();
+      const err = Object.assign(new Error("already-exists"), { code: "already-exists" });
+      failEveryCommitWith(fakeDb, batches, err);
+      const writeClass = makeWriteClass(fakeDb as never);
+
+      await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toBe(err);
+      expect(batches).toHaveLength(1);
+    });
   });
 });

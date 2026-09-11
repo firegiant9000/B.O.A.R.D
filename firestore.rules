@@ -648,20 +648,34 @@ service cloud.firestore {
       // prev with exactly one distinct element removed.
       //
       // Fix round 2, S2 — `arrayRemove` of a uid already gone from the
-      // roster (stale client list, another device already removed them)
-      // is a client-side no-op: `next.studentIds == prev.studentIds`
-      // exactly. This arm's OWN shrink-by-one clause denies that (size
-      // diff is 0, not -1) — but it doesn't need a matching idempotent
-      // branch of its own, because the self-enroll arm's `next == prev`
-      // clause below ALREADY allows any signed-in caller to resend the
-      // unchanged roster (see that arm's own comment) whenever the write
-      // only touches `studentIds`/`updatedAt`, with no instructorId check
-      // at all. Verified empirically: adding a removal-specific
-      // idempotent clause here was provably dead code — disabling it
-      // changed nothing, because the self-enroll arm already covers this
-      // exact write. The actual gap was purely client-side (see
-      // classroomService.removeStudentFromClass's own header) — no rules
-      // change was needed for this half.
+      // roster (stale client list, another device already removed them) is
+      // a client-side no-op: `next.studentIds == prev.studentIds` exactly.
+      // This arm's OWN shrink-by-one clause denies that outright (size
+      // diff is 0, not -1) — but a dedicated removal-arm idempotent clause
+      // would be a THIRD, entirely redundant grant. This exact write is
+      // ALREADY allowed, REDUNDANTLY, by two other arms at once:
+      //   1. The RENAME arm just above. `diff().affectedKeys()` on a write
+      //      that only resends the CURRENT `studentIds` value is EMPTY (or
+      //      `{updatedAt}` for the real client write, which stamps
+      //      `serverTimestamp()`) — and `hasOnly(['name','updatedAt'])` is
+      //      satisfied vacuously by an empty set, or trivially by
+      //      `{updatedAt}` alone. Neither check reads `studentIds` at all.
+      //   2. The self-enroll arm's own `next == prev` clause below, which
+      //      has no instructorId check and grants an idempotent resend to
+      //      ANY signed-in caller (the same accepted tradeoff this file's
+      //      N4 ruling covers), not just the instructor.
+      // Fix round 3 (BLOCKING) — an earlier version of this comment
+      // attributed this SOLELY to the self-enroll arm and called that
+      // "verified empirically" from disabling only the (never-shipped)
+      // removal-arm clause; that check could not distinguish "two
+      // redundant grantors" from "three," so the claim was unfalsifiable
+      // by construction — the same class of mistake as S1's fixture miss,
+      // in prose instead of a test. Re-verified properly this round by
+      // ARM ISOLATION: disabling the rename arm alone still passes (via
+      // self-enroll); disabling self-enroll's idempotent branch alone
+      // still passes (via rename); disabling BOTH together is what
+      // actually fails. The conclusion (no removal-arm clause needed) was
+      // right; the reasoning was not, and now is.
       //
       // Self-enrollment mirrors the board invite-code self-join rule:
       // append EXACTLY the caller's own uid to `studentIds`. Fix round 1,
@@ -1138,12 +1152,25 @@ service cloud.firestore {
       // server-side). Reads, updates, the joinCode self-join and delete are all
       // unchanged. See the deploy-order warning at the top of this file.
       allow create: if false;
+      // Fix round 3, A — this arm was the pre-C1 shape verbatim: `hasAll` +
+      // `size==prev+1` + `hasAny([caller])`, with no check that the caller
+      // wasn't ALREADY a participant. Exactly C1's hole (firestore.rules'
+      // `classes` match block, self-enroll arm): an existing participant
+      // could add an ARBITRARY uid to `participantIds` — they're already
+      // in `prev`, so trivially in `next` too, and nothing pinned the
+      // ADDED element to the caller. `!(caller in prev)` below closes it
+      // the same way, forcing this arm to apply only to a genuinely NEW
+      // join. Caught on a full-file sweep after the `classes` fix, not by
+      // this task's own scope — the same vector, unfixed one match block
+      // away, would have been exactly the "fixed the named instance, not
+      // the class of bug" mistake this branch has already paid for once.
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       (
                         resource.data.joinCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantIds']) &&
                         request.resource.data.participantIds.hasAll(resource.data.participantIds) &&
+                        !(request.auth.uid in resource.data.participantIds) &&
                         request.resource.data.participantIds.size() == resource.data.participantIds.size() + 1 &&
                         request.resource.data.participantIds.hasAny([request.auth.uid])
                       )

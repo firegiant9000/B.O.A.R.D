@@ -374,6 +374,17 @@ beforeEach(async () => {
       participantIds: [],
       joinCode: null,
     });
+    // Fix round 3, A — has an EXISTING participant (evil), unlike
+    // sessCoded above (empty participantIds): needed to test that an
+    // ALREADY-joined caller can't add an arbitrary uid, the exact shape
+    // C1 fixed on `classes`.
+    await setDoc(doc(db, "sessions/sessCodedWithParticipant"), {
+      workspaceId: "wsA",
+      boardId: "boardCoded",
+      createdById: ALICE,
+      participantIds: [EVIL],
+      joinCode: "SESS-FFFFFF",
+    });
 
     // Phase 8 — a seeded activity event in wsA, authored by alice.
     await setDoc(doc(db, "workspaces/wsA/activity/ev1"), {
@@ -948,6 +959,44 @@ describe("sessions inherit workspace", () => {
   it("the joinCode self-join update still works — only create is denied", async () => {
     await assertSucceeds(
       updateDoc(doc(db(BOB), "sessions/sessCoded"), { participantIds: [BOB] })
+    );
+  });
+
+  // Fix round 3, A (CRITICAL vector, same shape as `classes`' C1) — this
+  // arm was the pre-C1 shape verbatim: `hasAll(prev)` + `size==prev+1` +
+  // `hasAny([caller])`, with no check that the caller wasn't ALREADY a
+  // participant. `evil` is already in sessCodedWithParticipant's
+  // `participantIds`, so (pre-fix) `evil` could add ANY third uid: already
+  // in `prev`, so trivially in `next` too, and nothing pinned the ADDED
+  // element to `evil` specifically.
+  it("CRITICAL: denies an ALREADY-joined participant from adding an arbitrary third party", async () => {
+    await assertFails(
+      updateDoc(doc(db(EVIL), "sessions/sessCodedWithParticipant"), {
+        participantIds: [EVIL, "stranger"],
+      })
+    );
+  });
+
+  // Positive control: a genuinely NEW caller can still join the SAME
+  // session via the SAME joinCode path — the fix denies the exploit, not
+  // ordinary self-join.
+  it("still lets a genuinely new caller join that same session", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "sessions/sessCodedWithParticipant"), {
+        participantIds: [EVIL, BOB],
+      })
+    );
+  });
+
+  // Confirms the review's own pre-flight check: a participant re-joining
+  // (resubmitting the UNCHANGED list) already failed the size==prev+1
+  // check before this fix and still does after it — this fix denies
+  // nothing that currently succeeds, only the exploit above.
+  it("a participant re-submitting the unchanged list is still denied (pre-existing, unaffected by this fix)", async () => {
+    await assertFails(
+      updateDoc(doc(db(EVIL), "sessions/sessCodedWithParticipant"), {
+        participantIds: [EVIL],
+      })
     );
   });
 
@@ -2728,12 +2777,18 @@ describe("fix round 1, I3: instructor roster removal", () => {
   // Fix round 2, S2 — an instructor "removing" a uid that's already gone
   // (a resend of the CURRENT roster, unchanged) must succeed as a no-op
   // rather than being denied by the removal arm's own strict size-1
-  // check. It does — but empirically via the SELF-ENROLL arm's own
-  // pre-existing `next==prev` branch (open to any signed-in caller, not
-  // instructor-specific), not a removal-arm clause of its own: a
-  // removal-specific idempotent clause was tried and found to be
-  // provably dead code (disabling it changed nothing), so it was
-  // removed again rather than kept as decoration.
+  // check. It does — REDUNDANTLY, via two OTHER arms at once, neither of
+  // them a removal-specific clause: the rename arm (an unchanged-
+  // `studentIds` write has an empty/`updatedAt`-only `affectedKeys()`
+  // diff, which `hasOnly(['name','updatedAt'])` accepts vacuously) and
+  // the self-enroll arm's own `next==prev` branch (open to any signed-in
+  // caller, not instructor-specific). Fix round 3 — a removal-arm
+  // idempotent clause was tried and its removal verified by ARM
+  // ISOLATION (disable rename alone: still passes; disable self-enroll's
+  // idempotent branch alone: still passes; disable both: only then
+  // fails) — an earlier verification pass had checked only "disable the
+  // removal-specific clause," which cannot distinguish two redundant
+  // grantors from three, and wrongly credited self-enroll alone.
   it("lets the instructor resubmit the SAME roster as a no-op", async () => {
     await assertSucceeds(
       updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), {

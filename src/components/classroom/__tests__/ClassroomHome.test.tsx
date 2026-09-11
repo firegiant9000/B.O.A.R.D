@@ -180,4 +180,31 @@ describe("ClassroomHome", () => {
     // Still in the list — the failure did not optimistically remove them.
     expect(screen.getByTestId("remove-student-class1-student1")).toBeTruthy();
   });
+
+  // Fix round 3, B — rosterError previously reset only at the top of
+  // handleRemoveStudent, so failing a removal on class 1, closing its
+  // roster, and opening class 2's roster showed class 2 the STALE error
+  // from class 1.
+  it("clears a stale roster error when switching to a different class's roster", async () => {
+    mockGetInstructorClasses.mockResolvedValue([
+      makeClass(),
+      makeClass({ id: "class2", name: "Bio 201", studentIds: ["student3"] }),
+    ]);
+    mockGetEnrolledClasses.mockResolvedValue([]);
+    mockRemoveStudent.mockRejectedValue(new Error("network down"));
+
+    render(<ClassroomHome />);
+    await waitFor(() => expect(screen.getByTestId("teaching-class-class1")).toBeTruthy());
+
+    // Fail a removal on class 1's roster.
+    fireEvent.press(screen.getByTestId("toggle-roster-class1"));
+    fireEvent.press(screen.getByTestId("remove-student-class1-student1"));
+    await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
+
+    // Close class 1's roster, open class 2's.
+    fireEvent.press(screen.getByTestId("toggle-roster-class1"));
+    fireEvent.press(screen.getByTestId("toggle-roster-class2"));
+
+    expect(screen.queryByText("network down")).toBeNull();
+  });
 });
