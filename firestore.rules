@@ -315,10 +315,11 @@ service cloud.firestore {
 
     // ── Month 6 polls ─────────────────────────────────────────────────────────
     // Helpers for the `polls`/`votes` match blocks below (inside `boards`).
-    // Split out (rather than inlined at each call site) because `isAnonymousPoll`
-    // and `isValidVotePayload` are each used from more than one `allow` clause,
-    // and the doc-access cache within one rules evaluation (noted at the board
-    // `allow update` above) means the repeat `get()`s below cost nothing extra.
+    // Split out (rather than inlined at each call site) because `pollData`
+    // and `isValidVotePayload` are each used from more than one `allow`
+    // clause, and the doc-access cache within one rules evaluation (noted
+    // at the board `allow update` above) means the repeat `get()`s below
+    // cost nothing extra.
     function pollExists(boardId, pollId) {
       return exists(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId));
     }
@@ -327,20 +328,42 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId)).data;
     }
 
-    // FAIL CLOSED on a missing poll doc (`!pollExists(...) || ...`, defaulting
-    // the `anonymous` field itself to `true` too): a member with delete rights
-    // on the poll (any effective editor) could otherwise delete the poll doc
-    // out from under its own anonymous votes and make them appear "anonymous:
-    // false" by the absence of anything to read `anonymous` off of, unmasking
-    // every voter's identity. Treating "poll missing" as anonymous means a
-    // deleted poll's orphaned votes stay exactly as unreadable as they were the
-    // instant before the delete — see pollService.deletePoll for why the
-    // client-side cleanup path deletes votes/tally BEFORE the poll doc, though
-    // this rule does not depend on that ordering for its own safety.
-    function isAnonymousPoll(boardId, pollId) {
-      return !pollExists(boardId, pollId) ||
-        pollData(boardId, pollId).get('anonymous', true) == true;
-    }
+    // Fix round 2 (CRITICAL) — this file used to gate votes-read on
+    // `isAnonymousPoll(boardId, pollId)`, which read the PARENT poll doc's
+    // CURRENT `anonymous` field. That field is mutable (round 1 pinned it on
+    // `update`) but NOT recreate-proof: Firestore never cascade-deletes
+    // subcollections (pollService.ts's deletePoll/clearBoardPolls headers),
+    // so an effective editor could `deleteDoc` the poll directly — skipping
+    // the client-side votes/tally cleanup `deletePoll` does — then
+    // `setDoc` a FRESH poll at the SAME id with `anonymous: false` (a
+    // `create`, since `resource` is null after the delete, so round 1's
+    // `allow update` pin never runs). The old votes were never deleted; they
+    // sit right there under the recreated poll's own path, and
+    // `isAnonymousPoll` would then read the NEW doc's `false` and open the
+    // entire subcollection — whose document ids ARE the voters' uids.
+    //
+    // The fix: a vote's readability no longer derives from the parent poll
+    // AT ALL. Each vote doc stamps its OWN `anonymous` boolean, fixed at the
+    // moment THAT SPECIFIC doc is first created (validated below against the
+    // poll's value at that instant — a voter can't just declare themselves
+    // anonymous) and pinned immutable on every later update to that SAME
+    // doc (`votes/{voterId}`'s `allow update`, below) — independent of
+    // whatever the parent poll claims afterward, through an update, a
+    // delete, or a delete-then-recreate alike. Votes-read gates on THIS
+    // field (`resource.data.anonymous == false`), never on `pollData(...)`.
+    //
+    // Consequence for READS: because the condition now depends on the vote
+    // document's OWN data (not a fixed cross-document fact true for the
+    // whole collection), an unfiltered collection query can no longer be
+    // proven safe ahead of time — Firestore requires a LIST query to be
+    // satisfiable from the query's own shape, not from re-checking each
+    // potential result. `pollService.subscribeToVotes` and
+    // `pollService.deletePoll` both add `where('anonymous', '==', false)`
+    // for exactly this reason (see their own comments) — no code path ever
+    // needed to list anonymous votes anyway (nothing may ever read them,
+    // not even to clean them up: an anonymous poll's votes are permanently
+    // orphaned once its poll doc is gone, by the same design that keeps
+    // them unreadable in the first place).
 
     // Bounds `optionIndices`' SIZE against the poll's mode (single = exactly
     // one; dots = 1..MAX_DOT_VOTES, mirrored from pollService.MAX_DOT_VOTES —
@@ -743,23 +766,27 @@ service cloud.firestore {
         // Fix round 1, item 1 — an EARLIER version of this rule was
         // `allow update, delete: if isBoardEditor(boardId)`, with no field
         // constraint at all. That let any editor flip `anonymous` to false
-        // post hoc: `isAnonymousPoll` (above) reads the CURRENT value of the
-        // very field the caller had just changed, so
-        // `updateDoc(poll, {anonymous: false})` followed by a votes read
-        // retroactively de-anonymized every vote already cast under the
-        // anonymity promise — defeating the one guarantee the whole trigger
-        // design (functions/src/triggers/pollTally.ts) exists to protect,
+        // post hoc, retroactively de-anonymizing every vote already cast —
         // and on a LEGACY (no-workspaceId) board `isBoardEditor` grants
         // editor to every member, so the unmasker could be anyone. The same
         // unconstrained rule also let `options` be rewritten to any length
-        // (the [2,6] bound was create-only) and `createdById` reassigned to
-        // another user. `active` (quiz sequencing's own field —
+        // (the [2,6] bound was create-only), `createdById` reassigned to
+        // another user, and (fix round 2) `mode` switched between "single"
+        // and "dots" — which would reinterpret every vote already cast the
+        // same way flipping `anonymous` would unmask them (this is exactly
+        // why creation-time-only mode selection was accepted in the first
+        // place: a live mode switch changes the MEANING of existing votes,
+        // not just their display). `active` (quiz sequencing's own field —
         // pollService.advanceQuiz) is the only field this update path is
         // FOR, so everything else that was true before the write must stay
-        // true after it.
+        // true after it. NOTE: pinning fields on the POLL doc is necessary
+        // but — as fix round 2 found — NOT sufficient for `anonymous`; see
+        // `votes/{voterId}`'s own header below for why that guarantee had
+        // to move to the vote doc itself.
         allow update: if isBoardEditor(boardId) &&
                         request.resource.data.anonymous == resource.data.anonymous &&
                         request.resource.data.createdById == resource.data.createdById &&
+                        request.resource.data.mode == resource.data.mode &&
                         request.resource.data.options.size() >= 2 &&
                         request.resource.data.options.size() <= 6;
         allow delete: if isBoardEditor(boardId);
@@ -776,25 +803,41 @@ service cloud.firestore {
         // Fix round 1, item 6 — `hasOnly` pins the vote doc's field set so a
         // commenter can't smuggle arbitrary extra fields into their own vote
         // doc (member-readable on a non-anonymous poll).
+        //
+        // Fix round 2 (CRITICAL) — `anonymous` here is the VOTE's OWN
+        // stamp, not a read of the parent poll (see the big comment above
+        // `isValidVotePayload`, and pollService.ts's `castVote`/
+        // `toggleDotVote` headers for the write side, which preserve an
+        // EXISTING doc's original stamp on every later write rather than
+        // re-deriving it): `create` requires it to match the poll's value
+        // at THIS instant; `update` pins it to whatever THIS doc already
+        // has, forever, regardless of what the parent poll does later
+        // (update, delete, or delete-then-recreate alike). Read gates on
+        // `resource.data.anonymous` directly — never on `pollData(...)`.
+        //
+        // The denial still applies to EVERY member when that field is
+        // `true`, including the board admin and the voter reading their
+        // own doc back — "anonymous to other users" (the brief's own
+        // words) means anonymous to every user, the voter included; there
+        // is no safe partial exception, because even a single-doc read
+        // reveals that THIS uid voted. A voter's UI tracks its own
+        // just-cast selection locally (the write resolving is the
+        // confirmation) rather than reading it back.
         match /votes/{voterId} {
-          // Anonymous-mode read denial applies to EVERY member, including the
-          // board admin and the voter reading their own doc back — "anonymous
-          // to other users" (the brief's own words) means anonymous to every
-          // user, the voter included; there is no safe partial exception,
-          // because even a single-doc read reveals that THIS uid voted. A
-          // voter's UI tracks its own just-cast selection locally (the write
-          // resolving is the confirmation) rather than reading it back.
-          allow read:   if isBoardMember(boardId) && !isAnonymousPoll(boardId, pollId);
+          allow read:   if isBoardMember(boardId) && resource.data.anonymous == false;
           allow create: if isBoardCommenter(boardId) &&
                           voterId == request.auth.uid &&
                           request.resource.data.userId == request.auth.uid &&
-                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'createdAt']) &&
+                          pollExists(boardId, pollId) &&
+                          request.resource.data.anonymous == pollData(boardId, pollId).get('anonymous', true) &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'anonymous', 'createdAt']) &&
                           isValidVotePayload(boardId, pollId);
           allow update: if isBoardCommenter(boardId) &&
                           voterId == request.auth.uid &&
                           resource.data.userId == request.auth.uid &&
                           request.resource.data.userId == request.auth.uid &&
-                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'createdAt']) &&
+                          request.resource.data.anonymous == resource.data.anonymous &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'anonymous', 'createdAt']) &&
                           isValidVotePayload(boardId, pollId);
           allow delete: if isBoardAdmin(boardId) ||
                           (isBoardCommenter(boardId) &&
@@ -806,9 +849,10 @@ service cloud.firestore {
         // index.ts) — written ONLY by the Admin SDK from
         // functions/src/triggers/pollTally.ts, which bypasses these rules, so
         // every client write is denied here exactly like usage/billing above.
-        // Member-readable unconditionally (never gated on isAnonymousPoll):
-        // it carries vote COUNTS only, never a voter's identity, so it is
-        // exactly as safe to read as a non-anonymous poll's live vote count.
+        // Member-readable unconditionally (never gated on the votes'
+        // anonymity check above): it carries vote COUNTS only, never a
+        // voter's identity, so it is exactly as safe to read as a
+        // non-anonymous poll's live vote count.
         match /tally/{tallyId} {
           allow read:  if isBoardMember(boardId);
           allow write: if false;

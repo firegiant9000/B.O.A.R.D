@@ -169,8 +169,8 @@ describe("subscribeToBoardPolls", () => {
 });
 
 describe("castVote", () => {
-  it("writes the vote at the deterministic {uid} doc id, first vote and revote alike", async () => {
-    await pollService.castVote("b1", "p1", "u1", [0]);
+  it("writes the vote at the deterministic {uid} doc id, first vote and revote alike, stamping the caller-supplied anonymous flag", async () => {
+    await pollService.castVote("b1", "p1", "u1", [0], false);
 
     expect((fs.doc as jest.Mock).mock.calls.at(-1)).toEqual([
       {},
@@ -183,14 +183,14 @@ describe("castVote", () => {
     ]);
     expect(setDoc).toHaveBeenCalledTimes(1);
     const payload = setDoc.mock.calls[0][1];
-    expect(payload).toMatchObject({ userId: "u1", optionIndices: [0] });
+    expect(payload).toMatchObject({ userId: "u1", optionIndices: [0], anonymous: false });
     expect(payload.createdAt).toBe("__serverTimestamp__");
 
     // Changing your mind is the SAME call shape — a second castVote at the
     // same (boardId, pollId, userId) addresses the identical doc id, which is
     // what firestore.rules' "allow update" for the voter's own doc is FOR
     // (see PollElement's type comment) — never a second row.
-    await pollService.castVote("b1", "p1", "u1", [2]);
+    await pollService.castVote("b1", "p1", "u1", [2], false);
     expect(setDoc).toHaveBeenCalledTimes(2);
     expect((fs.doc as jest.Mock).mock.calls.at(-1)).toEqual([
       {},
@@ -201,51 +201,56 @@ describe("castVote", () => {
       "votes",
       "u1",
     ]);
-    expect(setDoc.mock.calls[1][1]).toMatchObject({ optionIndices: [2] });
+    expect(setDoc.mock.calls[1][1]).toMatchObject({ optionIndices: [2], anonymous: false });
+  });
+
+  it("stamps anonymous: true when the caller passes it, for an anonymous poll's first vote", async () => {
+    await pollService.castVote("b1", "pAnon", "u1", [0], true);
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ anonymous: true });
   });
 });
 
 describe("castSingleVote", () => {
-  it("wraps a lone index in an array and delegates to castVote's write shape", async () => {
-    await pollService.castSingleVote("b1", "p1", "u1", 1);
-    expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [1] });
+  it("wraps a lone index in an array and delegates to castVote's write shape, including the anonymous stamp", async () => {
+    await pollService.castSingleVote("b1", "p1", "u1", 1, false);
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [1], anonymous: false });
   });
 });
 
 describe("toggleDotVote", () => {
-  it("adds the option when the caller has no existing vote", async () => {
+  it("adds the option when the caller has no existing vote, stamping the caller-supplied anonymous flag", async () => {
     getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
 
-    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0);
+    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0, false);
 
     expect(result).toEqual([0]);
     expect(setDoc).toHaveBeenCalledTimes(1);
-    expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [0] });
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [0], anonymous: false });
     expect(deleteDoc).not.toHaveBeenCalled();
   });
 
   it("adds a second dot alongside an existing one", async () => {
-    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0] }));
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0], anonymous: false }));
 
-    const result = await pollService.toggleDotVote("b1", "p1", "u1", 1);
+    const result = await pollService.toggleDotVote("b1", "p1", "u1", 1, false);
 
     expect(result).toEqual([0, 1]);
     expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [0, 1] });
   });
 
   it("removes an option already selected", async () => {
-    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0, 1] }));
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0, 1], anonymous: false }));
 
-    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0);
+    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0, false);
 
     expect(result).toEqual([1]);
     expect(setDoc.mock.calls[0][1]).toMatchObject({ optionIndices: [1] });
   });
 
   it("deletes the vote doc entirely when removing the last dot, rather than writing an empty array", async () => {
-    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0] }));
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: [0], anonymous: false }));
 
-    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0);
+    const result = await pollService.toggleDotVote("b1", "p1", "u1", 0, false);
 
     expect(result).toEqual([]);
     expect(deleteDoc).toHaveBeenCalledTimes(1);
@@ -254,13 +259,31 @@ describe("toggleDotVote", () => {
 
   it("is a no-op once the caller is already at MAX_DOT_VOTES and tries to add another", async () => {
     const atCap = Array.from({ length: pollService.MAX_DOT_VOTES }, (_, i) => i);
-    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: atCap }));
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { userId: "u1", optionIndices: atCap, anonymous: false }));
 
-    const result = await pollService.toggleDotVote("b1", "p1", "u1", pollService.MAX_DOT_VOTES);
+    const result = await pollService.toggleDotVote("b1", "p1", "u1", pollService.MAX_DOT_VOTES, false);
 
     expect(result).toEqual(atCap);
     expect(setDoc).not.toHaveBeenCalled();
     expect(deleteDoc).not.toHaveBeenCalled();
+  });
+
+  // Fix round 2 — firestore.rules pins a vote doc's `anonymous` immutable on
+  // update, so this function must never let a caller-supplied value
+  // override an EXISTING doc's original stamp (which could legitimately
+  // differ from the poll's CURRENT value after a poll delete-then-recreate
+  // — see firestore.rules' votes-read header). This is what makes that true
+  // regardless of what the caller passes.
+  it("preserves the EXISTING doc's own stamped anonymous value on update, ignoring a different caller-supplied value", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("u1", { userId: "u1", optionIndices: [0], anonymous: true })
+    );
+
+    // Caller passes `false` (e.g. what the poll's CURRENT doc now says,
+    // post-recreate) — the existing doc's own `true` must win instead.
+    await pollService.toggleDotVote("b1", "p1", "u1", 1, false);
+
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ anonymous: true });
   });
 });
 
@@ -299,6 +322,22 @@ describe("subscribeToVotes", () => {
     captured(makeQuerySnap([["u1", { userId: "u1", optionIndices: [0, "bogus", -1, 1.5, 2] }]]));
 
     expect(onChange.mock.calls[0][0][0].optionIndices).toEqual([0, 2]);
+  });
+
+  // Fix round 2 (CRITICAL) — REQUIRED, not an optimization: firestore.rules
+  // now gates votes-read on each vote doc's OWN `anonymous` field, a
+  // per-document condition Firestore can only allow for an unfiltered list
+  // query if the query itself constrains that field — an unfiltered
+  // `collection(...)` listen would be rejected outright by the real rules,
+  // even against an ordinary non-anonymous poll. See firestore.rules'
+  // votes-read header for the full reasoning.
+  it("filters where('anonymous', '==', false) — a bare unfiltered collection listen would be rejected by the real rules", () => {
+    onSnapshot.mockReturnValueOnce(() => {});
+    pollService.subscribeToVotes("b1", "p1", jest.fn());
+
+    expect(fs.where).toHaveBeenCalledWith("anonymous", "==", false);
+    const queryArgs = (fs.query as jest.Mock).mock.calls.at(-1);
+    expect(queryArgs).toContainEqual(expect.objectContaining({ field: "anonymous", op: "==", value: false }));
   });
 });
 
@@ -363,6 +402,26 @@ describe("deletePoll", () => {
     expect(batch.delete).toHaveBeenCalledTimes(3);
     expect(batch.commit).toHaveBeenCalledTimes(1);
     expect(deleteDoc).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix round 2 — same requirement as subscribeToVotes: an unfiltered votes
+  // listing would be rejected by the real rules now that read is gated on
+  // each vote's OWN `anonymous` field. Only non-anonymous votes are ever
+  // reachable here (anonymous ones stay permanently orphaned once their
+  // poll is deleted — see this function's own header).
+  it("filters the votes query to where('anonymous', '==', false)", async () => {
+    // Both reads return empty — no docs, so `deletePoll` never opens a
+    // batch at all (see its `for` loop's own length guard); leaving
+    // `writeBatch` unmocked here is deliberate, not an oversight: a queued
+    // `mockReturnValueOnce` that's never consumed would leak into a LATER
+    // test's `writeBatch()` call instead (jest.clearAllMocks() clears call
+    // history but not queued once-return-values) — exactly the failure
+    // mode this comment exists to warn the next editor away from.
+    getDocs.mockResolvedValueOnce(makeQuerySnap([])).mockResolvedValueOnce(makeQuerySnap([]));
+
+    await pollService.deletePoll("b1", "p1");
+
+    expect(fs.where).toHaveBeenCalledWith("anonymous", "==", false);
   });
 });
 

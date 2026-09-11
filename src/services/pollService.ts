@@ -6,8 +6,10 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
@@ -170,18 +172,35 @@ export function subscribeToBoardPolls(
   });
 }
 
-/** Realtime subscription to a NON-anonymous poll's votes. firestore.rules
- *  denies this read outright for an anonymous poll (PollElement's type
- *  comment) — this function does not itself know a poll's `anonymous` flag,
- *  so calling it against one surfaces as an onSnapshot permission-denied
- *  error, never a thrown exception here. Callers must route an anonymous
- *  poll to `subscribeToTally` instead. */
+/**
+ * Realtime subscription to a NON-anonymous poll's votes. firestore.rules
+ * denies this read outright for an anonymous poll (PollElement's type
+ * comment) — this function does not itself know a poll's `anonymous` flag,
+ * so calling it against one surfaces as an onSnapshot permission-denied
+ * error, never a thrown exception here. Callers must route an anonymous
+ * poll to `subscribeToTally` instead.
+ *
+ * Fix round 2 — filters `where('anonymous', '==', false)` rather than
+ * reading the collection unfiltered. This is REQUIRED, not an optimization:
+ * firestore.rules gates votes-read on each vote doc's OWN `anonymous` field
+ * (a per-document condition, since round 2 stopped deriving it from the
+ * mutable, recreatable parent poll — see that rule's header). Firestore can
+ * only allow an unfiltered "list" query when the rule is provably satisfied
+ * for every possible result WITHOUT inspecting each document — true for a
+ * cross-document check like the old parent-poll read, false for a
+ * same-document field check like this one. Without this filter, a plain
+ * `collection(...)` listen would be rejected outright, even against a
+ * perfectly ordinary non-anonymous poll with no anonymous votes in sight.
+ */
 export function subscribeToVotes(
   boardId: string,
   pollId: string,
   onChange: (votes: PollVote[]) => void
 ): () => void {
-  const ref = collection(db, "boards", boardId, "polls", pollId, "votes");
+  const ref = query(
+    collection(db, "boards", boardId, "polls", pollId, "votes"),
+    where("anonymous", "==", false)
+  );
   return onSnapshot(ref, (snapshot: any) => {
     const votes = snapshot.docs
       .map((d: any) => mapVoteDoc(d.id, d.data()))
@@ -220,28 +239,47 @@ export function subscribeToTally(
  * single-mode caller passes exactly one index (see `castSingleVote`); a
  * dots-mode caller wanting an add/remove toggle should use `toggleDotVote`
  * instead of computing the next array by hand.
+ *
+ * `anonymous` MUST be the poll's CURRENT `anonymous` value (the caller —
+ * `useBoardPolls` — reads it off the live poll it already holds). It is
+ * stamped onto the vote doc and, per firestore.rules, is validated to match
+ * on CREATE and pinned immutable on every later UPDATE (fix round 2) — so
+ * this is what actually decides the vote's own readability from here on,
+ * never the parent poll doc at read time (see that rule's header for why:
+ * the parent doc is mutable and, because Firestore never cascade-deletes
+ * subcollections, recreatable). One consequence: if this SAME doc already
+ * exists with a DIFFERENT stamped value than what's passed here (only
+ * reachable via the poll-recreate edge case that fix closes, since a
+ * poll's own `anonymous` is otherwise immutable post-creation), the write
+ * is rejected by that pin rather than silently flipping the stamp —
+ * `castVote` does not read-before-write to work around this; a revote
+ * failing safe here is the correct outcome, not a bug to route around.
  */
 export async function castVote(
   boardId: string,
   pollId: string,
   userId: string,
-  optionIndices: number[]
+  optionIndices: number[],
+  anonymous: boolean
 ): Promise<void> {
   await setDoc(doc(db, "boards", boardId, "polls", pollId, "votes", userId), {
     userId,
     optionIndices,
+    anonymous,
     createdAt: serverTimestamp(),
   });
 }
 
-/** Single-choice convenience: casts exactly one option. */
+/** Single-choice convenience: casts exactly one option. See `castVote` for
+ *  what `anonymous` must be. */
 export function castSingleVote(
   boardId: string,
   pollId: string,
   userId: string,
-  optionIndex: number
+  optionIndex: number,
+  anonymous: boolean
 ): Promise<void> {
-  return castVote(boardId, pollId, userId, [optionIndex]);
+  return castVote(boardId, pollId, userId, [optionIndex], anonymous);
 }
 
 /**
@@ -257,6 +295,15 @@ export function castSingleVote(
  * non-empty, and a zero-length selection isn't a vote — it's the absence of
  * one, which the votes subcollection already represents by having no doc.
  *
+ * `anonymous` is the poll's CURRENT value, used ONLY when this is a brand
+ * new vote doc (see `castVote`'s comment for what it must be and why). When
+ * a doc already exists here, its OWN stamped `anonymous` is reused instead
+ * — never the caller-supplied one — because firestore.rules pins that field
+ * immutable on update; this read already has the existing doc in hand
+ * (needed anyway for `current`), so preserving it costs nothing extra and
+ * keeps every write to an existing doc internally consistent by
+ * construction rather than relying on the rule to reject a mismatch.
+ *
  * Returns the caller's resulting selection (possibly empty), so a UI can
  * update its own state without a second read.
  */
@@ -264,11 +311,15 @@ export async function toggleDotVote(
   boardId: string,
   pollId: string,
   userId: string,
-  optionIndex: number
+  optionIndex: number,
+  anonymous: boolean
 ): Promise<number[]> {
   const ref = doc(db, "boards", boardId, "polls", pollId, "votes", userId);
   const existing = await getDoc(ref);
-  const current = existing.exists() ? readOptionIndices((existing.data() as any)?.optionIndices) : [];
+  const existingData = existing.exists() ? (existing.data() as any) : null;
+  const current = existingData ? readOptionIndices(existingData.optionIndices) : [];
+  const stampedAnonymous =
+    existingData && typeof existingData.anonymous === "boolean" ? existingData.anonymous : anonymous;
   const already = current.includes(optionIndex);
 
   let next: number[];
@@ -283,7 +334,7 @@ export async function toggleDotVote(
   if (next.length === 0) {
     await deleteDoc(ref);
   } else {
-    await setDoc(ref, { userId, optionIndices: next, createdAt: serverTimestamp() });
+    await setDoc(ref, { userId, optionIndices: next, anonymous: stampedAnonymous, createdAt: serverTimestamp() });
   }
   return next;
 }
@@ -313,14 +364,24 @@ export function countVotes(
  * Deletes a poll and its votes/tally subcollections, in 500-doc batches —
  * mirrors reactionService.clearBoardReactions/commentService's own cleanup.
  * Firestore never cascade-deletes subcollections on its own; left alone, a
- * deleted poll's votes would become permanently orphaned — and for an
- * anonymous poll, permanently UNREADABLE under firestore.rules' fail-closed
- * default once the parent poll doc is gone (see that rule's comment), so
- * this is the only path that ever reclaims them.
+ * deleted poll's votes would become permanently orphaned.
+ *
+ * Only ever enumerates (and so only ever deletes) NON-anonymous votes —
+ * `where('anonymous', '==', false)`, same requirement and reasoning as
+ * `subscribeToVotes` (fix round 2; see firestore.rules' votes-read header).
+ * An anonymous poll's votes are NOT reachable here, or anywhere: nothing —
+ * not even a board admin — may ever list them, by the same rule that keeps
+ * them unreadable in the first place, so they stay permanently orphaned
+ * once their poll is deleted. That is the intended, accepted shape of the
+ * anonymity guarantee (see firestore.rules), not a gap this function is
+ * meant to close.
  */
 export async function deletePoll(boardId: string, pollId: string): Promise<void> {
   const pollRef = doc(db, "boards", boardId, "polls", pollId);
-  const votesRef = collection(db, "boards", boardId, "polls", pollId, "votes");
+  const votesRef = query(
+    collection(db, "boards", boardId, "polls", pollId, "votes"),
+    where("anonymous", "==", false)
+  );
   const tallyRef = collection(db, "boards", boardId, "polls", pollId, "tally");
   const [votesSnap, tallySnap] = await Promise.all([getDocs(votesRef), getDocs(tallyRef)]);
   const allDocs = [...votesSnap.docs, ...tallySnap.docs];

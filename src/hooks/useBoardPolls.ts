@@ -165,32 +165,49 @@ export function useBoardPolls(boardId: string, opts: BoardPollsOptions): BoardPo
     [boardId, user, onError]
   );
 
+  // Fix round 2 — every vote write needs the poll's CURRENT `anonymous`
+  // value to stamp onto the vote doc (see pollService.castVote's comment
+  // for why the stamp, not the parent poll, is what decides a vote's
+  // readability from here on). Defaults to `true` (fail closed) for a
+  // pollId this hook doesn't currently hold, matching every other
+  // fail-closed default in this feature.
+  const anonymousOf = useCallback(
+    (pollId: string) => pollsById.get(pollId)?.anonymous ?? true,
+    [pollsById]
+  );
+
   const vote = useCallback(
     async (pollId: string, optionIndex: number) => {
       if (!user) return;
       try {
-        await pollService.castSingleVote(boardId, pollId, user.uid, optionIndex);
+        await pollService.castSingleVote(boardId, pollId, user.uid, optionIndex, anonymousOf(pollId));
         setMyLocalVotes((prev) => ({ ...prev, [pollId]: [optionIndex] }));
       } catch (e) {
         captureException(e, { op: "board.castVote" });
         onError("Failed to cast vote.");
       }
     },
-    [boardId, user, onError]
+    [boardId, user, onError, anonymousOf]
   );
 
   const toggleDot = useCallback(
     async (pollId: string, optionIndex: number) => {
       if (!user) return;
       try {
-        const next = await pollService.toggleDotVote(boardId, pollId, user.uid, optionIndex);
+        const next = await pollService.toggleDotVote(
+          boardId,
+          pollId,
+          user.uid,
+          optionIndex,
+          anonymousOf(pollId)
+        );
         setMyLocalVotes((prev) => ({ ...prev, [pollId]: next }));
       } catch (e) {
         captureException(e, { op: "board.toggleDotVote" });
         onError("Failed to update vote.");
       }
     },
-    [boardId, user, onError]
+    [boardId, user, onError, anonymousOf]
   );
 
   const deletePoll = useCallback(

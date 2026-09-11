@@ -254,12 +254,14 @@ describe("useBoardPolls — create", () => {
 });
 
 describe("useBoardPolls — vote / toggleDot / deletePoll", () => {
-  it("vote() delegates to castSingleVote with the current user's uid", async () => {
+  it("vote() delegates to castSingleVote with the current user's uid and a fail-closed anonymous=true for an unknown poll", async () => {
     const { result } = renderPolls();
     await act(async () => {
       await result.current.vote("p1", 1);
     });
-    expect(castSingleVote).toHaveBeenCalledWith("b1", "p1", "u1", 1);
+    // "p1" isn't in this hook's live poll list (no subscribeToBoardPolls
+    // callback fired) — fix round 2's fail-closed default applies.
+    expect(castSingleVote).toHaveBeenCalledWith("b1", "p1", "u1", 1, true);
   });
 
   it("toggleDot() delegates to toggleDotVote and records the returned selection locally", async () => {
@@ -268,8 +270,53 @@ describe("useBoardPolls — vote / toggleDot / deletePoll", () => {
     await act(async () => {
       await result.current.toggleDot("p1", 2);
     });
-    expect(toggleDotVote).toHaveBeenCalledWith("b1", "p1", "u1", 2);
+    expect(toggleDotVote).toHaveBeenCalledWith("b1", "p1", "u1", 2, true);
     expect(result.current.myVoteFor("p1")).toEqual([0, 2]);
+  });
+
+  // Fix round 2 — the poll's OWN current anonymous value must reach the
+  // service call, not just the fail-closed default; this is what a
+  // delete-then-recreated poll's anonymity guarantee ultimately rests on
+  // (see pollService.castVote/toggleDotVote and firestore.rules' votes-read
+  // header).
+  it("vote() looks up the poll's OWN anonymous flag and passes it through, for both true and false", async () => {
+    let pollsCb: (p: PollElement[]) => void = () => {};
+    subscribeToBoardPolls.mockImplementationOnce((_id, onChange) => {
+      pollsCb = onChange;
+      return jest.fn();
+    });
+    const { result } = renderPolls();
+    act(() =>
+      pollsCb([
+        poll({ id: "open", anonymous: false }),
+        poll({ id: "secret", anonymous: true }),
+      ])
+    );
+
+    await act(async () => {
+      await result.current.vote("open", 0);
+    });
+    expect(castSingleVote).toHaveBeenCalledWith("b1", "open", "u1", 0, false);
+
+    await act(async () => {
+      await result.current.vote("secret", 0);
+    });
+    expect(castSingleVote).toHaveBeenCalledWith("b1", "secret", "u1", 0, true);
+  });
+
+  it("toggleDot() looks up the poll's OWN anonymous flag too", async () => {
+    let pollsCb: (p: PollElement[]) => void = () => {};
+    subscribeToBoardPolls.mockImplementationOnce((_id, onChange) => {
+      pollsCb = onChange;
+      return jest.fn();
+    });
+    const { result } = renderPolls();
+    act(() => pollsCb([poll({ id: "open", anonymous: false, mode: "dots" })]));
+
+    await act(async () => {
+      await result.current.toggleDot("open", 0);
+    });
+    expect(toggleDotVote).toHaveBeenCalledWith("b1", "open", "u1", 0, false);
   });
 
   it("deletePoll() delegates to pollService.deletePoll", async () => {

@@ -286,11 +286,17 @@ beforeEach(async () => {
     await setDoc(doc(db, "boards/boardWrite/polls/pollSingle/votes/alice"), {
       userId: ALICE,
       optionIndices: [0],
+      // Fix round 2 — the vote's OWN stamp is what gates its read now, not
+      // the parent poll's (mutable, recreatable) field — see
+      // firestore.rules' votes-read header. Every seeded vote below is
+      // stamped to match the poll it's actually seeded under.
+      anonymous: false,
     });
     await setDoc(doc(db, "boards/boardWrite/polls/pollAnon"), seedPoll({ anonymous: true }));
     await setDoc(doc(db, "boards/boardWrite/polls/pollAnon/votes/alice"), {
       userId: ALICE,
       optionIndices: [1],
+      anonymous: true,
     });
     // A dots-mode poll (4 options) — same board/read/write boundary, only
     // `mode` differs, for the dot-voting-specific rules tests below.
@@ -315,6 +321,7 @@ beforeEach(async () => {
     await setDoc(doc(db, "boards/boardPrivate/polls/pollP/votes/alice"), {
       userId: ALICE,
       optionIndices: [0],
+      anonymous: false,
     });
 
     // Legacy-board tolerance fixture (no workspaceId) — mirrors reactions'
@@ -1211,8 +1218,20 @@ describe("polls", () => {
     ...overrides,
   });
 
+  // Fix round 2 — every vote doc must stamp `anonymous` matching the poll
+  // it's actually cast on, or firestore.rules' create-time match check
+  // (`request.resource.data.anonymous == pollData(...).anonymous`) denies
+  // the write for a reason unrelated to whatever the test is actually
+  // checking. Keyed by pollId rather than threaded through every call site
+  // above, so none of them had to change shape. Extend this map before
+  // pointing `vote()` at a new fixture poll.
+  const POLL_ANONYMITY = { pollSingle: false, pollDots: false };
   const vote = (actorUid, pollId, voterId, optionIndices) =>
-    setDoc(voteRef(actorUid, pollId, voterId), { userId: voterId, optionIndices });
+    setDoc(voteRef(actorUid, pollId, voterId), {
+      userId: voterId,
+      optionIndices,
+      anonymous: POLL_ANONYMITY[pollId],
+    });
 
   // ── reading the poll itself: any board member ──────────────────────────────
   it("a board member can read a poll (read follows board access)", async () => {
@@ -1320,8 +1339,11 @@ describe("polls", () => {
   });
 
   it("denies a vote whose optionIndices isn't a list at all", async () => {
+    // anonymous: false matches pollSingle's real value — the ONLY thing
+    // wrong here is optionIndices' type, isolating that as the actual cause
+    // of the denial rather than an incidental anonymous-stamp mismatch.
     await assertFails(
-      setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: "zero" })
+      setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: "zero", anonymous: false })
     );
   });
 
@@ -1335,9 +1357,16 @@ describe("polls", () => {
 
   // Fix round 1, item 6 — a genuine commenter voting as themselves, with an
   // otherwise perfectly valid payload, but one extra field smuggled in.
-  it("denies a vote payload carrying a field outside {userId, optionIndices, createdAt}", async () => {
+  it("denies a vote payload carrying a field outside {userId, optionIndices, anonymous, createdAt}", async () => {
+    // anonymous: false matches pollSingle's real value — the ONLY thing
+    // wrong here is the extra `secret` field.
     await assertFails(
-      setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: [0], secret: "nope" })
+      setDoc(voteRef(DAVE, "pollSingle", DAVE), {
+        userId: DAVE,
+        optionIndices: [0],
+        anonymous: false,
+        secret: "nope",
+      })
     );
   });
 
@@ -1363,8 +1392,18 @@ describe("polls", () => {
     await assertFails(getCountFromServer(collection(db(FRANK), "boards/boardWrite/polls/pollAnon/votes")));
   });
 
-  it("still allows a count() aggregation on a non-anonymous poll's votes (the positive control for the denial above)", async () => {
-    await assertSucceeds(getCountFromServer(collection(db(FRANK), "boards/boardWrite/polls/pollSingle/votes")));
+  it("still allows a count() aggregation on a non-anonymous poll's votes, filtered the same way pollService.subscribeToVotes queries (the positive control for the denial above)", async () => {
+    // Fix round 2 — votes-read now gates on each vote's OWN `anonymous`
+    // field (a per-document condition), so even a NON-anonymous poll's
+    // count() needs the matching `where` filter for Firestore to prove the
+    // query is safe without inspecting every result — an unfiltered
+    // `collection(...)` count would be rejected here too, same as an
+    // unfiltered list. See firestore.rules' votes-read header.
+    const q = query(
+      collection(db(FRANK), "boards/boardWrite/polls/pollSingle/votes"),
+      where("anonymous", "==", false)
+    );
+    await assertSucceeds(getCountFromServer(q));
   });
 
   // ── the tally subcollection: member-readable, but client writes are always denied ──
@@ -1436,6 +1475,50 @@ describe("polls", () => {
     await assertFails(
       updateDoc(pollRef(DAVE, "pollSingle"), { options: ["A", "B", "C", "D", "E", "F", "G"] })
     );
+  });
+
+  // Fix round 2 — switching a live poll between "single" and "dots"
+  // reinterprets every vote already cast (a "single" vote's one-element
+  // optionIndices means something different once the poll claims dots are
+  // allowed), exactly the reasoning that was already used to accept
+  // creation-time-only mode selection in the first place. Pinned alongside
+  // anonymous/createdById/options above.
+  it("denies an effective editor switching a poll's mode via update — mode selection is creation-time only", async () => {
+    await assertFails(updateDoc(pollRef(DAVE, "pollSingle"), { mode: "dots" }));
+    await assertFails(updateDoc(pollRef(DAVE, "pollDots"), { mode: "single" }));
+  });
+
+  // Fix round 2 (CRITICAL) — round 1 only closed the "flip anonymous via
+  // UPDATE" half of this hole. An effective editor can also DELETE the poll
+  // directly (skipping pollService.deletePoll's own votes/tally cleanup —
+  // Firestore never cascade-deletes subcollections) and RECREATE the same
+  // poll id non-anonymously: `resource` is null right after the delete, so
+  // this second write is a `create`, which round 1's `allow update` pin
+  // never runs against. The OLD vote doc (alice's, seeded in beforeEach) is
+  // untouched by either step — it just sits there under the recreated
+  // poll's own path.
+  //
+  // This test MUST fail against the pre-round-2 rule, which re-derived
+  // votes-read from the PARENT poll's CURRENT `anonymous` field
+  // (`isAnonymousPoll`): after the recreate that field reads `false`, so
+  // the old rule would have opened the entire subcollection — whose
+  // document ids ARE the voters' uids — to every member. It passes now
+  // because votes-read instead gates on the VOTE's OWN stamped field, fixed
+  // at the moment THAT doc was first created and untouched by anything a
+  // later delete/recreate of the PARENT poll does.
+  it("denies reading old anonymous votes after a delete-then-recreate of the poll — the fix round 2 critical", async () => {
+    await assertSucceeds(deleteDoc(pollRef(DAVE, "pollAnon")));
+    await assertSucceeds(
+      setDoc(pollRef(DAVE, "pollAnon"), newPoll({ anonymous: false, createdById: DAVE }))
+    );
+
+    // boards/boardWrite/polls/pollAnon/votes/alice (seeded in beforeEach,
+    // stamped anonymous: true) was never deleted by either step above — it
+    // is STILL sitting there, under the recreated (now non-anonymous)
+    // poll's own path — and must stay unreadable to everyone, including
+    // the editor who just did the recreate.
+    await assertFails(getDoc(voteRef(FRANK, "pollAnon", ALICE)));
+    await assertFails(getDoc(voteRef(DAVE, "pollAnon", ALICE)));
   });
 
   // ── deleting the poll: editor-only, like create ─────────────────────────────
