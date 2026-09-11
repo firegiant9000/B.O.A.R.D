@@ -41,6 +41,8 @@ import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
 import UpsellModal from "../../src/components/UpsellModal";
+import OnboardingTutorial from "../../src/components/onboarding/OnboardingTutorial";
+import { useOnboardingTutorial } from "../../src/components/onboarding/useOnboardingTutorial";
 
 // Phase 10 — the workspace dashboard. Replaces the bare boards list as the default
 // tab landing: pinned boards + upcoming sessions above the fold, then recent boards,
@@ -73,6 +75,12 @@ export default function DashboardScreen() {
   // Phase 3/10: everything on the dashboard is scoped to the active workspace from
   // the switcher context, which defaults to the user's personal workspace.
   const { activeWorkspace, activeWorkspaceId, loading: workspaceLoading } = useWorkspace();
+  // Month 5 — the first-run tutorial (ROADMAP.md item 4). The show/hide
+  // decision and its AsyncStorage flag live in the hook, keyed per-uid; this
+  // screen only wires it up and renders the component.
+  const { visible: onboardingVisible, dismiss: dismissOnboarding } = useOnboardingTutorial(
+    user?.uid ?? null
+  );
   const router = useRouter();
   const navigation = useNavigation();
   const [boards, setBoards] = useState<Board[]>([]);
@@ -356,15 +364,31 @@ export default function DashboardScreen() {
         onDismiss={() => setUpsellVisible(false)}
       />
 
+      <OnboardingTutorial visible={onboardingVisible} onDismiss={dismissOnboarding} />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
         {isEmptyWorkspace ? (
+          // Month 5 (ROADMAP.md item 4) — value-oriented, not "you have 0
+          // boards": the copy names what the board is for, and the CTA is a
+          // real, tappable action (opens the same create-board flow as the
+          // FAB) rather than a passive "tap the + button" instruction.
           <View style={styles.emptyState}>
             <Ionicons name="easel-outline" size={64} color="#ccc" />
-            <Text style={styles.emptyTitle}>No boards yet</Text>
-            <Text style={styles.emptySubtitle}>Tap the + button to create your first board</Text>
+            <Text style={styles.emptyTitle}>Your study space starts here</Text>
+            <Text style={styles.emptySubtitle}>
+              Create a board to draw, plan, and meet — then schedule a session and get an AI recap
+              when you're done.
+            </Text>
+            <TouchableOpacity
+              style={styles.emptyCta}
+              onPress={() => setCreateModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.emptyCtaText}>Create your first board →</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <>
@@ -388,7 +412,17 @@ export default function DashboardScreen() {
             {/* Upcoming sessions (above the fold) */}
             <Section title="Upcoming sessions" icon="calendar-outline">
               {upcomingSessions.length === 0 ? (
-                <Text style={styles.sectionEmpty}>No upcoming sessions.</Text>
+                // Month 5 (ROADMAP.md item 4) — a real CTA into the schedule
+                // flow, not a flat "you have 0 sessions" line. Reachable only
+                // from here, where at least one board already exists (this
+                // section only renders when `!isEmptyWorkspace`), so the
+                // session-create screen's board picker is never empty.
+                <TouchableOpacity
+                  onPress={() => router.push("/session/create")}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.sectionEmptyCta}>Schedule your first study session →</Text>
+                </TouchableOpacity>
               ) : (
                 upcomingSessions.slice(0, 5).map((s) => (
                   <TouchableOpacity
@@ -664,9 +698,10 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  sectionEmpty: {
-    fontSize: 13,
-    color: "#9ca3af",
+  sectionEmptyCta: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2563eb",
     paddingHorizontal: 16,
   },
   // ── Upcoming sessions ──
@@ -733,7 +768,22 @@ const styles = StyleSheet.create({
   emptySubtitle: {
     fontSize: 14,
     color: "#aaa",
-    marginTop: 4,
+    marginTop: 8,
+    textAlign: "center",
+    paddingHorizontal: 32,
+    lineHeight: 20,
+  },
+  emptyCta: {
+    marginTop: 24,
+    backgroundColor: "#2563eb",
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 24,
+  },
+  emptyCtaText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
   },
   fab: {
     position: "absolute",
