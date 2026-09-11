@@ -361,45 +361,36 @@ export function countVotes(
 }
 
 /**
- * Deletes a poll and its votes/tally subcollections, in 500-doc batches —
- * mirrors reactionService.clearBoardReactions/commentService's own cleanup.
- * Firestore never cascade-deletes subcollections on its own; left alone, a
- * deleted poll's votes would become permanently orphaned.
+ * Deletes a poll. THAT IS ALL THIS DOES NOW (fix round 3) — it used to also
+ * batch-delete the poll's votes and tally docs itself, mirroring
+ * reactionService.clearBoardReactions/commentService's own cleanup, but
+ * `boards/{id}/polls/{pollId}/tally/{tallyId}` is `allow write: if false`
+ * unconditionally in firestore.rules — no client may EVER delete a tally
+ * doc — and Firestore batched writes are atomic, so that batch failed
+ * outright whenever the poll being deleted had a tally doc, i.e. every
+ * anonymous poll that had ever been voted on. That is not an edge case; it
+ * is the routine "delete my poll" action for the one poll kind the
+ * trigger-tally design exists to serve.
  *
- * Only ever enumerates (and so only ever deletes) NON-anonymous votes —
- * `where('anonymous', '==', false)`, same requirement and reasoning as
- * `subscribeToVotes` (fix round 2; see firestore.rules' votes-read header).
- * An anonymous poll's votes are NOT reachable here, or anywhere: nothing —
- * not even a board admin — may ever list them, by the same rule that keeps
- * them unreadable in the first place, so they stay permanently orphaned
- * once their poll is deleted. That is the intended, accepted shape of the
- * anonymity guarantee (see firestore.rules), not a gap this function is
- * meant to close.
+ * Cleanup of the votes/tally subcollections is now ENTIRELY server-side:
+ * `functions/src/triggers/pollTally.ts`'s `onPollDeleted` fires on this
+ * very delete and removes both, via the Admin SDK (which bypasses the rule
+ * a client never could). This function no longer attempts what it was
+ * never permitted to do — see that trigger's header for the full reasoning,
+ * including why it also cleans up NON-anonymous polls' votes now (this
+ * function used to do that part itself; simpler to let one place own all
+ * of it than split "client deletes what it can, trigger deletes the rest").
  */
 export async function deletePoll(boardId: string, pollId: string): Promise<void> {
-  const pollRef = doc(db, "boards", boardId, "polls", pollId);
-  const votesRef = query(
-    collection(db, "boards", boardId, "polls", pollId, "votes"),
-    where("anonymous", "==", false)
-  );
-  const tallyRef = collection(db, "boards", boardId, "polls", pollId, "tally");
-  const [votesSnap, tallySnap] = await Promise.all([getDocs(votesRef), getDocs(tallyRef)]);
-  const allDocs = [...votesSnap.docs, ...tallySnap.docs];
-  for (let i = 0; i < allDocs.length; i += 500) {
-    const batch = writeBatch(db);
-    allDocs.slice(i, i + 500).forEach((d: any) => batch.delete(d.ref));
-    await batch.commit();
-  }
-  await deleteDoc(pollRef);
+  await deleteDoc(doc(db, "boards", boardId, "polls", pollId));
 }
 
-/** Deletes every poll on a board (each via `deletePoll`'s own votes/tally
- *  cleanup) — the "clear board" composition point, mirroring
- *  reactionService.clearBoardReactions/commentService's board-clear
- *  functions. Run in parallel: unlike `deletePoll`'s own internal batching
- *  (which must serialize across 500-doc chunks of ONE poll's subcollections),
- *  separate polls share no batch and have no ordering constraint between
- *  them. */
+/** Deletes every poll on a board (each via `deletePoll`, which now just
+ *  deletes the poll doc — see that function's comment for why subcollection
+ *  cleanup moved server-side) — the "clear board" composition point,
+ *  mirroring reactionService.clearBoardReactions/commentService's board-clear
+ *  functions. Run in parallel: separate polls share no batch and have no
+ *  ordering constraint between them. */
 export async function clearBoardPolls(boardId: string): Promise<void> {
   const snap = await getDocs(collection(db, "boards", boardId, "polls"));
   await Promise.all(snap.docs.map((d: any) => deletePoll(boardId, d.id)));

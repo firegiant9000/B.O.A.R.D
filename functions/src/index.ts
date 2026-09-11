@@ -94,3 +94,13 @@ export { stripeWebhook } from "./http/stripeWebhook";
 // subcollection client-side instead). See functions/src/triggers/
 // pollTally.ts for the eventual-consistency caveat.
 export { onPollVoteWritten } from "./triggers/pollTally";
+
+// Month 6, fix round 3 — poll-deletion cleanup. firestore.rules denies every
+// client delete of a `tally` doc unconditionally, so `pollService.deletePoll`
+// no longer attempts to batch-delete a poll's votes/tally itself (that batch
+// used to fail outright for any anonymous poll that had been voted on, since
+// Firestore batched writes are atomic). This trigger — via the Admin SDK,
+// which bypasses that same rule — removes the tally and every vote doc
+// (anonymous or not) once the poll document itself is gone. See
+// functions/src/triggers/pollTally.ts's header for the full reasoning.
+export { onPollDeleted } from "./triggers/pollTally";

@@ -390,49 +390,33 @@ describe("countVotes", () => {
 });
 
 describe("deletePoll", () => {
-  it("batch-deletes every vote and tally doc, then the poll doc itself", async () => {
-    const batch = { delete: jest.fn(), set: jest.fn(), update: jest.fn(), commit: jest.fn(async () => undefined) };
-    writeBatch.mockReturnValueOnce(batch);
-    getDocs
-      .mockResolvedValueOnce(makeQuerySnap([["u1", {}], ["u2", {}]])) // votes
-      .mockResolvedValueOnce(makeQuerySnap([["summary", {}]])); // tally
-
+  // Fix round 3 — deletePoll used to ALSO batch-delete the poll's votes/
+  // tally docs itself, but `tally`'s firestore.rules is `allow write: if
+  // false` unconditionally, and a Firestore batched write is atomic, so
+  // that batch failed outright whenever the poll being deleted had a tally
+  // doc (i.e. every anonymous poll that had been voted on) — see this
+  // function's own header. Cleanup of votes/tally is entirely server-side
+  // now (functions/src/triggers/pollTally.ts's onPollDeleted); this
+  // function deletes ONLY the poll doc.
+  it("deletes only the poll doc — no votes/tally reads or batches at all", async () => {
     await pollService.deletePoll("b1", "p1");
 
-    expect(batch.delete).toHaveBeenCalledTimes(3);
-    expect(batch.commit).toHaveBeenCalledTimes(1);
     expect(deleteDoc).toHaveBeenCalledTimes(1);
-  });
-
-  // Fix round 2 — same requirement as subscribeToVotes: an unfiltered votes
-  // listing would be rejected by the real rules now that read is gated on
-  // each vote's OWN `anonymous` field. Only non-anonymous votes are ever
-  // reachable here (anonymous ones stay permanently orphaned once their
-  // poll is deleted — see this function's own header).
-  it("filters the votes query to where('anonymous', '==', false)", async () => {
-    // Both reads return empty — no docs, so `deletePoll` never opens a
-    // batch at all (see its `for` loop's own length guard); leaving
-    // `writeBatch` unmocked here is deliberate, not an oversight: a queued
-    // `mockReturnValueOnce` that's never consumed would leak into a LATER
-    // test's `writeBatch()` call instead (jest.clearAllMocks() clears call
-    // history but not queued once-return-values) — exactly the failure
-    // mode this comment exists to warn the next editor away from.
-    getDocs.mockResolvedValueOnce(makeQuerySnap([])).mockResolvedValueOnce(makeQuerySnap([]));
-
-    await pollService.deletePoll("b1", "p1");
-
-    expect(fs.where).toHaveBeenCalledWith("anonymous", "==", false);
+    expect((fs.doc as jest.Mock).mock.calls.at(-1)).toEqual([{}, "boards", "b1", "polls", "p1"]);
+    expect(getDocs).not.toHaveBeenCalled();
+    expect(writeBatch).not.toHaveBeenCalled();
   });
 });
 
 describe("clearBoardPolls", () => {
   it("deletes every poll doc on the board via deletePoll", async () => {
-    getDocs
-      .mockResolvedValueOnce(makeQuerySnap([["p1", {}], ["p2", {}]])) // the polls collection
-      .mockResolvedValue(makeQuerySnap([])); // each deletePoll's own votes/tally reads
+    // deletePoll no longer reads anything of its own (fix round 3) — this
+    // one getDocs call enumerates the polls collection itself.
+    getDocs.mockResolvedValueOnce(makeQuerySnap([["p1", {}], ["p2", {}]]));
 
     await pollService.clearBoardPolls("b1");
 
+    expect(getDocs).toHaveBeenCalledTimes(1);
     expect(deleteDoc).toHaveBeenCalledTimes(2);
   });
 

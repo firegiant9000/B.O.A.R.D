@@ -34,6 +34,7 @@ const {
   where,
   getDocs,
   getCountFromServer,
+  writeBatch,
 } = require("firebase/firestore");
 
 const ALICE = "alice";
@@ -1529,6 +1530,52 @@ describe("polls", () => {
 
   it("denies a viewer deleting a poll", async () => {
     await assertFails(deleteDoc(pollRef(FRANK, "pollSingle")));
+  });
+
+  // Fix round 3 — pollService.deletePoll USED TO batch-delete a poll's
+  // votes/tally docs together with the poll doc itself in one atomic
+  // batch. `tally/{tallyId}`'s rule is `allow write: if false`
+  // unconditionally (no client may ever delete it), and Firestore batched
+  // writes are atomic — one denied delete fails the WHOLE batch — so that
+  // old approach threw whenever the poll being deleted had a tally doc,
+  // i.e. every anonymous poll that had been voted on. Not an edge case:
+  // the routine "delete my poll" action, for exactly the poll kind
+  // pollTally.ts's whole design exists to serve.
+  //
+  // `pollAnon` (seeded in beforeEach) already has alice's vote; seed a
+  // tally doc here too (bypassing rules, simulating what
+  // functions/src/triggers/pollTally.ts's onPollVoteWritten would have
+  // written for real votes) so this poll is in EXACTLY the state that used
+  // to make deletion impossible.
+  it("an effective editor can delete a poll even when it has votes and a tally doc (fix round 3 — cleanup is server-side now)", async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "boards/boardWrite/polls/pollAnon/tally/summary"), {
+        counts: { "1": 1 },
+        totalVotes: 1,
+      });
+    });
+
+    // Demonstrates the OLD deletePoll's exact shape still fails, so this
+    // test doesn't just exercise a strawman: batching the vote + tally +
+    // poll deletes together (mirroring pollService.deletePoll before this
+    // fix) is denied, because the tally delete inside it is. ONE shared
+    // `daveDb` for every ref in the batch — `writeBatch` and every doc it
+    // deletes must come from the SAME Firestore instance, and `db(uid)`
+    // (like `pollRef`/`voteRef`, which call it internally) mints a FRESH
+    // instance on every call.
+    const daveDb = db(DAVE);
+    const oldStyleBatch = writeBatch(daveDb);
+    oldStyleBatch.delete(doc(daveDb, "boards/boardWrite/polls/pollAnon/votes/alice"));
+    oldStyleBatch.delete(doc(daveDb, "boards/boardWrite/polls/pollAnon/tally/summary"));
+    oldStyleBatch.delete(doc(daveDb, "boards/boardWrite/polls/pollAnon"));
+    await assertFails(oldStyleBatch.commit());
+
+    // The FIX: pollService.deletePoll now only ever deletes the poll doc
+    // itself — something an effective editor IS permitted to do — and
+    // leaves the votes/tally cleanup to onPollDeleted (a server-side
+    // trigger using the Admin SDK, which bypasses the very rule that made
+    // the batch above fail).
+    await assertSucceeds(deleteDoc(pollRef(DAVE, "pollAnon")));
   });
 });
 

@@ -1,8 +1,12 @@
 import {
   computeTally,
+  handlePollDeleted,
   handlePollVoteWrite,
+  makeDeletePollSubcollections,
   makeRecomputeTally,
+  onPollDeleted,
   onPollVoteWritten,
+  type PollCleanupDeps,
   type PollTallyDeps,
 } from "../triggers/pollTally";
 
@@ -149,5 +153,112 @@ describe("onPollVoteWritten — event type", () => {
       __endpoint: { eventTrigger: { eventType: string } };
     }).__endpoint;
     expect(endpoint.eventTrigger.eventType).toBe("google.cloud.firestore.document.v1.written");
+  });
+});
+
+// Fix round 3 — poll-deletion cleanup. pollService.deletePoll used to
+// batch-delete a poll's votes/tally docs itself, but tally/{tallyId}'s
+// firestore.rules is `allow write: if false` unconditionally, and a
+// Firestore batched write is atomic, so that batch failed outright whenever
+// the poll being deleted had a tally doc — i.e. every anonymous poll that
+// had been voted on. This trigger (via the Admin SDK, which bypasses that
+// rule) is the replacement: it fires on the poll doc's own delete and
+// removes the tally and every vote doc.
+describe("handlePollDeleted", () => {
+  function makeDeps(overrides: Partial<PollCleanupDeps> = {}): PollCleanupDeps {
+    return {
+      deletePollSubcollections: jest.fn(async () => undefined),
+      ...overrides,
+    };
+  }
+
+  it("always cleans up — no skip branch, unlike handlePollVoteWrite: a NON-anonymous poll's votes need this too now that deletePoll no longer deletes any of its own subcollections", async () => {
+    const deps = makeDeps();
+    await handlePollDeleted("b1", "p1", deps);
+    expect(deps.deletePollSubcollections).toHaveBeenCalledWith("b1", "p1");
+    expect(deps.deletePollSubcollections).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The real cleanup core. `handlePollDeleted`'s own test above mocks
+// `deletePollSubcollections` away entirely, so it cannot prove votes AND
+// the tally are actually deleted — this does, against a fake Firestore-like
+// `db`, mirroring `makeRecomputeTally`'s own fake-db test pattern above.
+describe("makeDeletePollSubcollections (the real cleanup core)", () => {
+  function fakeCleanupDb(voteDocs: Array<{ id: string }>, tallyExists: boolean) {
+    const deletedPaths: string[] = [];
+    const batches: Array<{ delete: jest.Mock; commit: jest.Mock }> = [];
+    const db = {
+      collection: (path: string) => ({
+        get: async () => ({
+          docs: voteDocs.map((v) => ({ ref: { path: `${path}/${v.id}` } })),
+        }),
+      }),
+      doc: (path: string) => ({
+        path,
+        get: async () => ({ exists: tallyExists }),
+      }),
+      batch: () => {
+        const batch = {
+          delete: jest.fn((ref: { path: string }) => deletedPaths.push(ref.path)),
+          commit: jest.fn(async () => undefined),
+        };
+        batches.push(batch);
+        return batch;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    return { db, deletedPaths, batches };
+  }
+
+  it("deletes every vote doc AND the tally doc when both exist", async () => {
+    const { db, deletedPaths, batches } = fakeCleanupDb([{ id: "u1" }, { id: "u2" }], true);
+
+    await makeDeletePollSubcollections(db)("b1", "p1");
+
+    expect(deletedPaths.sort()).toEqual(
+      [
+        "boards/b1/polls/p1/votes/u1",
+        "boards/b1/polls/p1/votes/u2",
+        "boards/b1/polls/p1/tally/summary",
+      ].sort()
+    );
+    expect(batches[0].commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the tally delete when no tally doc exists (a non-anonymous poll, or an anonymous one with zero votes)", async () => {
+    const { db, deletedPaths } = fakeCleanupDb([{ id: "u1" }], false);
+
+    await makeDeletePollSubcollections(db)("b1", "p1");
+
+    expect(deletedPaths).toEqual(["boards/b1/polls/p1/votes/u1"]);
+  });
+
+  it("is a no-op (no batch opened at all) when there are no votes and no tally", async () => {
+    const { db, batches } = fakeCleanupDb([], false);
+
+    await makeDeletePollSubcollections(db)("b1", "p1");
+
+    expect(batches).toHaveLength(0);
+  });
+
+  it("chunks deletes into ≤500-doc batches, matching pollService.deletePoll's old client-side chunking", async () => {
+    const manyVotes = Array.from({ length: 501 }, (_, i) => ({ id: `u${i}` }));
+    const { db, batches } = fakeCleanupDb(manyVotes, false);
+
+    await makeDeletePollSubcollections(db)("b1", "p1");
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0].delete).toHaveBeenCalledTimes(500);
+    expect(batches[1].delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("onPollDeleted — event type", () => {
+  it("is bound to the poll document's own 'deleted' event, not the votes subcollection", () => {
+    const endpoint = (onPollDeleted as unknown as {
+      __endpoint: { eventTrigger: { eventType: string; eventFilters?: Record<string, unknown> } };
+    }).__endpoint;
+    expect(endpoint.eventTrigger.eventType).toBe("google.cloud.firestore.document.v1.deleted");
   });
 });

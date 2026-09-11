@@ -1,4 +1,4 @@
-import { onDocumentWritten } from "firebase-functions/v2/firestore";
+import { onDocumentDeleted, onDocumentWritten } from "firebase-functions/v2/firestore";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 // Month 6 — anonymous-poll tallies. An anonymous poll's `votes` subcollection
@@ -46,6 +46,22 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 // overwriting it. This keeps the full-recompute idempotency above — it does
 // not turn this into a delta/increment counter, which would reintroduce the
 // exact drift class this design exists to avoid.
+//
+// Fix round 3 — this file ALSO owns poll-deletion cleanup (`onPollDeleted`,
+// below) for the same reason it owns the tally: both need the Admin SDK's
+// unrestricted access, which firestore.rules deliberately never grants to a
+// client. `pollService.deletePoll` used to batch-delete a poll's votes AND
+// its tally doc together from the client — but `tally/{tallyId}`'s rule is
+// `allow write: if false` unconditionally (no client may ever delete it),
+// and Firestore batched writes are atomic, so that batch failed WHENEVER
+// the poll being deleted had a tally doc — i.e. every anonymous poll that
+// had ever been voted on. Not an edge case: the routine "delete my poll"
+// action, for the one poll kind (anonymous, voted-on) this whole file
+// exists to serve. `onPollDeleted` is what the client hands off to instead:
+// `deletePoll` now only ever deletes the poll doc itself (something it IS
+// permitted to do), and this trigger — via the Admin SDK, which bypasses
+// the very rule that made client-side cleanup impossible — removes the
+// tally and every vote doc (anonymous or not) once the poll is gone.
 
 export interface RawPollVote {
   optionIndices?: unknown;
@@ -182,5 +198,84 @@ export const onPollVoteWritten = onDocumentWritten(
   async (event) => {
     const { boardId, pollId } = event.params;
     await handlePollVoteWrite(boardId, pollId, makeDeps(getFirestore()));
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Poll-deletion cleanup (fix round 3) — see this file's header for why this
+// has to be server-side at all: firestore.rules denies every client delete
+// of a `tally` doc, unconditionally, so pollService.deletePoll can no
+// longer attempt it. This trigger is the replacement.
+
+/**
+ * Injected so `handlePollDeleted` unit-tests without the Functions runtime
+ * or a real Firestore instance — same split as `PollTallyDeps` above.
+ */
+export interface PollCleanupDeps {
+  /** Deletes EVERY vote doc under the poll (anonymous or not — the Admin
+   *  SDK bypasses firestore.rules, so there is no "which votes can I even
+   *  see" question here the way there is on the client) and the tally doc,
+   *  in ≤500-doc batches. The real implementation
+   *  (`makeDeletePollSubcollections`) is the thing that actually needs
+   *  Firestore; this interface doesn't, which is why `handlePollDeleted`
+   *  below unit-tests against a bare mock of it. */
+  deletePollSubcollections(boardId: string, pollId: string): Promise<void>;
+}
+
+/**
+ * The trigger's actual work, independent of the firebase-functions runtime
+ * event shape — always runs (unlike `handlePollVoteWrite`, there is no
+ * "skip for non-anonymous" branch here: a non-anonymous poll's votes still
+ * need cleaning up now that `pollService.deletePoll` no longer attempts any
+ * subcollection deletes itself, anonymous or not).
+ */
+export async function handlePollDeleted(
+  boardId: string,
+  pollId: string,
+  deps: PollCleanupDeps
+): Promise<void> {
+  await deps.deletePollSubcollections(boardId, pollId);
+}
+
+/**
+ * The real cleanup core, split out so it unit-tests against a fake
+ * Firestore-like object without the emulator — mirrors
+ * `makeRecomputeTally`'s own split above. Reads the full votes collection
+ * (no `where` filter needed — the Admin SDK isn't subject to
+ * firestore.rules' per-document read gate the client-side equivalent
+ * needs; see `pollService.subscribeToVotes`/`deletePoll`'s own comments)
+ * plus the tally doc, and deletes everything found in ≤500-doc batches —
+ * same chunking `pollService.deletePoll` used to do client-side.
+ */
+export function makeDeletePollSubcollections(db: Firestore): PollCleanupDeps["deletePollSubcollections"] {
+  return async (boardId, pollId) => {
+    const votesSnap = await db.collection(`boards/${boardId}/polls/${pollId}/votes`).get();
+    const tallyRef = db.doc(`boards/${boardId}/polls/${pollId}/tally/summary`);
+    const tallySnap = await tallyRef.get();
+
+    const refsToDelete = votesSnap.docs.map((d) => d.ref);
+    if (tallySnap.exists) refsToDelete.push(tallyRef);
+
+    for (let i = 0; i < refsToDelete.length; i += 500) {
+      const batch = db.batch();
+      refsToDelete.slice(i, i + 500).forEach((ref) => batch.delete(ref));
+      await batch.commit();
+    }
+  };
+}
+
+function makeCleanupDeps(db: Firestore): PollCleanupDeps {
+  return { deletePollSubcollections: makeDeletePollSubcollections(db) };
+}
+
+// Bound to the poll doc's own delete — NOT the votes subcollection
+// (`onPollVoteWritten` above already owns that path). Fires once per
+// deleted poll, regardless of anonymity: see `handlePollDeleted`'s comment
+// for why there is no skip branch here.
+export const onPollDeleted = onDocumentDeleted(
+  "boards/{boardId}/polls/{pollId}",
+  async (event) => {
+    const { boardId, pollId } = event.params;
+    await handlePollDeleted(boardId, pollId, makeCleanupDeps(getFirestore()));
   }
 );

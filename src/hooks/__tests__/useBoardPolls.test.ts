@@ -326,6 +326,22 @@ describe("useBoardPolls — vote / toggleDot / deletePoll", () => {
     });
     expect(deletePollMock).toHaveBeenCalledWith("b1", "p1");
   });
+
+  // A gap this suite had before fix round 3: only create()'s error path was
+  // covered. deletePoll's own try/catch was never exercised — worth closing
+  // now that deletePoll's rules-side behavior changed (fix round 3): a
+  // rejection here should still surface through onError, not throw.
+  it("deletePoll() surfaces a rejection through onError instead of throwing", async () => {
+    deletePollMock.mockRejectedValueOnce(new Error("permission-denied"));
+    const onError = jest.fn();
+    const { result } = renderPolls(USER, onError);
+
+    await act(async () => {
+      await result.current.deletePoll("p1");
+    });
+
+    expect(onError).toHaveBeenCalledWith("Failed to delete poll.");
+  });
 });
 
 describe("useBoardPolls — advanceQuiz", () => {
