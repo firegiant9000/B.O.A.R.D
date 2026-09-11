@@ -424,9 +424,13 @@ export interface Comment {
 // Storage: `boards/{id}/reactions/{elementId}_{emoji}_{userId}` — the document
 // id is the uniqueness constraint (one user cannot double-react with the same
 // emoji on the same element: a second toggle addresses the same doc rather
-// than adding a row). See reactionService.ts's header and firestore.rules'
-// `reactions` match for why the id is NOT what authorizes the write — that is
-// the `userId` FIELD below.
+// than adding a row). Role authorization is the `userId` FIELD below, not the
+// id — but firestore.rules' `reactions` match still binds the id to the
+// fields by exact-match concatenation (id == anchorElementId + '_' + emoji +
+// '_' + userId, never by splitting the id apart), so a real commenter can't
+// launder unbounded extra reactions through ids the field check alone
+// wouldn't catch. See reactionService.ts's header and that match for the
+// full reasoning.
 export const REACTION_EMOJIS = ["👍", "❤️", "❓", "⭐", "💡"] as const;
 export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
 

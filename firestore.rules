@@ -569,6 +569,15 @@ service cloud.firestore {
       // ever added, edit) those notes — bricking existing content on a
       // downgrade is not this gate's job, only stopping NEW Pro-tier usage
       // on a free plan is.
+      //
+      // Read-budget note: `boardOnPaidPlan` → `planOfBoard` → `planOfWorkspace`
+      // is a SECOND `get()` of this same board doc (isBoardEditor's own
+      // `get()`, just above, is the first) plus an `exists()` + `get()` of
+      // the workspace doc. Same as the seat cap's own note on this: the
+      // rules engine caches document access within one evaluation, so this
+      // adds no new read beyond the board+workspace docs isBoardEditor
+      // already touches — but it's one more `get()`-bearing predicate on
+      // this match, worth knowing about before adding a third.
       // No embed write, for the same reason as images: the audio bytes are
       // member-gated in storage.rules.
       match /audio/{audioId} {
@@ -613,26 +622,43 @@ service cloud.firestore {
       // override floor-capping) rather than a second write-role predicate.
       //
       // UNLIKE comments: no update — react/un-react is create/delete only,
-      // there is no body to edit or thread to resolve — and delete is
-      // restricted to the reacting user's OWN reaction, with no
-      // admin-moderation arm (a stray emoji isn't the moderation surface
-      // comments' delete rule exists for).
+      // there is no body to edit or thread to resolve. Delete DOES carry the
+      // same admin-moderation arm comments' delete has, though, for a reason
+      // comments' delete rule doesn't need to worry about: clearBoardReactions
+      // (reactionService.ts) batch-deletes every reaction on the board as
+      // part of "clear board" (app/board/[id].tsx), and a Firestore batched
+      // write is atomic — ONE reaction the clearing admin doesn't own would
+      // reject the WHOLE batch and leave the board half-cleared (elements and
+      // comments already gone, reactions not). `isBoardAdmin` closes that
+      // exactly like it does for comments' own moderation delete.
       //
       // The document id `{elementId}_{emoji}_{userId}` (reactionService.ts)
       // is the UNIQUENESS constraint (one user cannot double-react with the
-      // same emoji on the same element) — it is NOT what this rule
-      // authorizes the write against. Parsing it here would mean trusting a
-      // fixed `_`-separated segment count, which breaks the moment any
-      // segment itself contains an underscore; the `userId` FIELD below is
-      // the actual authorization boundary, exactly as trustworthy as
-      // comments' own `authorId` pin above and immune to that fragility.
+      // same emoji on the same element). It is bound to the fields below by
+      // exact-match CONCATENATION, not by splitting the id apart: splitting
+      // would mean trusting a fixed `_`-separated segment count, which
+      // breaks the moment any segment itself contains an underscore, but
+      // rebuilding the expected id from the fields and comparing makes no
+      // assumption about how many segments anything has. Without this, the
+      // `userId` field check alone still stops one user from reacting AS
+      // another, but does nothing to stop that SAME user from creating
+      // `el1_👍_me`, `el1_👍_me_2`, `x`, … — every one with a valid `userId`
+      // field — which would inflate `countsFor`'s per-(element, emoji) count
+      // without bound, permanently (toggleReaction only ever deletes the
+      // canonical id). `emoji` is also checked against the fixed 5-value set
+      // the client offers, so a create can't seed the collection with
+      // anything else for a future reader to have to tolerate.
       match /reactions/{reactionId} {
         allow read:   if isBoardMember(boardId);
         allow create: if isBoardCommenter(boardId) &&
-                        request.resource.data.userId == request.auth.uid;
+                        request.resource.data.userId == request.auth.uid &&
+                        request.resource.data.emoji in ['👍', '❤️', '❓', '⭐', '💡'] &&
+                        reactionId == request.resource.data.anchorElementId + '_' +
+                                      request.resource.data.emoji + '_' + request.auth.uid;
         allow update: if false;
-        allow delete: if isBoardCommenter(boardId) &&
-                        resource.data.userId == request.auth.uid;
+        allow delete: if isBoardAdmin(boardId) ||
+                        (isBoardCommenter(boardId) &&
+                         resource.data.userId == request.auth.uid);
       }
 
       // presence — each user manages only their own presence doc.

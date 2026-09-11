@@ -21,12 +21,20 @@ import { CommentAnchorKind, Reaction, ReactionEmoji, REACTION_EMOJIS } from "../
 //
 // Storage: `boards/{id}/reactions/{elementId}_{emoji}_{userId}`. The document
 // id is the UNIQUENESS constraint: one user reacting twice with the same
-// emoji on the same element addresses the same doc (an overwrite or a
-// delete), never a second row, so "one reaction per user per emoji per
-// element" holds without a query. It is NOT what firestore.rules authorizes
-// the write against, though — see that file's `reactions` match for why
-// parsing this id there would be the fragile choice, and this module's
-// `userId` field for the actual authorization surface.
+// emoji on the same element addresses the same doc (a denied re-create or an
+// intentional delete — see `addReaction`'s own comment), never a second row,
+// so "one reaction per user per emoji per element" holds without a query.
+//
+// Role authorization is the `userId` FIELD (firestore.rules' `reactions`
+// match checks `request.resource.data.userId == request.auth.uid`, exactly
+// like comments' `authorId`), but the id is not left unchecked either: that
+// same rule also requires the id to equal the fields' own
+// `anchorElementId + '_' + emoji + '_' + userId`, by exact-match
+// concatenation, never by splitting the id apart (a fixed segment count
+// would break the moment any segment contains an underscore). This is what
+// stops a caller who legitimately owns `userId` from still writing
+// `el1_👍_me_2`/`x`/etc. — ids that would each pass the field check alone and
+// inflate a badge's count without limit.
 
 const ANCHOR_KINDS: CommentAnchorKind[] = ["path", "shape", "text", "note", "image"];
 
@@ -80,9 +88,14 @@ function reactionPayload(boardId: string, input: NewReaction) {
   };
 }
 
-/** Creates (or overwrites) the caller's reaction on an element. Idempotent by
- *  construction: the doc id already encodes (element, emoji, user), so a
- *  duplicate call is a same-doc overwrite, not a second reaction. */
+/** Creates the caller's reaction on an element. NOT idempotent under
+ *  firestore.rules: `allow update: if false` on `reactions` means a second
+ *  call at the same doc id is denied outright — Firestore rules evaluate a
+ *  `setDoc` against an ALREADY-EXISTING doc as an `update`, regardless of
+ *  the client SDK method name, so this throws rather than silently
+ *  overwriting. A caller that might already have reacted (the normal case
+ *  for a UI toggle) should call `toggleReaction` instead, which checks
+ *  first. */
 export async function addReaction(boardId: string, input: NewReaction): Promise<void> {
   const id = reactionDocId(input.anchorElementId, input.emoji, input.userId);
   await setDoc(doc(db, "boards", boardId, "reactions", id), reactionPayload(boardId, input));

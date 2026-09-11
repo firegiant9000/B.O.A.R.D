@@ -269,12 +269,16 @@ export function subscribeToBoardAudio(
 // value a caller passes here). A patched bundle or a raw SDK call that skips
 // this module entirely still hits that rule on the actual write.
 //
-// storage.rules' `boards/{id}/audio/...` match is NOT part of that fix (still
-// membership-only, no `plan` read) — a denied Firestore doc write can still
-// leave an uploaded Storage object behind; closing that is tracked
-// separately. `saveVoiceNote` above already deletes the object on a failed
-// doc write for exactly this reason, which now includes "denied by the plan
-// gate," not just network/permission failures.
+// storage.rules' `boards/{id}/audio/...` match is NOT part of that fix, and
+// unlike firestore.rules above, it is not deployed AT ALL today (see
+// MAX_DURATION_MS's comment: no `storage` entry exists in `firebase.json`),
+// so it enforces nothing — not even membership, let alone plan. A denied
+// Firestore doc write can still leave an uploaded Storage object behind
+// either way; closing that fully needs actually deploying storage.rules (and
+// probably a Cloud Function on top), tracked separately. `saveVoiceNote`
+// above already deletes the object on a failed doc write for exactly this
+// reason, which now includes "denied by the plan gate," not just
+// network/permission failures.
 export function canRecordVoiceNotes(plan: Plan): boolean {
   return plan !== "free";
 }

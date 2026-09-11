@@ -1035,16 +1035,79 @@ describe("reactions", () => {
     await assertSucceeds(deleteDoc(doc(db(ALICE), "boards/boardWrite/reactions/seed_👍_alice")));
   });
 
-  it("a commenter cannot remove someone else's reaction", async () => {
+  it("a non-admin commenter cannot remove someone else's reaction", async () => {
     // dave is a real commenter (and effective editor) on boardWrite, but the
-    // seeded reaction belongs to alice — no admin-moderation arm for
-    // reactions (unlike comments' delete rule).
+    // seeded reaction belongs to alice and dave is not the board admin.
     await assertFails(deleteDoc(doc(db(DAVE), "boards/boardWrite/reactions/seed_👍_alice")));
+  });
+
+  // The board admin CAN remove another member's reaction (moderation, same
+  // shape as comments' own admin-delete arm) — required by
+  // `clearBoardReactions` (reactionService.ts): a "clear board" batch-deletes
+  // every reaction, and a Firestore batched write is atomic, so ONE reaction
+  // the clearing admin doesn't own would reject the WHOLE batch and leave the
+  // board half-cleared (elements/comments already gone, reactions not) if
+  // this arm were missing. dave (not alice, the admin) owns the reaction
+  // being deleted here, so this is genuinely the "someone else's" case, not
+  // the admin deleting their own.
+  it("the board admin can delete another member's reaction (moderation / board-clear)", async () => {
+    await react(DAVE, "seed", "💡", DAVE);
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "boards/boardWrite/reactions/seed_💡_dave")));
   });
 
   it("updates are never allowed — react/un-react is create/delete only", async () => {
     await assertFails(
       updateDoc(doc(db(ALICE), "boards/boardWrite/reactions/seed_👍_alice"), { emoji: "❤️" })
+    );
+  });
+
+  // The document id must equal `anchorElementId_emoji_userId` exactly — the
+  // `userId` FIELD check alone stops reacting AS someone else, but does
+  // nothing to stop the SAME authorized user from writing extra ids that
+  // still pass every field check.
+  it("denies when the doc id names a different user than the userId field, even though the field matches auth", async () => {
+    // carol's field says carol (her own uid — the field check alone would
+    // pass) but the doc id names dave. Unlike "denies reacting as another
+    // user" above (which builds id and field consistently with EACH OTHER,
+    // just wrong versus the actor), this is the case that only an id-binding
+    // check — not the field check alone — can catch.
+    await assertFails(
+      setDoc(doc(db(CAROL), "boards/boardWrite/reactions/seed_👍_dave"), {
+        schemaVersion: 1,
+        anchorElementId: "seed",
+        anchorKind: "shape",
+        emoji: "👍",
+        userId: CAROL,
+      })
+    );
+  });
+
+  it("denies an id with an extra segment, even with a fully valid userId field (stops unbounded duplicate reactions)", async () => {
+    // dave is a genuine commenter reacting with his own uid in the field —
+    // the field check alone would allow this. Without the id-binding check,
+    // dave could repeat this with `_3`, `_4`, … and inflate this (element,
+    // emoji) pair's count in countsFor without limit, permanently (toggle
+    // only ever deletes the canonical id).
+    await assertFails(
+      setDoc(doc(db(DAVE), "boards/boardWrite/reactions/seed_❤️_dave_2"), {
+        schemaVersion: 1,
+        anchorElementId: "seed",
+        anchorKind: "shape",
+        emoji: "❤️",
+        userId: DAVE,
+      })
+    );
+  });
+
+  it("denies an emoji outside the fixed 5-value set, even with an otherwise valid id/field pair", async () => {
+    await assertFails(
+      setDoc(doc(db(DAVE), "boards/boardWrite/reactions/seed_🚀_dave"), {
+        schemaVersion: 1,
+        anchorElementId: "seed",
+        anchorKind: "shape",
+        emoji: "🚀",
+        userId: DAVE,
+      })
     );
   });
 });
