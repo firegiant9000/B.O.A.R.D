@@ -1,4 +1,4 @@
-import { fromHex8, toHex8, toCssRgba, clampAlpha, isValidHex } from "../color";
+import { fromHex8, toHex8, toCssRgba, clampAlpha, isValidHex, hasAlphaByte } from "../color";
 
 /**
  * color.ts — Month 5 (ROADMAP item 12, colour + stroke polish). The three
@@ -107,5 +107,27 @@ describe("isValidHex", () => {
     expect(isValidHex("nonsense")).toBe(false);
     expect(isValidHex("")).toBe(false);
     expect(isValidHex("#fff")).toBe(false);
+  });
+});
+
+// Fix round 2 — the regression this predicate exists to prevent: a caller
+// reading `fromHex8(text)!.a` unconditionally cannot tell "the text really
+// carried an alpha byte" from "fromHex8 defaulted one for a 6-digit hex",
+// since both produce `a: 1` for a plain `#rrggbb`. See ColorPickerModal.tsx's
+// `commitHex` for the real call site this backs.
+describe("hasAlphaByte", () => {
+  it("is true only for a genuine 8-digit hex, with or without a leading #", () => {
+    expect(hasAlphaByte("#3366ffcc")).toBe(true);
+    expect(hasAlphaByte("3366ffcc")).toBe(true);
+  });
+
+  it("is false for a 6-digit hex — it carries no alpha byte to report", () => {
+    expect(hasAlphaByte("#3366ff")).toBe(false);
+    expect(hasAlphaByte("3366ff")).toBe(false);
+  });
+
+  it("is false for malformed input, without throwing", () => {
+    expect(hasAlphaByte("nonsense")).toBe(false);
+    expect(hasAlphaByte("")).toBe(false);
   });
 });

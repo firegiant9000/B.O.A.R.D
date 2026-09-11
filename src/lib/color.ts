@@ -53,6 +53,21 @@ export function isValidHex(input: string): boolean {
 }
 
 /**
+ * True only when `input` is genuinely an 8-digit hex string — i.e. the
+ * caller TYPED a real alpha byte, as opposed to a 6-digit hex that
+ * `fromHex8` merely DEFAULTS to `a: 1` for. A caller that reads
+ * `fromHex8(input)!.a` unconditionally cannot tell those two cases apart —
+ * a 6-digit hex always comes back `a: 1` regardless of what alpha was
+ * already in effect, so blindly trusting `.a` on every commit forces alpha
+ * to fully opaque on the common case (a plain `#rrggbb` edit) instead of
+ * leaving it alone. This predicate is what lets a caller apply `.a` only
+ * when the input actually carried one.
+ */
+export function hasAlphaByte(input: string): boolean {
+  return HEX8_RE.test(input);
+}
+
+/**
  * Parses a `#RRGGBB` or `#RRGGBBAA` string (the `#` is optional, case is
  * ignored) into an `RGBA`. A 6-digit hex carries no alpha byte, so it maps to
  * fully opaque (`a: 1`) — never a parse failure. Anything else — wrong

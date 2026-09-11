@@ -11,7 +11,7 @@ import {
   GestureResponderEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { fromHex8, toHex6, toCssRgba, isValidHex, clampAlpha } from "../lib/color";
+import { fromHex8, toHex6, toCssRgba, isValidHex, hasAlphaByte, clampAlpha } from "../lib/color";
 import { valueFromPosition, positionFromValue } from "../lib/sliderMath";
 import * as workspaceService from "../services/workspaceService";
 import type { Plan } from "../types";
@@ -95,15 +95,6 @@ export default function ColorPickerModal({
   // value would be a worse failure mode than a wrong-looking swatch.
   const parsedColor = fromHex8(color) ?? { r: 0, g: 0, b: 0, a: 1 };
 
-  // Fix round 1, item 6: an 8-digit hex the user typed DOES carry a real
-  // alpha byte (`fromHex8` reads it) — passing the OLD `alpha` prop here
-  // instead of `parsed.a` silently discarded it even though `isValidHex`
-  // advertises 8-digit input as valid. Whichever the field held wins.
-  const commitHex = (text: string) => {
-    const parsed = fromHex8(text);
-    if (parsed) onChange(toHex6(parsed), parsed.a);
-  };
-
   const [trackWidth, setTrackWidth] = useState(1);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
@@ -141,6 +132,23 @@ export default function ColorPickerModal({
   const commitAlpha = () => {
     draggingAlphaRef.current = false;
     onChange(color, localAlphaRef.current);
+  };
+
+  // Fix round 1, item 6: an 8-digit hex the user typed DOES carry a real
+  // alpha byte (`fromHex8` reads it) — passing the OLD `alpha` unconditionally
+  // discarded it. Fix round 2's regression: the fix for that OVER-corrected —
+  // `fromHex8` returns `a: 1` for EVERY 6-digit hex regardless of what alpha
+  // was already in effect, so reading `parsed.a` unconditionally instead
+  // forced alpha to fully opaque on every plain `#rrggbb` commit (the common
+  // case), silently overwriting the selection's real opacity via `onChange`
+  // -> `elements.applyOpacity`. `hasAlphaByte` is what actually distinguishes
+  // "the text really carried an alpha byte" from "fromHex8 defaulted one" —
+  // only then does the typed byte win; otherwise the live slider value
+  // (`localAlpha`, not the possibly-stale `alpha` prop) is preserved.
+  const commitHex = (text: string) => {
+    const parsed = fromHex8(text);
+    if (!parsed) return;
+    onChange(toHex6(parsed), hasAlphaByte(text) ? parsed.a : localAlpha);
   };
 
   const canUseSwatches = workspaceService.canUseCustomPalette(plan);

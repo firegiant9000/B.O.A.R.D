@@ -43,23 +43,31 @@ it("shows the current alpha as a percentage", () => {
   expect(screen.getByText("Alpha: 40%")).toBeTruthy();
 });
 
-it("submitting a valid 6-digit hex in the text field applies it, alpha unchanged", () => {
-  render(<ColorPickerModal {...baseProps} />);
-  const input = screen.getByTestId("color-picker-hex-input");
-  fireEvent.changeText(input, "#00aaff");
-  fireEvent(input, "submitEditing");
-  expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 1);
-});
+describe("hex text field alpha handling (fix round 1 item 6, fix round 2 regression)", () => {
+  // Fix round 2: `baseProps.alpha` is `1` by default, which cannot
+  // distinguish "alpha preserved" from "alpha forced to 1" — this is
+  // EXACTLY why the round-1 fix's own regression (unconditionally trusting
+  // `fromHex8(text).a`, which is always `1` for a 6-digit hex) shipped
+  // without a failing test. Every test in this block uses a non-1 fixture
+  // alpha (0.4) so the two outcomes are actually distinguishable.
 
-// Fix round 1, item 6: an 8-digit hex DOES carry a real alpha byte
-// (`fromHex8` reads it) — the field must apply it, not silently keep
-// whatever the alpha slider happened to be at.
-it("submitting an 8-digit hex applies its OWN embedded alpha, not the current slider value", () => {
-  render(<ColorPickerModal {...baseProps} alpha={1} />);
-  const input = screen.getByTestId("color-picker-hex-input");
-  fireEvent.changeText(input, "#00aaff80");
-  fireEvent(input, "submitEditing");
-  expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 0x80 / 255);
+  it("submitting a plain 6-digit hex preserves the current alpha — it carries no alpha byte to override it with", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0.4} />);
+    const input = screen.getByTestId("color-picker-hex-input");
+    fireEvent.changeText(input, "#00aaff");
+    fireEvent(input, "submitEditing");
+    expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 0.4);
+  });
+
+  // An 8-digit hex DOES carry a real alpha byte (`fromHex8` reads it) — the
+  // field must apply it, overriding whatever the alpha slider was at.
+  it("submitting an 8-digit hex applies its OWN embedded alpha, overriding the current alpha", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0.4} />);
+    const input = screen.getByTestId("color-picker-hex-input");
+    fireEvent.changeText(input, "#00aaff80");
+    fireEvent(input, "submitEditing");
+    expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 0x80 / 255);
+  });
 });
 
 it("does not call onChange for a malformed hex", () => {
