@@ -9,10 +9,12 @@ import {
 import { AuthProvider } from "../src/contexts/AuthContext";
 import { WorkspaceProvider } from "../src/contexts/WorkspaceContext";
 import { useAuth } from "../src/hooks/useAuth";
+import { useWorkspace } from "../src/hooks/useWorkspace";
 import LoadingScreen from "../src/components/LoadingScreen";
 import ErrorBoundary from "../src/components/ErrorBoundary";
 import PWAInstallPrompt from "../src/components/PWAInstallPrompt";
 import { initErrorReporting, captureException } from "../src/lib/errorReporting";
+import { identifyWorkspace } from "../src/services/analyticsService";
 import { initConnectivity } from "../src/lib/connectivity";
 import { classifyShare, handleSharedItem } from "../src/lib/shareIntake";
 import { setPendingShare } from "../src/lib/pendingShare";
@@ -97,6 +99,17 @@ function RootNavigator() {
       loadOpenAIKey();
     }
   }, [user?.uid, inEmbed]);
+
+  // Month 6 — analytics identity. Plumbs the already-computed active
+  // workspace + member role into the analytics seam (src/services/analyticsService.ts);
+  // it makes no taxonomy or PII decisions itself — those live entirely in
+  // that seam. Skipped for the embed identity, same as the effect above.
+  const { activeWorkspace } = useWorkspace();
+  useEffect(() => {
+    if (!user || inEmbed || !activeWorkspace) return;
+    const role = activeWorkspace.members[user.uid];
+    if (role) identifyWorkspace(activeWorkspace.id, role);
+  }, [user?.uid, inEmbed, activeWorkspace]);
 
   // Deep-link a tapped session notification straight to that session.
   useEffect(() => {
