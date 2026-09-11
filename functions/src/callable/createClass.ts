@@ -20,12 +20,26 @@ import { generateInviteCode } from "./createBoard";
 // firestore.rules' `isInstructorOfClass`) hand their own board's content to
 // that class's instructor without ever having been invited.
 //
-// Fix round 1, I4 — this now also writes `joinCodes/{joinCode}` (holding
-// only `{classId}`) in the SAME atomic batch as the class document, so the
-// two can never diverge (a class without a resolvable code, or a code
-// pointing at nothing). `classes/{classId}` itself no longer answers "does
+// Fix round 1, I4 — this also writes `joinCodes/{joinCode}` (holding only
+// `{classId}`) in the SAME atomic batch as the class document, so the two
+// can never diverge. `classes/{classId}` itself no longer answers "does
 // this code exist" — see firestore.rules' `classes` match block for why
 // that read was narrowed.
+//
+// Fix round 2 — the batch write below used `set`, which SILENTLY
+// OVERWRITES an existing `joinCodes/{code}` doc on a collision instead of
+// failing. `generateInviteCode`'s keyspace is 36^6 ≈ 2.18e9 codes; birthday
+// collisions are real at scale (~2e-4 at 1,000 classes, ~2.3% at 10,000,
+// ~90% at 100,000) and these docs are never deleted, so occupancy only
+// grows. A collision would have redirected every future redemption of the
+// FIRST class's code to the SECOND class, silently and with no error to
+// either instructor — a student's board becoming readable by a stranger
+// instructor, with no attacker action at all. `batch.create` below fails
+// the WHOLE batch (ALREADY_EXISTS) on a collision instead — the class is
+// not created either, fail-closed and still atomic — and a bounded 3-try
+// regenerate-and-retry (`makeWriteClass`) turns the ~1-in-2-billion
+// collision into an invisible retry rather than an error surfaced to an
+// instructor who did nothing wrong.
 //
 // Unlike createBoard/createSession, there is NO plan/seat-cap gate here: a
 // class is not scoped to any workspace at all (the edu tier is sold
@@ -36,6 +50,7 @@ import { generateInviteCode } from "./createBoard";
 // here rather than left unremarked.
 
 const MAX_NAME_LENGTH = 200;
+const MAX_JOIN_CODE_ATTEMPTS = 3;
 
 export interface CreateClassRequest {
   name: string;
@@ -48,10 +63,15 @@ export interface CreateClassResponse {
 
 /** Injected so the handler unit-tests without Firestore, matching
  *  handleCreateBoard's pattern (functions/src/callable/createBoard.ts).
- *  Takes the join code too (not just the class doc) so the implementation
- *  can write both `classes/{id}` and `joinCodes/{joinCode}` atomically. */
+ *  Takes a join code to try FIRST, but returns the code actually written —
+ *  the two can differ after a retry (see makeWriteClass below), and the
+ *  caller must return the REAL one or an instructor would be handed a code
+ *  that doesn't resolve to anything. */
 export interface CreateClassDeps {
-  writeClass(classDoc: Record<string, unknown>, joinCode: string): Promise<string>;
+  writeClass(
+    classDoc: Record<string, unknown>,
+    joinCode: string
+  ): Promise<{ classId: string; joinCode: string }>;
 }
 
 export async function handleCreateClass(
@@ -70,7 +90,7 @@ export async function handleCreateClass(
   // own join code (see this file's header, and generateInviteCode's own
   // header on createBoard.ts).
   const joinCode = generateInviteCode();
-  const classId = await deps.writeClass(
+  const result = await deps.writeClass(
     {
       name: name.slice(0, MAX_NAME_LENGTH),
       // Derived from the auth token, never trusted from the client — mirrors
@@ -88,22 +108,48 @@ export async function handleCreateClass(
     joinCode
   );
 
-  return { classId, joinCode };
+  return { classId: result.classId, joinCode: result.joinCode };
+}
+
+/** True for the Admin SDK's ALREADY_EXISTS failure (gRPC status code 6) —
+ *  what `batch.create()` throws when `joinCodes/{code}` already has a
+ *  document, i.e. a real collision on the join-code keyspace. */
+function isAlreadyExistsError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === 6;
 }
 
 /** The real batched write, split out so it unit-tests against a fake
  *  Firestore-like object without the emulator, mirroring
  *  createSession.ts's `makeRunCreate`. Both docs are written in ONE batch
- *  so a class is never created without its lookup entry, or vice versa. */
+ *  so a class is never created without its lookup entry, or vice versa —
+ *  and the lookup entry is `create`d, never `set`, so a collision fails the
+ *  batch instead of silently overwriting another class's code (see this
+ *  file's header). On that failure, regenerates a fresh code and retries,
+ *  up to `MAX_JOIN_CODE_ATTEMPTS` times, before giving up. */
 export function makeWriteClass(db: Firestore): CreateClassDeps["writeClass"] {
-  return async (classDoc, joinCode) => {
-    const classRef = db.collection("classes").doc();
-    const joinCodeRef = db.collection("joinCodes").doc(joinCode);
-    const batch = db.batch();
-    batch.set(classRef, classDoc);
-    batch.set(joinCodeRef, { classId: classRef.id });
-    await batch.commit();
-    return classRef.id;
+  return async (classDoc, initialJoinCode) => {
+    let code = initialJoinCode;
+    for (let attempt = 1; attempt <= MAX_JOIN_CODE_ATTEMPTS; attempt++) {
+      const classRef = db.collection("classes").doc();
+      const joinCodeRef = db.collection("joinCodes").doc(code);
+      const batch = db.batch();
+      batch.create(joinCodeRef, { classId: classRef.id });
+      batch.set(classRef, { ...classDoc, joinCode: code });
+      try {
+        await batch.commit();
+        return { classId: classRef.id, joinCode: code };
+      } catch (err) {
+        if (attempt < MAX_JOIN_CODE_ATTEMPTS && isAlreadyExistsError(err)) {
+          code = generateInviteCode();
+          continue;
+        }
+        throw err;
+      }
+    }
+    // Unreachable — the loop above always returns or throws — kept so
+    // TypeScript sees every path return, and so a future refactor that
+    // breaks that invariant fails loudly instead of returning `undefined`.
+    throw new HttpsError("internal", "Could not allocate a unique join code. Please try again.");
   };
 }
 

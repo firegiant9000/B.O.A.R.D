@@ -55,6 +55,7 @@ export default function ClassroomHome() {
 
   const [openRosterClassId, setOpenRosterClassId] = useState<string | null>(null);
   const [roster, setRoster] = useState<RosterState | null>(null);
+  const [rosterError, setRosterError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) {
@@ -125,13 +126,24 @@ export default function ClassroomHome() {
     setOpenRosterClassId((prev) => (prev === classId ? null : classId));
   };
 
+  // Fix round 2, S2 — this was `try { … } finally { … }` with no `catch`,
+  // called from a floating `onPress`: any rejection (e.g. a stale roster
+  // racing another device's removal, or a genuine network failure) was an
+  // unhandled promise rejection and a silent dead end — the student stayed
+  // in the list with no explanation. firestore.rules' removal arm now
+  // tolerates the specific "already gone" case as a no-op (see that rule's
+  // own comment), but a `catch` is still needed for every OTHER failure
+  // mode this can hit.
   const handleRemoveStudent = async (classId: string, uid: string) => {
     setRoster({ classId, loading: false, removingUid: uid });
+    setRosterError(null);
     try {
       await classroomService.removeStudentFromClass(classId, uid);
       setTeaching((prev) =>
         prev.map((c) => (c.id === classId ? { ...c, studentIds: c.studentIds.filter((s) => s !== uid) } : c))
       );
+    } catch (e: any) {
+      setRosterError(e?.message ?? "Couldn't remove that student. Please try again.");
     } finally {
       setRoster(null);
     }
@@ -177,9 +189,17 @@ export default function ClassroomHome() {
           </TouchableOpacity>
           {openRosterClassId === klass.id && (
             <View testID={`roster-${klass.id}`}>
+              {rosterError && <Text style={styles.errorText}>{rosterError}</Text>}
               {klass.studentIds.length === 0 ? (
                 <Text style={styles.emptyText}>No students enrolled yet.</Text>
               ) : (
+                // Fix round 2, N3 — deliberately raw uids, not resolved
+                // display names/emails. Resolving names means reading
+                // other users' profile documents from this instructor-only
+                // screen, which is more PII surface in the exact feature
+                // this whole pilot was reshaped to minimize (see this
+                // component's own header). The tradeoff is a harder-to-use
+                // roster; accepted rather than grown.
                 klass.studentIds.map((uid) => (
                   <View key={uid} style={styles.rosterRow}>
                     <Text style={styles.rosterUid} numberOfLines={1}>{uid}</Text>

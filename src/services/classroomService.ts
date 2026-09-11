@@ -100,10 +100,20 @@ export async function enrollInClass(inputCode: string): Promise<{ classId: strin
   }
 
   const { classId } = lookup.data() as { classId: string };
-  await updateDoc(doc(db, "classes", classId), {
-    studentIds: arrayUnion(currentUser.uid),
-    updatedAt: serverTimestamp(),
-  });
+  try {
+    await updateDoc(doc(db, "classes", classId), {
+      studentIds: arrayUnion(currentUser.uid),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Fix round 2, S4 — a resolvable code whose class write still fails
+    // (the class was deleted after the code was minted, or any other
+    // denial) surfaced the raw Firestore error verbatim before this. Map
+    // it back to the SAME friendly message the resolve-miss path above
+    // uses — from the caller's point of view this code just doesn't work,
+    // and the underlying reason isn't actionable for them either way.
+    throw new Error("No class found with that join code. Please check and try again.");
+  }
   return { classId };
 }
 
@@ -134,8 +144,21 @@ export async function getEnrolledClasses(uid: string): Promise<ClassRoom[]> {
  * had no cleanup path at all, since `joinCode` is immutable and deleting
  * the whole class is the only other lever. Kept as narrow as self-enroll:
  * firestore.rules' removal arm permits shrinking `studentIds` by exactly
- * the one named uid and touches nothing else, so this can never become a
- * general roster-write function.
+ * one DISTINCT named uid (fix round 2, S1 — `toSet().size()==size()`
+ * closes a duplicate-uid path an earlier version of this arm allowed) and
+ * touches nothing else, so this can never become a general roster-write
+ * function.
+ *
+ * `arrayRemove` of a uid already gone from the roster (stale list, another
+ * device got there first) computes an UNCHANGED array — firestore.rules'
+ * removal arm itself denies that (it's not a size-1 shrink), but the
+ * self-enroll arm's own pre-existing idempotent branch (`next == prev`,
+ * open to any signed-in caller touching only `studentIds`/`updatedAt`)
+ * already allows the resulting no-op write, so this still succeeds. Fix
+ * round 2, S2's actual gap was purely client-side: this function's caller
+ * (ClassroomHome's `handleRemoveStudent`) had no `catch` at all, so any
+ * OTHER failure (a genuine denial, a network error) was an unhandled
+ * rejection.
  */
 export async function removeStudentFromClass(classId: string, uid: string): Promise<void> {
   await updateDoc(doc(db, "classes", classId), {

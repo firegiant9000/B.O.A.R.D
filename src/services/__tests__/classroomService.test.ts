@@ -113,6 +113,18 @@ describe("enrollInClass", () => {
     expect(getDoc).toHaveBeenCalledTimes(1);
     expect(getDocs).not.toHaveBeenCalled();
   });
+
+  // Fix round 2, S4 — a resolvable code whose class write still fails
+  // (deleted class, or any other denial) used to surface the raw
+  // Firestore error verbatim. Mapped to the SAME friendly message the
+  // resolve-miss path above uses.
+  it("maps a post-lookup write failure to the same friendly 'no class found' message", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ABC123", { classId: "class1" }));
+    updateDoc.mockRejectedValueOnce(new Error("permission-denied"));
+    await expect(classroomService.enrollInClass("ABC123")).rejects.toThrow(
+      /no class found with that join code/i
+    );
+  });
 });
 
 describe("getClass", () => {

@@ -7,7 +7,12 @@ function reqFor(uid: string | undefined, data: unknown) {
 
 function deps() {
   return {
-    writeClass: jest.fn(async (_doc: Record<string, unknown>, _joinCode: string) => "class123"),
+    // Echoes the join code it was handed — no collision simulated at this
+    // layer; makeWriteClass's own describe block below covers the retry.
+    writeClass: jest.fn(async (_doc: Record<string, unknown>, joinCode: string) => ({
+      classId: "class123",
+      joinCode,
+    })),
   };
 }
 
@@ -99,31 +104,93 @@ describe("handleCreateClass", () => {
 });
 
 describe("makeWriteClass", () => {
-  // Fix round 1, I4 — the class doc and its joinCodes lookup entry must be
-  // written atomically (one batch), never as two independent writes that
-  // could diverge if the second failed.
-  it("writes the class doc and a matching joinCodes/{code} doc in ONE batch", async () => {
-    const classRef = { id: "class123" };
-    const joinCodeRef = { id: "ABC123" };
-    const batchSet = jest.fn();
-    const batchCommit = jest.fn(async () => undefined);
-    const classesDoc = jest.fn(() => classRef);
-    const joinCodesDoc = jest.fn(() => joinCodeRef);
+  /** A fake Firestore-like db whose `batch()` calls are individually
+   *  inspectable (`batches[i]`), so a test can make ONLY the first
+   *  commit() fail — real collision-then-retry behavior, not just a
+   *  globally-failing mock. */
+  function makeFakeDb() {
+    const batches: { create: jest.Mock; set: jest.Mock; commit: jest.Mock }[] = [];
     const fakeDb = {
       collection: jest.fn((name: string) => ({
-        doc: name === "classes" ? classesDoc : joinCodesDoc,
+        doc: jest.fn((id?: string) => ({ id: id ?? `auto-${batches.length}`, __collection: name })),
       })),
-      batch: jest.fn(() => ({ set: batchSet, commit: batchCommit })),
-    } as never;
+      batch: jest.fn(() => {
+        const b = { create: jest.fn(), set: jest.fn(), commit: jest.fn(async () => undefined) };
+        batches.push(b);
+        return b;
+      }),
+    };
+    return { fakeDb, batches };
+  }
 
-    const writeClass = makeWriteClass(fakeDb);
+  function alreadyExistsError() {
+    const err: { code: number } & Error = Object.assign(new Error("6 ALREADY_EXISTS"), { code: 6 });
+    return err;
+  }
+
+  // Fix round 1, I4 — the class doc and its joinCodes lookup entry must be
+  // written atomically (one batch), never as two independent writes that
+  // could diverge if the second failed. Fix round 2 — the lookup entry
+  // uses `create`, never `set`: `set` silently overwrites a real collision
+  // (see this file's own header for the consequence), `create` fails the
+  // whole batch instead.
+  it("writes the class doc and a matching joinCodes/{code} doc in ONE batch, via create() for the lookup entry", async () => {
+    const { fakeDb, batches } = makeFakeDb();
+    const writeClass = makeWriteClass(fakeDb as never);
     const classDoc = { name: "CS 101", instructorId: "instructor1" };
-    const classId = await writeClass(classDoc, "ABC123");
 
-    expect(classId).toBe("class123");
-    expect(joinCodesDoc).toHaveBeenCalledWith("ABC123");
-    expect(batchSet).toHaveBeenCalledWith(classRef, classDoc);
-    expect(batchSet).toHaveBeenCalledWith(joinCodeRef, { classId: "class123" });
-    expect(batchCommit).toHaveBeenCalledTimes(1);
+    const res = await writeClass(classDoc, "ABC123");
+
+    expect(res.joinCode).toBe("ABC123");
+    expect(batches).toHaveLength(1);
+    const [batch] = batches;
+    expect(batch.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ABC123" }),
+      { classId: res.classId }
+    );
+    expect(batch.set).toHaveBeenCalledWith(
+      expect.objectContaining({ id: res.classId }),
+      { ...classDoc, joinCode: "ABC123" }
+    );
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix round 2 — the bounded regenerate-and-retry the review asked for,
+  // pairing with `create()`: a real (if astronomically rare) collision
+  // should surface as a transparent retry, not an error thrown at an
+  // instructor who did nothing wrong.
+  it("regenerates the join code and retries after a simulated ALREADY_EXISTS collision", async () => {
+    const { fakeDb, batches } = makeFakeDb();
+    (fakeDb.batch as jest.Mock).mockImplementationOnce(() => {
+      const b = { create: jest.fn(), set: jest.fn(), commit: jest.fn(async () => { throw alreadyExistsError(); }) };
+      batches.push(b);
+      return b;
+    });
+    const writeClass = makeWriteClass(fakeDb as never);
+
+    const res = await writeClass({ name: "CS 101" }, "ABC123");
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0].commit).toHaveBeenCalledTimes(1);
+    expect(batches[1].commit).toHaveBeenCalledTimes(1);
+    // The retried code is genuinely regenerated (generateInviteCode is
+    // real, not mocked here) — can't pin an exact value, only its shape,
+    // and that the SECOND batch is the one that actually committed.
+    expect(res.joinCode).toMatch(/^[A-Z0-9]{6}$/);
+    expect(res.classId).toBeTruthy();
+  });
+
+  it("gives up after MAX_JOIN_CODE_ATTEMPTS (3) collisions rather than retrying forever", async () => {
+    const { fakeDb, batches } = makeFakeDb();
+    (fakeDb.batch as jest.Mock).mockImplementation(() => {
+      const b = { create: jest.fn(), set: jest.fn(), commit: jest.fn(async () => { throw alreadyExistsError(); }) };
+      batches.push(b);
+      return b;
+    });
+    const writeClass = makeWriteClass(fakeDb as never);
+
+    await expect(writeClass({ name: "CS 101" }, "ABC123")).rejects.toMatchObject({ code: 6 });
+    // Exactly 3 attempts — bounded, not 2, not unbounded.
+    expect(batches).toHaveLength(3);
   });
 });

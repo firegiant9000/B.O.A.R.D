@@ -629,8 +629,39 @@ service cloud.firestore {
       // immutable and the only other lever, deleting the whole class, is
       // destructive). The removal arm is kept exactly as narrow as
       // self-enroll below — it may ONLY shrink the roster by exactly one
-      // entry that was already present, never touch any other field, and
-      // never add anyone — so it cannot become a general roster-write arm.
+      // DISTINCT entry that was already present, never touch any other
+      // field, and never add anyone — so it cannot become a general
+      // roster-write arm.
+      //
+      // Fix round 2, S1 — an earlier version of this arm (and this
+      // comment) claimed "exactly one" while only checking
+      // `hasAll(prev)` + `size == prev-1`, which a SET-containment check
+      // doesn't actually enforce: `hasAll` ignores duplicates, so writing
+      // `[s1,s1]` from `[s1,s2,s3]` passed both checks (2 == 3-1) while
+      // actually removing TWO distinct entries and duplicating a third —
+      // confirmed empirically, and a duplicated uid would also produce
+      // duplicate React keys in ClassroomHome's roster list. The
+      // `toSet().size() == size()` clause below closes it in one clause
+      // (chosen over merely softening the comment, since the fix was that
+      // cheap): combined with `hasAll` + `size-1`, a next array that is
+      // distinct, a subset of prev, and exactly one shorter can only be
+      // prev with exactly one distinct element removed.
+      //
+      // Fix round 2, S2 — `arrayRemove` of a uid already gone from the
+      // roster (stale client list, another device already removed them)
+      // is a client-side no-op: `next.studentIds == prev.studentIds`
+      // exactly. This arm's OWN shrink-by-one clause denies that (size
+      // diff is 0, not -1) — but it doesn't need a matching idempotent
+      // branch of its own, because the self-enroll arm's `next == prev`
+      // clause below ALREADY allows any signed-in caller to resend the
+      // unchanged roster (see that arm's own comment) whenever the write
+      // only touches `studentIds`/`updatedAt`, with no instructorId check
+      // at all. Verified empirically: adding a removal-specific
+      // idempotent clause here was provably dead code — disabling it
+      // changed nothing, because the self-enroll arm already covers this
+      // exact write. The actual gap was purely client-side (see
+      // classroomService.removeStudentFromClass's own header) — no rules
+      // change was needed for this half.
       //
       // Self-enrollment mirrors the board invite-code self-join rule:
       // append EXACTLY the caller's own uid to `studentIds`. Fix round 1,
@@ -652,6 +683,7 @@ service cloud.firestore {
                       (request.auth.uid == resource.data.instructorId &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
                        resource.data.get('studentIds', []).hasAll(request.resource.data.studentIds) &&
+                       request.resource.data.studentIds.toSet().size() == request.resource.data.studentIds.size() &&
                        request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() - 1) ||
                       (
                         resource.data.joinCode != null &&
@@ -673,7 +705,7 @@ service cloud.firestore {
 
     // Fix round 1, I4 — the self-enrollment lookup credential, narrowed away
     // from the class document itself. Holds ONLY `{classId}` per code: any
-    // signed-in user may read one (needed to resolve a code before the
+    // signed-in user may read ONE BY ID (needed to resolve a code before the
     // caller is enrolled anywhere), but that discloses nothing but "this
     // code maps to this classId" — never a roster, never who teaches it.
     // Written ONLY by `createClass` (functions/src/callable/createClass.ts)
@@ -682,8 +714,21 @@ service cloud.firestore {
     // lookup is a plain `get()` by ID — never a `where()` query — which
     // sidesteps the query-collision hazard a client-chosen code would
     // otherwise create entirely, rather than merely relying on obscurity.
+    //
+    // Fix round 2, N1 (CRITICAL, caught on re-review) — `allow read` covers
+    // BOTH `get` (by id) and `list` (the whole collection), and a bare
+    // `isSignedIn()` with no `resource` reference is trivially
+    // list-provable: any signed-in user could `getDocs(collection(db,
+    // 'joinCodes'))` and harvest every join code (and therefore, via a
+    // cheap self-enroll write per code, every class's full roster) in ONE
+    // query — exactly the bulk-PII outcome this whole collection exists to
+    // prevent, and worse than the pre-fix-round-1 state (which needed one
+    // classId per class). `get`/`list` split below closes it: nothing in
+    // this app ever lists this collection, only `getDoc`s it by a known id,
+    // so narrowing to `get` breaks no real path.
     match /joinCodes/{code} {
-      allow read: if isSignedIn();
+      allow get:  if isSignedIn();
+      allow list: if false;
       allow write: if false;
     }
 

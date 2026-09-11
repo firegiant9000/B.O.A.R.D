@@ -439,6 +439,16 @@ beforeEach(async () => {
       joinCode: "CLASSC1",
       studentIds: [STUDENT_A1],
     });
+    // Fix round 2, S1 — a THREE-student roster, used only by the
+    // duplicate-uid removal test: classA's own 2-student roster can't
+    // exercise that shape (shrinking 2 -> a 2-entry duplicate array isn't
+    // even a size-1 shrink).
+    await setDoc(doc(db, "classes/classD"), {
+      name: "CS 101 (D)",
+      instructorId: INSTRUCTOR_A,
+      joinCode: "CLASSD1",
+      studentIds: [STUDENT_A1, STUDENT_A2, STUDENT_B1],
+    });
 
     // Fix round 1, I4 — the narrow self-enrollment lookup collection, one
     // doc per seeded class, matching what `createClass` would have written
@@ -446,6 +456,7 @@ beforeEach(async () => {
     await setDoc(doc(db, "joinCodes/CLASSA1"), { classId: "classA" });
     await setDoc(doc(db, "joinCodes/CLASSB1"), { classId: "classB" });
     await setDoc(doc(db, "joinCodes/CLASSC1"), { classId: "classC" });
+    await setDoc(doc(db, "joinCodes/CLASSD1"), { classId: "classD" });
 
     // Assignment boards — no workspaceId. The education-pilot linkage
     // (classId) is independent of workspace membership entirely; the
@@ -2532,7 +2543,13 @@ describe("M6 classes collection", () => {
     );
   });
 
-  it("the self-enroll path cannot be used to add a third party", async () => {
+  // Fix round 2, S1 — renamed from "the self-enroll path cannot be used to
+  // add a third party": studentC here is NOT already enrolled, so this
+  // exercises a different (also real) property than C1's fix — the newly
+  // added entry must be the caller, not that an already-enrolled caller
+  // can't smuggle one in. Kept (it's a genuine, separate case); only the
+  // name was wrong.
+  it("a non-enrolled caller cannot add someone else instead of themselves", async () => {
     await assertFails(
       updateDoc(doc(db(STUDENT_C), "classes/classA"), {
         studentIds: [STUDENT_A1, STUDENT_A2, "someoneElse"],
@@ -2583,7 +2600,7 @@ describe("M6 classes collection", () => {
 });
 
 // ── Fix round 1, I2: list-query provability ──────────────────────────────────
-// Every rules test written for Task 27 up to this point was a single-document
+// Every education-pilot rules test written up to this point was a single-document
 // getDoc/updateDoc — nothing proved a `where()` LIST query behaves the same
 // way, and per-document gating breaking silently under a list query is
 // exactly what cost this branch a round on poll votes previously. Confirmed
@@ -2669,10 +2686,33 @@ describe("fix round 1, I3: instructor roster removal", () => {
     );
   });
 
-  // Proves the removal arm is narrow (shrink by exactly one), not a general
-  // roster-write arm the instructor could use to wipe the roster in one go.
-  it("denies the instructor removing more than one student in a single write", async () => {
+  // Fix round 2, S1 — renamed from "denies the instructor removing more
+  // than one student in a single write": that name claimed a property the
+  // rule (before this round) didn't have. This test itself only exercises
+  // shrinking the WHOLE roster to `[]`, which the plain size check alone
+  // already denies (0 != 2-1) — it says nothing about the duplicate-uid
+  // case below, which needed a separate clause.
+  it("denies the instructor shrinking the roster by more than one entry in a single write", async () => {
     await assertFails(updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), { studentIds: [] }));
+  });
+
+  // Fix round 2, S1 (new) — confirmed empirically that the PRE-fix rule
+  // allowed this: `hasAll(prev)` ignores duplicates and `size==prev-1`
+  // only counts array length, so on a 3-entry roster, `[s1,s1]` (2 ==
+  // 3-1, passes both) actually removes TWO distinct entries while
+  // duplicating a third — the exact opposite of "removing one student".
+  // Uses classD (3 students) — classA's 2-student roster can't exercise
+  // this shape at all (a 2-entry duplicate array isn't even a size-1
+  // shrink from size 2). Tightened with one clause
+  // (`toSet().size()==size()`) rather than merely softening the claim,
+  // since the fix was that cheap; also closes a duplicate-React-key
+  // hazard in ClassroomHome's roster list.
+  it("denies the instructor 'removing' a student by duplicating another uid instead", async () => {
+    await assertFails(
+      updateDoc(doc(db(INSTRUCTOR_A), "classes/classD"), {
+        studentIds: [STUDENT_A1, STUDENT_A1],
+      })
+    );
   });
 
   // Proves the removal arm can't be repurposed to ADD someone under cover
@@ -2681,6 +2721,23 @@ describe("fix round 1, I3: instructor roster removal", () => {
     await assertFails(
       updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), {
         studentIds: [STUDENT_A1, STUDENT_A2, "newStudent"],
+      })
+    );
+  });
+
+  // Fix round 2, S2 — an instructor "removing" a uid that's already gone
+  // (a resend of the CURRENT roster, unchanged) must succeed as a no-op
+  // rather than being denied by the removal arm's own strict size-1
+  // check. It does — but empirically via the SELF-ENROLL arm's own
+  // pre-existing `next==prev` branch (open to any signed-in caller, not
+  // instructor-specific), not a removal-arm clause of its own: a
+  // removal-specific idempotent clause was tried and found to be
+  // provably dead code (disabling it changed nothing), so it was
+  // removed again rather than kept as decoration.
+  it("lets the instructor resubmit the SAME roster as a no-op", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2],
       })
     );
   });
@@ -2726,5 +2783,17 @@ describe("fix round 1, I4: joinCodes collection", () => {
 
   it("denies a client deleting a joinCodes doc", async () => {
     await assertFails(deleteDoc(doc(db(INSTRUCTOR_A), "joinCodes/CLASSA1")));
+  });
+
+  // Fix round 2, N1 (CRITICAL, caught on re-review) — `allow read` with no
+  // `resource` reference covers `list` as well as `get`, and is trivially
+  // list-provable. Confirmed empirically: a signed-in stranger could
+  // enumerate EVERY join code in the system in one query, then self-enroll
+  // into and read the full roster of each — worse than the pre-fix-round-1
+  // state, which needed one classId per class. This is the explicit test
+  // that hole was missing entirely; `get`/`list` split in firestore.rules
+  // closes it.
+  it("denies listing the joinCodes collection — get-by-id only, never enumerable", async () => {
+    await assertFails(getDocs(collection(db(STUDENT_C), "joinCodes")));
   });
 });

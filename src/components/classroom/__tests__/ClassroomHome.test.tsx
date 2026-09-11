@@ -157,4 +157,27 @@ describe("ClassroomHome", () => {
     await waitFor(() => expect(screen.queryByTestId("remove-student-class1-student1")).toBeNull());
     expect(screen.getByTestId("remove-student-class1-student2")).toBeTruthy();
   });
+
+  // Fix round 2, S2 — handleRemoveStudent was try/finally with no catch, so
+  // a rejection here was an unhandled promise rejection and a silent dead
+  // end: the student stayed in the list with no explanation. This proves
+  // the failure is now surfaced and the student is NOT silently dropped
+  // from the UI (removeStudentFromClass rejecting must not optimistically
+  // remove them).
+  it("surfaces a roster-removal failure instead of failing silently", async () => {
+    mockGetInstructorClasses.mockResolvedValue([makeClass()]);
+    mockGetEnrolledClasses.mockResolvedValue([]);
+    mockRemoveStudent.mockRejectedValue(new Error("network down"));
+
+    render(<ClassroomHome />);
+    await waitFor(() => expect(screen.getByTestId("teaching-class-class1")).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId("toggle-roster-class1"));
+    fireEvent.press(screen.getByTestId("remove-student-class1-student1"));
+
+    await waitFor(() => expect(mockRemoveStudent).toHaveBeenCalledWith("class1", "student1"));
+    await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
+    // Still in the list — the failure did not optimistically remove them.
+    expect(screen.getByTestId("remove-student-class1-student1")).toBeTruthy();
+  });
 });
