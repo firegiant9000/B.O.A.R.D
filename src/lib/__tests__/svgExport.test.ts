@@ -1,4 +1,4 @@
-import { toSvgDocument, SvgExportElement, SvgExportBounds } from "../svgExport";
+import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
 import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, ShapeElement, TextElement, TextNote } from "../../types";
 
 const bounds: SvgExportBounds = { x: 0, y: 0, width: 800, height: 600 };
@@ -404,5 +404,51 @@ describe("toSvgDocument", () => {
       const cy = imageData.y + imageData.height / 2;
       expect(doc).toContain(`<g transform="rotate(90, ${cx}, ${cy})">`);
     });
+  });
+});
+
+describe("toSvgExportElements", () => {
+  const empty = { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] };
+
+  it("wraps every kind's array entries with the matching kind tag", () => {
+    const els = toSvgExportElements({
+      ...empty,
+      paths: [pathData],
+      shapes: [shapeData],
+      texts: [textData],
+      notes: [noteData],
+      images: [imageData],
+      audioNotes: [audioData],
+    });
+    const kinds = els.map((el) => el.kind).sort();
+    expect(kinds).toEqual(["audio", "image", "note", "path", "shape", "text"]);
+    // Not just the right kind tags — the right underlying data too.
+    expect(els.find((el) => el.kind === "path")?.data).toBe(pathData);
+    expect(els.find((el) => el.kind === "image")?.data).toBe(imageData);
+  });
+
+  it("orders back-to-front matching the live canvas's own stacking (images, paths, shapes, notes, texts)", () => {
+    // Two of each kind (in a scrambled input order) proves this reorders by
+    // kind rather than by accidentally preserving call-argument order.
+    const els = toSvgExportElements({
+      images: [imageData],
+      audioNotes: [audioData],
+      paths: [pathData],
+      notes: [noteData],
+      shapes: [shapeData],
+      texts: [textData],
+    });
+    expect(els.map((el) => el.kind)).toEqual(["image", "path", "shape", "note", "text", "audio"]);
+  });
+
+  it("produces an empty array (not throwing) for a board with no content of any kind", () => {
+    expect(toSvgExportElements(empty)).toEqual([]);
+  });
+
+  it("feeds cleanly into toSvgDocument end to end", () => {
+    const els = toSvgExportElements({ ...empty, paths: [pathData], images: [imageData] });
+    const doc = toSvgDocument(els, bounds);
+    expect(doc).toContain("<path");
+    expect(doc).toContain("<image");
   });
 });

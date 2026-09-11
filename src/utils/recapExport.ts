@@ -143,6 +143,38 @@ export async function exportRecapPdf(session: Session): Promise<void> {
 
 // --- Month 6: board export (SVG/PDF/PNG) ---
 
+/**
+ * Fan-out ceiling for `buildImageHrefs`'s image fetches. Unbounded
+ * `Promise.all` over every image on a large board would fire dozens of
+ * concurrent requests at Firebase Storage and hold all of their bytes (each
+ * already base64-inflated to a `data:` URI) in memory at once. A small fixed
+ * concurrency keeps memory bounded and is gentle on Storage, at the cost of
+ * a proportionally longer export for an image-heavy board — an acceptable
+ * trade per `buildImageHrefs`'s own reasoning (a slower export beats a
+ * broken one, so a bit slower still beats hammering the backend).
+ */
+const IMAGE_FETCH_CONCURRENCY = 4;
+
+/** Runs `fn` over `items` with at most `limit` in flight at once, preserving
+ *  result order. A tiny fixed-size worker pool rather than a dependency —
+ *  `items.length <= limit` behaves exactly like `Promise.all`. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /** Fetches `url`'s bytes and returns them as a `data:` URI, or `null` on any
  *  failure (offline, an expired Storage token, a CORS-blocked fetch on web).
  *  `fetch` + `Blob` + `FileReader` all behave the same on web and React
@@ -180,6 +212,11 @@ async function fetchImageAsDataUri(url: string): Promise<string | null> {
  * never re-fetched. A fetch failure for one image just leaves that id unset
  * — `toSvgDocument` falls back to the element's own live URL for it — rather
  * than failing the whole export.
+ *
+ * Fetches at most `IMAGE_FETCH_CONCURRENCY` images at once (see that
+ * constant) rather than firing every fetch in parallel — a board with many
+ * images should export more slowly, not hammer Storage or hold every
+ * image's bytes in memory simultaneously.
  */
 export async function buildImageHrefs(
   elements: SvgExportElement[],
@@ -190,12 +227,10 @@ export async function buildImageHrefs(
     (el): el is Extract<SvgExportElement, { kind: "image" }> =>
       el.kind === "image" && !hrefs[el.data.id] && !!el.data.url
   );
-  await Promise.all(
-    toFetch.map(async (el) => {
-      const dataUri = await fetchImageAsDataUri(el.data.url);
-      if (dataUri) hrefs[el.data.id] = dataUri;
-    })
-  );
+  await mapWithConcurrency(toFetch, IMAGE_FETCH_CONCURRENCY, async (el) => {
+    const dataUri = await fetchImageAsDataUri(el.data.url);
+    if (dataUri) hrefs[el.data.id] = dataUri;
+  });
   return hrefs;
 }
 
@@ -236,6 +271,22 @@ export function buildBoardPdfHtml(pageSvgs: string[]): string {
 </style></head><body>${pages}</body></html>`;
 }
 
+/**
+ * Hard ceiling on the number of tiled pages a single PDF export will
+ * attempt. A very large board can tile into an absurd page count (a
+ * thousand-pixel-wide-per-page grid over a huge canvas), and discovering
+ * that by watching a device grind through rendering and printing dozens of
+ * pages is a bad experience. 40 pages is a stack of paper someone would
+ * plausibly still want printed or paged through; past that, the board is
+ * better served by PNG (one image, any size) or SVG (one vector document,
+ * no page concept at all) than by a PDF nobody will read page-by-page.
+ * `exportBoardPdf` fails fast with this number named in the error, before
+ * fetching a single image byte, rather than silently truncating — a PDF
+ * quietly missing the board's bottom-right corner is worse than a refusal
+ * that says why.
+ */
+export const MAX_EXPORT_PAGES = 40;
+
 export interface BoardPdfExportOptions {
   /** Shown in the native share sheet / web print dialog title, mirroring
    *  `exportRecapPdf`'s own `dialogTitle`. */
@@ -261,14 +312,34 @@ export interface BoardPdfExportOptions {
  * risk (see `canvasCapture.ts#captureBoardImage`'s G7 caveat) and is,
  * together with plain SVG export, the native-guaranteed format until that
  * gate closes.
+ *
+ * Throws (naming `MAX_EXPORT_PAGES`) instead of attempting an export that
+ * would tile into more pages than that.
+ *
+ * CAVEAT (web page scale): on native, `Print.printToFileAsync({ width:
+ * A4.width, height: A4.height })` pins the physical PDF page to exactly the
+ * same point dimensions this module tiles in, so a full-size tile fills its
+ * page at true 1:1 scale. On web there is no equivalent option —
+ * `window.print()` hands the HTML to the browser's own print dialog, which
+ * only takes the `@page { size: A4 }` hint in `buildBoardPdfHtml` as a
+ * suggestion, and a user's own "fit to page"/scale setting in that dialog
+ * can still stretch the result. This is an existing limitation of the
+ * web-print fallback this function reuses (`exportRecapPdf`'s own web path
+ * has the same imprecision), not something introduced here, and not
+ * something a browser's own print API lets a caller fully control.
  */
 export async function exportBoardPdf(
   elements: SvgExportElement[],
   bounds: SvgExportBounds,
   opts?: BoardPdfExportOptions
 ): Promise<void> {
-  const imageHrefs = await buildImageHrefs(elements, opts?.imageHrefs);
   const pages = tilePages({ width: bounds.width, height: bounds.height }, A4);
+  if (pages.length > MAX_EXPORT_PAGES) {
+    throw new Error(
+      `This board would need ${pages.length} PDF pages, over the ${MAX_EXPORT_PAGES}-page export limit. Try exporting as PNG or SVG instead.`
+    );
+  }
+  const imageHrefs = await buildImageHrefs(elements, opts?.imageHrefs);
   const pageSvgs = pages.map((p) =>
     toSvgDocument(
       elements,

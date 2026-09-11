@@ -691,6 +691,16 @@ export default function BoardScreen(
         onJoinCancel={handleDeepLinkCancel}
         shareVisible={shareBoardModalVisible}
         onCloseShare={() => setShareBoardModalVisible(false)}
+        canvasRef={canvasSvgRef}
+        boardElements={{
+          paths: elements.paths,
+          shapes: elements.shapes,
+          texts: elements.texts,
+          notes: elements.notes,
+          images: elements.images,
+          audioNotes: elements.audioNotes,
+        }}
+        getContentBounds={elements.contentBounds}
         historyVisible={historyVisible}
         onCloseHistory={() => setHistoryVisible(false)}
         bgPickerVisible={bgPickerVisible}

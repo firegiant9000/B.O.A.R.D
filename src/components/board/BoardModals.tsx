@@ -15,6 +15,8 @@ import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComm
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardPresence, Plan } from "../../types";
 import type { UpsellResource } from "../upsellCopy";
+import type { Bounds } from "../../lib/viewport";
+import type { BoardElementSets } from "../../lib/svgExport";
 
 /**
  * The board's dialog layer (Month 5/6 Task 1 — extracted verbatim from
@@ -61,6 +63,13 @@ interface BoardModalsProps {
 
   shareVisible: boolean;
   onCloseShare: () => void;
+  // Month 6 (ROADMAP A3) — board export (PNG/PDF), surfaced from
+  // ShareBoardModal. See that component's own prop docs; these are passed
+  // straight through, unconverted, from the screen's `useBoardElements` /
+  // canvas ref — the export decisions themselves live in the modal.
+  canvasRef: { current: any };
+  boardElements: BoardElementSets;
+  getContentBounds: () => Bounds | null;
 
   historyVisible: boolean;
   onCloseHistory: () => void;
@@ -146,6 +155,9 @@ export default function BoardModals({
   onJoinCancel,
   shareVisible,
   onCloseShare,
+  canvasRef,
+  boardElements,
+  getContentBounds,
   historyVisible,
   onCloseHistory,
   bgPickerVisible,
@@ -199,6 +211,10 @@ export default function BoardModals({
         onClose={onCloseShare}
         onMemberAdded={doc.addMember}
         onAccessChanged={doc.setAccess}
+        boardTitle={doc.board?.title ?? "Board"}
+        canvasRef={canvasRef}
+        boardElements={boardElements}
+        getContentBounds={getContentBounds}
       />
 
       <BoardHistoryPanel

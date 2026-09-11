@@ -18,6 +18,7 @@ import {
   buildImageHrefs,
   exportBoardPdf,
   exportBoardPng,
+  MAX_EXPORT_PAGES,
 } from "../recapExport";
 import { Session } from "../../types";
 import { SvgExportElement, SvgExportBounds } from "../../lib/svgExport";
@@ -205,6 +206,48 @@ describe("buildImageHrefs", () => {
       buildImageHrefs([imageEl("i1", "https://storage/i1.png")], undefined)
     ).resolves.toEqual({});
   });
+
+  it("never has more than IMAGE_FETCH_CONCURRENCY fetches in flight at once, for a board with many images", async () => {
+    const CONCURRENCY = 4;
+    const TOTAL = 10;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let totalCalls = 0;
+    const releasers: Array<() => void> = [];
+    global.fetch = jest.fn(async (url: unknown) => {
+      totalCalls++;
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((resolve) => releasers.push(resolve));
+      inFlight--;
+      return { blob: async () => ({ __url: url }) } as any;
+    }) as unknown as typeof fetch;
+    mockFileReader((blob) => `data:image/png;base64,${blob.__url}`);
+
+    const images = Array.from({ length: TOTAL }, (_, i) => imageEl(`i${i}`, `https://storage/i${i}.png`));
+    const pending = buildImageHrefs(images, undefined);
+
+    // Let the first wave actually start before checking anything.
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+    expect(inFlight).toBeGreaterThan(0);
+    expect(inFlight).toBeLessThanOrEqual(CONCURRENCY);
+
+    // Release fetches in waves — each release lets one worker pick up its
+    // next item — asserting the ceiling holds at every wave, not just the
+    // first, until every image has been served. Bounded iteration count so
+    // a real regression fails with a clear assertion, not a Jest timeout.
+    for (let round = 0; round < TOTAL * 3 && (totalCalls < TOTAL || releasers.length > 0); round++) {
+      const toRelease = releasers.splice(0, releasers.length);
+      toRelease.forEach((release) => release());
+      for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+      expect(inFlight).toBeLessThanOrEqual(CONCURRENCY);
+    }
+
+    const hrefs = await pending;
+    expect(totalCalls).toBe(TOTAL);
+    expect(Object.keys(hrefs)).toHaveLength(TOTAL);
+    expect(maxInFlight).toBeLessThanOrEqual(CONCURRENCY);
+  });
 });
 
 describe("exportBoardPdf", () => {
@@ -263,6 +306,46 @@ describe("exportBoardPdf", () => {
     expect(Print.printToFileAsync).not.toHaveBeenCalled();
 
     delete (global as any).window;
+  });
+
+  it("throws naming the page-count limit instead of attempting an oversized export, before fetching any images", async () => {
+    Platform.OS = "ios";
+    const fetchMock = jest.fn();
+    const originalFetch = global.fetch;
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    // One column too many past the limit — width chosen so tilePages
+    // produces exactly MAX_EXPORT_PAGES + 1 single-row pages.
+    const bounds: SvgExportBounds = { x: 0, y: 0, width: A4.width * (MAX_EXPORT_PAGES + 1), height: 100 };
+    const imageEl: SvgExportElement = {
+      kind: "image",
+      data: {
+        id: "i1",
+        boardId: "b1",
+        userId: "u1",
+        storagePath: "boards/b1/images/i1.jpg",
+        thumbnailPath: "boards/b1/images/i1_thumb.jpg",
+        url: "https://storage/i1.png",
+        thumbnailUrl: "https://storage/i1.png",
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        rotation: 0,
+        naturalWidth: 10,
+        naturalHeight: 10,
+        alt: "",
+        createdAt: new Date(),
+      },
+    };
+
+    await expect(exportBoardPdf([pathEl, imageEl], bounds)).rejects.toThrow(
+      new RegExp(`${MAX_EXPORT_PAGES}-page`)
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(Print.printToFileAsync).not.toHaveBeenCalled();
+
+    global.fetch = originalFetch;
   });
 });
 

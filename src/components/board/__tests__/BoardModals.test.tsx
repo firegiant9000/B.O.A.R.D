@@ -162,6 +162,9 @@ function renderModals(opts: {
       onJoinCancel={jest.fn()}
       shareVisible={false}
       onCloseShare={jest.fn()}
+      canvasRef={{ current: null }}
+      boardElements={{ paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] }}
+      getContentBounds={() => null}
       historyVisible={false}
       onCloseHistory={jest.fn()}
       bgPickerVisible={false}

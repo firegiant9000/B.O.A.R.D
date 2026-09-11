@@ -76,6 +76,45 @@ export type SvgExportElement =
   | { kind: "image"; data: ImageElement }
   | { kind: "audio"; data: AudioElement };
 
+/** The board's per-kind element arrays — exactly `useBoardElements`'s own
+ *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/
+ *  `audioNotes` fields, typed independently here so this module doesn't
+ *  import a hook. Deliberately the FULL arrays, not `.visible` (the
+ *  viewport-culled subset the canvas actually renders) — an export must
+ *  cover the whole board, not just what's on screen right now. */
+export interface BoardElementSets {
+  paths: DrawPath[];
+  shapes: ShapeElement[];
+  texts: TextElement[];
+  notes: TextNote[];
+  images: ImageElement[];
+  audioNotes: AudioElement[];
+}
+
+/**
+ * Flattens the board's per-kind arrays into one `SvgExportElement[]`, in
+ * back-to-front paint order — later entries land on top, matching the live
+ * canvas's own stacking: `images`, `paths`, `shapes` are the SVG tree order
+ * `DrawingCanvas.tsx` renders them in; `notes` then `texts` are the RN
+ * overlay order `BoardOverlayLayer.tsx` mounts `TextNoteOverlay` then
+ * `TextElementView` in (see also `useBoardElements.ts#hitTestAny`'s reverse
+ * of this same ordering, topmost-first, for hit-testing). `audioNotes`'
+ * position doesn't matter — `toSvgDocument` draws no node for it either way.
+ * A caller building `SvgExportElement[]` by hand (as this module's own tests
+ * do) doesn't need this; it exists for a caller exporting the WHOLE board
+ * from live element state (`recapExport.ts#exportBoardPdf`'s UI callers).
+ */
+export function toSvgExportElements(elements: BoardElementSets): SvgExportElement[] {
+  return [
+    ...elements.images.map((data): SvgExportElement => ({ kind: "image", data })),
+    ...elements.paths.map((data): SvgExportElement => ({ kind: "path", data })),
+    ...elements.shapes.map((data): SvgExportElement => ({ kind: "shape", data })),
+    ...elements.notes.map((data): SvgExportElement => ({ kind: "note", data })),
+    ...elements.texts.map((data): SvgExportElement => ({ kind: "text", data })),
+    ...elements.audioNotes.map((data): SvgExportElement => ({ kind: "audio", data })),
+  ];
+}
+
 /**
  * The export viewBox, as a plain rectangle. Deliberately NOT the app's own
  * `Bounds` (`./viewport` — `{minX, minY, maxX, maxY}`, used everywhere else
