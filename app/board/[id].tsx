@@ -35,6 +35,7 @@ import * as workspaceService from "../../src/services/workspaceService";
 import type { UpsellResource } from "../../src/components/upsellCopy";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
+import type { EmbedScope } from "../../src/types";
 
 // Feature flag for the Phase 2 pan/zoom transform. Off => identity viewport and
 // drawing only (pre-Phase-2 behavior) as a quick rollback if parity regresses.
@@ -44,12 +45,45 @@ const ENABLE_PAN_ZOOM = true;
 const SELECTION_CAPTURE_PAD = 12;
 
 /**
- * Phase 8 — `embedMode` renders the board chrome-stripped and read-only for an
- * embeddable iframe (the embed route at app/embed/b/[id].tsx passes it). The board
- * reads the same `id` route param either way. Editing is already gated by role
- * (an embed identity is not a board member, so `canEdit` is false), but embed mode
- * additionally hides the header + toolbar and suppresses presence/cursor writes
- * and the join prompt, which an embed viewer has no rights to.
+ * Phase 8 — `embedMode` renders the board chrome-stripped for an embeddable
+ * iframe (the embed route at app/embed/b/[id].tsx passes it, along with `id` via
+ * the same route param). The header, share/session controls and join prompt stay
+ * hidden in embed mode regardless of scope — those are host-account actions with
+ * no place inside a third-party iframe.
+ *
+ * Month 5 — `embedScope` (also from the embed route, itself resolved from the
+ * server-verified token exchange; see that file's header) decides the rest.
+ * `"view"` (the default) keeps the original Phase 8 behavior: no board-member
+ * role can produce a `canEdit` of true for an embed identity (its uid is never in
+ * `board.members` — see `effectiveBoardRole`), so the toolbar and drawing tools
+ * stay hidden. `"edit"` additionally shows the toolbar and enables the canvas
+ * writes `firestore.rules`' `isEmbedEditor` allows (paths/notes/shapes/text
+ * elements) via the local `embedCanEdit` below — a UI decision layered on top of
+ * `doc.canEdit`, not a change to what that field means for a real member.
+ * The image-insert and manual-Save BUTTONS stay hidden in an embed at any
+ * scope (`canInsertImage` / `canManualSave` on `Toolbar`): `images`/`audio`
+ * are excluded from `isEmbedEditor` because their bytes are member-gated in
+ * `storage.rules`, and the board DOCUMENT (what Save writes) is excluded too —
+ * so either button would only ever produce a write Firestore refuses to
+ * record. Canvas content still persists per-element the moment it's drawn;
+ * neither button gates that. NOT closed by this: `useBoardElements`'s
+ * Cmd/Ctrl+V image paste (the DOM `paste` listener, and `shortcutPaste` on
+ * native) has no role gate at all today, for anyone — a real read-only viewer
+ * can already trigger it, embed or not. This is a pre-existing gap this task
+ * did not introduce and does not fix; it just means hiding the button is a
+ * partial mitigation for an embed-edit session, not a guarantee `images`
+ * writes never get attempted.
+ *
+ * Live cursors for an edit-scope embed: `useBoardCollab`'s `embedEditable`
+ * option (derived below as `embedEditScope`) lets that session publish its own
+ * cursor, which `CursorLayer` (never `embedMode`-gated) already renders for
+ * every other participant — so a second editor's pointer IS visible while they
+ * draw. What stays suppressed for an embed at ANY scope, deliberately: the
+ * `presence/{userId}` avatar-bar join (nothing renders it — `BoardHeader` is
+ * always hidden here) and presenter/follow mode (no controls to host it,
+ * unrelated to what "attribution" means for this task). See Month 5's Google
+ * Meet add-on shell notes (web/meet-addon/README.md) for what that leaves
+ * unverified without a live host.
  *
  * Month 5/6 Task 1 decomposed this screen. Each concern now lives in its own hook
  * under `src/hooks/` — `useBoardDocument` (the board record, roles, saving,
@@ -59,7 +93,9 @@ const SELECTION_CAPTURE_PAD = 12;
  * hook's return value: this screen is the single composition point, passing plain
  * data and its own callbacks down.
  */
-export default function BoardScreen({ embedMode = false }: { embedMode?: boolean } = {}) {
+export default function BoardScreen(
+  { embedMode = false, embedScope = "view" }: { embedMode?: boolean; embedScope?: EmbedScope } = {}
+) {
   const { id, session } = useLocalSearchParams<{ id: string; session?: string }>();
   const router = useRouter();
   const { user, userProfile } = useAuth();
@@ -187,12 +223,19 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     onError: showError,
   });
 
+  // Month 5 — resolved before `useBoardCollab` (which needs it as an input,
+  // not an output) and reused below for `embedCanEdit`. True only for an
+  // edit-scope embed session: `embedMode` plus a token exchange that actually
+  // resolved to `scope: "edit"` (see app/embed/b/[id].tsx).
+  const embedEditScope = embedMode && embedScope === "edit";
+
   const collab = useBoardCollab(id!, user, {
     displayName,
     email: userEmail,
     activeTool: tools.activeTool,
     viewport,
     embedMode,
+    embedEditable: embedEditScope,
     // Month 5 resolved the churn question this closure used to raise: the hook
     // now reads `onLeaderViewport` through a ref rather than listing it as an
     // effect dependency, so its identity no longer matters — this inline arrow
@@ -201,6 +244,20 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     // `src/hooks/useBoardCollab.ts`.
     onLeaderViewport: (v) => viewportCtl.animateTo(v),
   });
+
+  // Month 5 — the toolbar/pen-options `canEdit` used everywhere below. For a
+  // real member this is exactly `doc.canEdit` (unchanged from Phase 6),
+  // gated by the presenter lock same as before. For an embed session it
+  // ignores `doc.canEdit` entirely (that field reflects `board.members`,
+  // which an embed identity is never in — see this file's header comment)
+  // and instead reflects `embedEditScope` above. `collab.presenterLocksContentCreation`
+  // is always false in embed mode (presenter mode is part of what
+  // `useBoardCollab` still suppresses there regardless of scope), so folding
+  // it into one expression changes nothing for the embed path and keeps a
+  // single formula instead of two near-duplicates at each call site.
+  const embedCanEdit = embedMode
+    ? embedEditScope && !collab.presenterLocksContentCreation
+    : doc.canEdit && !collab.presenterLocksContentCreation;
 
   // Month 5 — while someone *else* is presenting and hasn't paused, the
   // audience's own content-creation tools/actions are disabled:
@@ -563,8 +620,9 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
 
       {/* Contextual pen options (Phase 9; Month 5 — ROADMAP item 12 added
           the variant/colour/width/eyedropper pills) — only while the pen
-          tool is active and the viewer can edit. Hidden in embed mode. */}
-      {tools.activeTool === "pen" && doc.canEdit && !collab.presenterLocksContentCreation && !embedMode && (
+          tool is active and the viewer can edit (`embedCanEdit` folds in the
+          embed-scope case; see this file's header comment). */}
+      {tools.activeTool === "pen" && embedCanEdit && (
         <PenOptionsBar
           mode={tools.shapeRecMode}
           onCycleMode={tools.cycleShapeRecMode}
@@ -579,15 +637,18 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
         />
       )}
 
-      {/* Toolbar — hidden in embed mode (read-only viewer has no editing tools). */}
-      {!embedMode && (
+      {/* Toolbar — hidden for a view-scope embed; shown for a real member or an
+          edit-scope embed (`embedCanEdit`; see this file's header comment). */}
+      {(!embedMode || embedCanEdit) && (
         <Toolbar
           activeTool={tools.activeTool}
           activeColor={tools.activeColor}
           activeStrokeWidth={tools.activeStrokeWidth}
           isAdmin={doc.isAdmin}
-          canEdit={doc.canEdit && !collab.presenterLocksContentCreation}
+          canEdit={embedCanEdit}
           canComment={doc.canComment}
+          canInsertImage={!embedMode}
+          canManualSave={!embedMode}
           onToolChange={tools.setActiveTool}
           onColorChange={(color) => {
             // Fix round 1, item 7: chooseColor (not the bare setActiveColor)

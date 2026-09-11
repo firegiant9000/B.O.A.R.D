@@ -43,11 +43,37 @@ interface ToolbarProps {
   onOpenWidthPicker: () => void;
   /** Insert an image (gallery/camera on native, file dialog on web). Phase 9. */
   onInsertImage: () => void;
+  /**
+   * Month 5 — whether the image-insert button shows at all. Defaults to true
+   * (every existing caller is unaffected). The one caller that passes false is
+   * an editable embed session (app/board/[id].tsx): `storage.rules` gates
+   * `images`/`audio` bytes on board membership, and an embed identity is
+   * never a member, so `firestore.rules`' `isEmbedEditor` deliberately excludes
+   * both collections regardless of scope (see Month 5's embed rules). Showing
+   * this button there would let the viewer pick an image, upload real Storage
+   * bytes, and only then discover the doc write is denied — the same
+   * offer-what-you-can't-fulfil shape this file's `canEdit` branch already
+   * exists to avoid for read-only viewers.
+   */
+  canInsertImage?: boolean;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
   onClear: () => void;
   onSave: () => void;
+  /**
+   * Month 5 — whether the manual Save button shows. Defaults to true. The one
+   * caller that passes false is an editable embed session: `onSave` bumps the
+   * BOARD DOCUMENT's `updatedAt` (`doc.saveNow` → `boardService.updateBoard`
+   * in app/board/[id].tsx), and the board doc stays closed to an embed
+   * identity at any scope (`isEmbedEditor` in firestore.rules grants canvas
+   * content + own presence/cursors only — see that predicate's header for the
+   * exhaustive list). Canvas edits already persist per-element the moment
+   * they're made; this button would only ever produce a visible "Failed to
+   * save board" error for an embed session, so it is hidden there rather than
+   * offered and denied.
+   */
+  canManualSave?: boolean;
 }
 
 const COLORS = [
@@ -83,11 +109,13 @@ export default function Toolbar({
   onOpenColorPicker,
   onOpenWidthPicker,
   onInsertImage,
+  canInsertImage = true,
   onUndo,
   onRedo,
   canRedo,
   onClear,
   onSave,
+  canManualSave = true,
 }: ToolbarProps) {
   const handleClear = () => {
     Alert.alert(
@@ -197,11 +225,13 @@ export default function Toolbar({
               onPress={() => onToolChange("comment")}
             />
           )}
-          <ToolButton
-            icon="image-outline"
-            active={false}
-            onPress={onInsertImage}
-          />
+          {canInsertImage && (
+            <ToolButton
+              icon="image-outline"
+              active={false}
+              onPress={onInsertImage}
+            />
+          )}
         </View>
 
         <View style={styles.divider} />
@@ -284,7 +314,9 @@ export default function Toolbar({
           {isAdmin && (
             <ToolButton icon="trash-outline" active={false} onPress={handleClear} />
           )}
-          <ToolButton icon="save-outline" active={false} onPress={onSave} />
+          {canManualSave && (
+            <ToolButton icon="save-outline" active={false} onPress={onSave} />
+          )}
         </View>
       </ScrollView>
     </View>

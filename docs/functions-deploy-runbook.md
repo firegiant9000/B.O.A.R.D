@@ -101,8 +101,14 @@ an editable link that leaks within those 5 minutes is durable board write access
 Removing a host from this list stops new links; it does not end sessions already
 established under it. Closing that gap properly needs an `auth_time` bound in the
 rules' `isEmbedEditor` plus a re-exchange loop in the host client — neither exists
-yet, which is the main reason editable embeds should not be enabled for a host
-until its integration ships.
+yet.
+
+Month 5's Google Meet add-on shell (`web/meet-addon/`) exists in this repo — do
+**not** read that as "the integration shipped, so `meet` is safe to add here." The
+shell is client wiring only; it does not close the gap above. Do not add `meet` (or
+any real host) to this list, and do not submit that add-on to the Workspace
+Marketplace, until session revocation exists. See `web/meet-addon/README.md`'s
+BLOCKER section for the current, up-to-date statement of what is missing.
 
 ## 3. Deploy
 

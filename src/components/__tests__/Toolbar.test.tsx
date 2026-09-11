@@ -89,3 +89,31 @@ describe("Toolbar — colour + stroke polish (Month 5, ROADMAP item 12)", () => 
     expect(onColorChange).not.toHaveBeenCalled();
   });
 });
+
+describe("Toolbar — canInsertImage (Month 5, embed edit sessions)", () => {
+  it("shows the image-insert button by default", () => {
+    render(<Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} />);
+    expect(screen.getByText("image-outline")).toBeTruthy();
+  });
+
+  it("hides the image-insert button when canInsertImage is false", () => {
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertImage={false} />
+    );
+    expect(screen.queryByText("image-outline")).toBeNull();
+  });
+});
+
+describe("Toolbar — canManualSave (Month 5, embed edit sessions)", () => {
+  it("shows the save button by default", () => {
+    render(<Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} />);
+    expect(screen.getByText("save-outline")).toBeTruthy();
+  });
+
+  it("hides the save button when canManualSave is false", () => {
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canManualSave={false} />
+    );
+    expect(screen.queryByText("save-outline")).toBeNull();
+  });
+});

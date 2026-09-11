@@ -55,10 +55,37 @@ export interface BoardCollabOptions {
   /** The live camera — broadcast so followers track non-pointer moves. */
   viewport: Viewport;
   /**
-   * Read-only embed mode. An embed identity has no write rights to presence or
-   * cursors, so both are suppressed entirely.
+   * Embed mode (Month 4: read-only; Month 5: optionally editable — see
+   * `embedEditable`). Presence join/leave and presenter mode stay suppressed
+   * for EVERY embed session regardless of scope: both surface only through
+   * `BoardHeader` (the avatar bar, the presenter controls), which is always
+   * hidden in embed mode (app/board/[id].tsx), so there is nothing to show
+   * them for.
    */
   embedMode: boolean;
+  /**
+   * Month 5 — true only for an edit-scope embed session: `embedMode` is true
+   * AND the token exchange resolved `scope: "edit"` (app/board/[id].tsx's
+   * `embedCanEdit`, computed independently of this hook's own output — see
+   * that file's comment on why). Meaningless when `embedMode` is false.
+   *
+   * Lets `publishPointer` and the viewport-broadcast effect go through for an
+   * edit-scope embed: `firestore.rules`' `isEmbedEditor` already grants that
+   * identity read + own-write on `cursors` (and `presence`, though this hook
+   * still never joins it — see `embedMode` above), unlike a view-scope embed,
+   * which stays excluded from both. `CursorLayer` was never `embedMode`-gated
+   * in the first place (it subscribes to the board's cursors unconditionally),
+   * so publishing this session's own cursor is the one remaining piece needed
+   * for OTHER participants to see who is drawing — the visible half of Month
+   * 5's "correctly attributed" editable embed; the data half (canvas writes
+   * stamping the embed uid as `userId`) is unrelated to this hook and already
+   * works via the normal write path.
+   *
+   * Presenter mode and follow mode stay off even when this is true: they are
+   * additive complexity with no consumer inside an embed (no `BoardHeader` to
+   * host their controls) and are not part of what "attribution" means here.
+   */
+  embedEditable?: boolean;
   /**
    * Drive the camera toward the resolved viewport source (an active,
    * unpaused presenter, or the individually-followed leader — see
@@ -141,7 +168,15 @@ export function useBoardCollab(
   user: CollabUser | null,
   opts: BoardCollabOptions
 ): BoardCollab {
-  const { displayName, email, activeTool, viewport, embedMode, onLeaderViewport } = opts;
+  const {
+    displayName,
+    email,
+    activeTool,
+    viewport,
+    embedMode,
+    embedEditable = false,
+    onLeaderViewport,
+  } = opts;
 
   // Presence state
   const [presence, setPresence] = useState<BoardPresence[]>([]);
@@ -188,7 +223,9 @@ export function useBoardCollab(
   const lastAppliedViewportRef = useRef<Viewport | null>(null);
 
   // Presence: join on mount, subscribe to updates, leave on unmount. Skipped in
-  // embed mode — the read-only embed identity has no write rights to presence.
+  // EVERY embed session, edit-scope included (deliberately not gated by
+  // `embedEditable` — see that option's doc comment: the avatar bar it feeds
+  // only renders in `BoardHeader`, which embed mode always hides).
   useEffect(() => {
     if (!boardId || !user || embedMode) return;
 
@@ -219,7 +256,11 @@ export function useBoardCollab(
   // a pointer move never re-renders the element tree (Appendix A.4 hard rule).
   const publishPointer = useCallback(
     (p: Point, pressed: boolean) => {
-      if (!boardId || !user || embedMode) return;
+      // Month 5: an edit-scope embed session is allowed through (see
+      // `embedEditable`'s doc comment above) — every other embed session
+      // (view-scope, or no embedEditable at all) stays suppressed exactly as
+      // it always was.
+      if (!boardId || !user || (embedMode && !embedEditable)) return;
       lastPointerRef.current = p;
       hasPointerRef.current = true;
       cursorService.publishCursor(boardId, user.uid, {
@@ -258,6 +299,7 @@ export function useBoardCollab(
       viewport,
       followingId,
       embedMode,
+      embedEditable,
       isPresenting,
       isPresenterPaused,
     ]
@@ -268,7 +310,16 @@ export function useBoardCollab(
   // moves that aren't pointer-driven (pinch, fling, zoom buttons). Suppressed
   // while following someone else: that viewport is a mirror, not our intent.
   useEffect(() => {
-    if (!boardId || !user || embedMode || followingId || !hasPointerRef.current) return;
+    // Month 5: same `embedEditable` carve-out as `publishPointer` above.
+    if (
+      !boardId ||
+      !user ||
+      (embedMode && !embedEditable) ||
+      followingId ||
+      !hasPointerRef.current
+    ) {
+      return;
+    }
     cursorService.publishCursor(boardId, user.uid, {
       displayName,
       x: lastPointerRef.current.x,
@@ -287,6 +338,7 @@ export function useBoardCollab(
     activeTool,
     followingId,
     embedMode,
+    embedEditable,
     isPresenting,
     isPresenterPaused,
   ]);

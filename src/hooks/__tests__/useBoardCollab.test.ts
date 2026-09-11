@@ -21,6 +21,7 @@ import * as presenceService from "../../services/presenceService";
 const publishCursor = cursorService.publishCursor as jest.Mock;
 const subscribeToCursors = cursorService.subscribeToCursors as jest.Mock;
 const subscribeToBoardPresence = presenceService.subscribeToBoardPresence as jest.Mock;
+const joinBoard = presenceService.joinBoard as jest.Mock;
 
 // Stable across renders — mirrors production, where `user` comes from
 // `useAuth()`'s `useState` (set once per real auth change) and `viewport`'s
@@ -375,5 +376,115 @@ describe("useBoardCollab — laser ping (Month 5)", () => {
     // `viewport`/`following` above; `cursorService.ts`'s `writerFor` is the one
     // place that turns "undefined" into "omitted from the doc" (see its tests).
     expect(lastCall[2].ping).toBeUndefined();
+  });
+});
+
+describe("useBoardCollab — embed mode (Month 4 read-only / Month 5 editable)", () => {
+  function renderEmbed(embedEditable: boolean) {
+    return renderHook(() =>
+      useBoardCollab("board1", SELF, {
+        displayName: "Self",
+        email: "self@example.com",
+        activeTool: "pen",
+        viewport: VIEWPORT,
+        embedMode: true,
+        embedEditable,
+        onLeaderViewport: jest.fn(),
+      })
+    );
+  }
+
+  it("suppresses publishPointer for a view-scope embed session (embedEditable: false)", () => {
+    const { result } = renderEmbed(false);
+    act(() => {
+      result.current.publishPointer({ x: 1, y: 1 }, true);
+    });
+    expect(publishCursor).not.toHaveBeenCalled();
+  });
+
+  it("lets an edit-scope embed session (embedEditable: true) publish its own cursor", () => {
+    const { result } = renderEmbed(true);
+    act(() => {
+      result.current.publishPointer({ x: 1, y: 1 }, true);
+    });
+    expect(publishCursor).toHaveBeenCalledWith(
+      "board1",
+      "self",
+      expect.objectContaining({ x: 1, y: 1 })
+    );
+  });
+
+  it("never joins presence for an embed session, edit-scope or not", () => {
+    renderEmbed(true);
+    expect(joinBoard).not.toHaveBeenCalled();
+  });
+
+  it("still suppresses presence when embedEditable is omitted (defaults closed, matches a view embed)", () => {
+    renderHook(() =>
+      useBoardCollab("board1", SELF, {
+        displayName: "Self",
+        email: "self@example.com",
+        activeTool: "pen",
+        viewport: VIEWPORT,
+        embedMode: true,
+        onLeaderViewport: jest.fn(),
+      })
+    );
+    expect(joinBoard).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts the viewport for an edit-scope embed when the camera moves (not just on pointer publish)", () => {
+    const { result, rerender } = renderHook(
+      (props: { viewport: BoardCollabOptions["viewport"] }) =>
+        useBoardCollab("board1", SELF, {
+          displayName: "Self",
+          email: "self@example.com",
+          activeTool: "pen",
+          viewport: props.viewport,
+          embedMode: true,
+          embedEditable: true,
+          onLeaderViewport: jest.fn(),
+        }),
+      { initialProps: { viewport: VIEWPORT } }
+    );
+
+    // The viewport-broadcast effect only fires once a pointer has been seen
+    // (`hasPointerRef`) — same precondition as the non-embed path.
+    act(() => {
+      result.current.publishPointer({ x: 2, y: 2 }, true);
+    });
+    publishCursor.mockClear();
+
+    rerender({ viewport: { x: 10, y: 10, scale: 2 } });
+
+    expect(publishCursor).toHaveBeenCalledWith(
+      "board1",
+      "self",
+      expect.objectContaining({ x: 2, y: 2, viewport: { x: 10, y: 10, scale: 2 } })
+    );
+  });
+
+  it("does NOT broadcast the viewport for a view-scope embed even after a pointer is seen", () => {
+    // publishPointer itself is a no-op for a view-scope embed (asserted
+    // above), so there is no pointer to seed here — this pins that the
+    // viewport-broadcast effect's own guard is independently closed too,
+    // not merely unreachable because publishPointer never ran.
+    const { rerender } = renderHook(
+      (props: { viewport: BoardCollabOptions["viewport"] }) =>
+        useBoardCollab("board1", SELF, {
+          displayName: "Self",
+          email: "self@example.com",
+          activeTool: "pen",
+          viewport: props.viewport,
+          embedMode: true,
+          embedEditable: false,
+          onLeaderViewport: jest.fn(),
+        }),
+      { initialProps: { viewport: VIEWPORT } }
+    );
+
+    rerender({ viewport: { x: 10, y: 10, scale: 2 } });
+
+    expect(publishCursor).not.toHaveBeenCalled();
   });
 });
