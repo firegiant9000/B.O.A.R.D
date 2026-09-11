@@ -78,6 +78,22 @@ interface BoardModalsProps {
    *  QuotaExceededError, which carries no code): close the session composer
    *  and show the upsell in its place. */
   onSessionQuotaExceeded: () => void;
+
+  /**
+   * Month 5 — true while an active, unpaused presenter locks out everyone
+   * else's new content creation (`useBoardCollab`'s
+   * `presenterLocksContentCreation`; always false on the presenter's own
+   * client). The single narrow addition to this layer's prop contract: it
+   * gates `DiagramPromptModal`'s "Draw" button, the one content-creation
+   * surface this component itself owns — `generateDiagram` writes a whole
+   * batch of elements and spends AI quota, and the modal can already be open
+   * when a presentation starts (it isn't tied to canvas gesture state), so
+   * gating only the header button that opens it (`BoardHeader`,
+   * `app/board/[id].tsx`) left this "already open" case reachable. UI-only
+   * affordance, same as every other presenter-lock check in this codebase —
+   * no Firestore rule backs it.
+   */
+  presenterLocksContentCreation: boolean;
 }
 
 export default function BoardModals({
@@ -106,6 +122,7 @@ export default function BoardModals({
   upsellResource,
   onDismissUpsell,
   onSessionQuotaExceeded,
+  presenterLocksContentCreation,
 }: BoardModalsProps) {
   const activeComment = comments.activeComment;
   const activeCommentDetached =
@@ -193,14 +210,17 @@ export default function BoardModals({
         />
       )}
 
-      {/* Phase 12 — text → diagram prompt sheet. */}
+      {/* Phase 12 — text → diagram prompt sheet. Month 5: `onGenerate` is
+          gated (not `visible`/`onClose`) so a prompt already open when a
+          presentation starts can still be seen and closed, just not
+          submitted — see the `presenterLocksContentCreation` prop doc. */}
       {ai.diagramEnabled && (
         <DiagramPromptModal
           visible={ai.diagramOpen}
           prompt={ai.diagramPrompt}
           busy={ai.diagramBusy}
           onChangePrompt={ai.setDiagramPrompt}
-          onGenerate={ai.generateDiagram}
+          onGenerate={presenterLocksContentCreation ? undefined : ai.generateDiagram}
           onClose={ai.closeDiagram}
         />
       )}

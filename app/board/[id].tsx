@@ -579,6 +579,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           setSessionModalVisible(false);
           setUpsellResource("session");
         }}
+        presenterLocksContentCreation={collab.presenterLocksContentCreation}
       />
     </KeyboardAvoidingView>
   );

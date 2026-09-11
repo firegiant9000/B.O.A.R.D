@@ -162,18 +162,16 @@ export default function BoardCanvas({
   // `acceptPerfect` each keep their dismiss/discard action available so the
   // prompt can still be closed.
   //
-  // Two more content-creation paths share this same lock but live outside
-  // this component, gated at their own entry point instead of duplicating the
-  // predicate's derivation:
-  //   - `BoardHeader`'s diagram-open button (`ai.openDiagram`,
-  //     `app/board/[id].tsx`) — the entry point to `ai.generateDiagram`,
-  //     which writes a whole batch of elements and spends AI quota. Gating
-  //     the open button, not `generateDiagram` itself, means a diagram prompt
-  //     already on screen when a presentation starts can still submit — the
-  //     same "lock begins after the surface is already open" gap
-  //     `acceptPerfect` and `onAcceptOcr` close for their own prompts, left
-  //     open here rather than plumbing the lock through `BoardModals` for a
-  //     panel this component doesn't render;
+  // Three more content-creation paths share this same lock but live outside
+  // this component, each gated at its own owning layer instead of duplicating
+  // the predicate's derivation here:
+  //   - `ai.generateDiagram`, gated twice — `BoardHeader`'s diagram-open
+  //     button (`ai.openDiagram`, `app/board/[id].tsx`) so a locked viewer
+  //     can't open the prompt in the first place, *and* `BoardModals`'
+  //     `presenterLocksContentCreation` prop, which gates `DiagramPromptModal`'s
+  //     `onGenerate` directly — closing the "lock begins after the surface is
+  //     already open" gap `acceptPerfect` and `onAcceptOcr` also close for
+  //     their own prompts, for a panel this component doesn't render;
   //   - the `duplicate`/`paste` keyboard shortcuts (`shortcutCommandsRef`,
   //     `app/board/[id].tsx`) — the same two writes as `onDuplicateSelected`
   //     above, reachable without touching this component's UI at all.
