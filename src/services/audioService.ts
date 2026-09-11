@@ -185,6 +185,47 @@ export async function clearBoardVoiceNotes(boardId: string): Promise<void> {
   }
 }
 
+/**
+ * Deletes every voice note anchored to any of `elementIds` — the other half
+ * of the orphan fix. Before this task, no element referenced a Storage
+ * object owned by a different collection; now that a note can be anchored to
+ * a stroke/sticky/text/image, deleting THAT element (single-delete,
+ * group-delete, the eraser, undo, or auto-perfect's stroke→shape swap — every
+ * real delete call site in useBoardElements.ts) must not leave its note (a
+ * Firestore doc *and* a Storage object) behind, unreachable and un-owned.
+ *
+ * Reads the board's whole `audio` subcollection and filters client-side by
+ * `anchorElementId`, rather than a `where("anchorElementId", "in", ...)`
+ * query — deliberately: it reuses the exact read `clearBoardVoiceNotes`
+ * already does (no new query shape to reason about), sidesteps the `in`
+ * operator's per-query id ceiling entirely (a large group-delete could
+ * exceed it), and needs no composite index (a single unfiltered
+ * `getDocs(collection(...))`, like every other read in this file, never
+ * does). Voice notes per board are expected to be few, so the extra reads
+ * this trades for are cheap. Matching ids are then routed through
+ * `batchDeleteVoiceNotes` above — no new delete logic.
+ *
+ * Callers must treat this as best-effort and never let its rejection fail
+ * the element delete it's cascading from (mirrors every other Storage
+ * cleanup in this file/imageService.ts) — see the fire-and-forget
+ * `.catch(...)` call sites in useBoardElements.ts.
+ */
+export async function deleteVoiceNotesForElements(
+  boardId: string,
+  elementIds: string[]
+): Promise<void> {
+  if (elementIds.length === 0) return;
+  const idSet = new Set(elementIds);
+  const ref = collection(db, "boards", boardId, "audio");
+  const snapshot = await getDocs(ref);
+  const matching = snapshot.docs.filter((d) => idSet.has((d.data() as any)?.anchorElementId));
+  if (matching.length === 0) return;
+  await batchDeleteVoiceNotes(
+    boardId,
+    matching.map((d) => d.id)
+  );
+}
+
 export function subscribeToBoardAudio(
   boardId: string,
   onChange: (notes: AudioElement[]) => void

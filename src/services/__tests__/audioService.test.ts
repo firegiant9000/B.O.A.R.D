@@ -197,3 +197,49 @@ describe("canRecordVoiceNotes (advisory Pro gate)", () => {
     expect(audioService.canRecordVoiceNotes("edu")).toBe(true);
   });
 });
+
+describe("deleteVoiceNotesForElements (anchor cascade)", () => {
+  it("deletes only the notes anchored to one of the given element ids", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["a1", { anchorElementId: "stroke-1" }],
+        ["a2", { anchorElementId: "stroke-2" }],
+        ["a3", { anchorElementId: "shape-9" }],
+      ])
+    );
+    const batch = { delete: jest.fn(), update: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+
+    await audioService.deleteVoiceNotesForElements("b1", ["stroke-1", "shape-9", "never-anchored"]);
+
+    // Exact doc ids deleted: a1 (stroke-1) and a3 (shape-9), not a2 (stroke-2).
+    expect(batch.delete).toHaveBeenCalledTimes(2);
+    expect(deleteObject).toHaveBeenCalledTimes(2);
+    const paths = deleteObject.mock.calls.map((c) => c[0].path).sort();
+    expect(paths).toEqual(["boards/b1/audio/a1/note.m4a", "boards/b1/audio/a3/note.m4a"]);
+  });
+
+  // Coordinator's explicit ask: prove the lookup doesn't fire spuriously.
+  it("performs no Storage or Firestore deletes when no note is anchored to any given id", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([["a1", { anchorElementId: "stroke-1" }]])
+    );
+    await audioService.deleteVoiceNotesForElements("b1", ["some-other-element"]);
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op on empty input — never even reads the audio collection", async () => {
+    await audioService.deleteVoiceNotesForElements("b1", []);
+    expect(getDocs).not.toHaveBeenCalled();
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when the board has no voice notes at all", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    await audioService.deleteVoiceNotesForElements("b1", ["stroke-1"]);
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+});

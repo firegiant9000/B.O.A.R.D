@@ -475,6 +475,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
         isAdmin={doc.isAdmin}
         backgroundTemplate={doc.board?.backgroundTemplate ?? "blank"}
         blockedIds={blockedIds}
+        plan={doc.boardWorkspace?.plan ?? "free"}
         enablePanZoom={ENABLE_PAN_ZOOM}
         viewport={viewport}
         canvasSize={canvasSize}

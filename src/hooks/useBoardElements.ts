@@ -60,6 +60,7 @@ import {
   TextElement,
   ShapeElement,
   ImageElement,
+  AudioElement,
 } from "../types";
 import { useSelection, SelectionController } from "./useSelection";
 import { useThrottledValue } from "./useThrottledValue";
@@ -262,6 +263,13 @@ export interface BoardElements {
   texts: TextElement[];
   notes: TextNote[];
   images: ImageElement[];
+  /** Voice notes (Month 5). Unlike every other array here, this is NOT run
+   *  through the rbush spatial index / hit-testing / viewport culling —
+   *  it's a lightweight badge layer (like `commentPins`, also unculled),
+   *  not a selectable/movable canvas primitive. Each note carries its own
+   *  `x`/`y` (see AudioElement's type comment), so a renderer needs nothing
+   *  from its anchor beyond `anchorElementId` to know one exists. */
+  audioNotes: AudioElement[];
   /** Viewport-culled subsets the canvas actually renders. */
   visible: {
     paths: DrawPath[];
@@ -269,6 +277,9 @@ export interface BoardElements {
     texts: TextElement[];
     notes: TextNote[];
     images: ImageElement[];
+    /** Blocked-user filtered, like every other `visible.*` array — NOT
+     *  viewport-culled (see `audioNotes` above). */
+    audioNotes: AudioElement[];
   };
   /** True until the first Firestore snapshot (or snapshot cold-load) arrives. */
   loading: boolean;
@@ -431,6 +442,7 @@ export function useBoardElements(
   const [textElements, setTextElements] = useState<TextElement[]>([]);
   const [shapes, setShapes] = useState<ShapeElement[]>([]);
   const [images, setImages] = useState<ImageElement[]>([]);
+  const [audioNotes, setAudioNotes] = useState<AudioElement[]>([]);
   const [insertingImage, setInsertingImage] = useState(false);
 
   // Text note state (legacy sticky notes — kept for backwards compat)
@@ -595,6 +607,15 @@ export function useBoardElements(
     return imageService.subscribeToBoardImages(boardId, setImages);
   }, [boardId]);
 
+  // Month 5 — voice notes. A separate, independent subscription (its own
+  // subcollection, no shared listener with any other kind) since it's not
+  // part of the paths/shapes/text/images write-path family the rest of this
+  // section mirrors.
+  useEffect(() => {
+    if (!boardId) return;
+    return audioService.subscribeToBoardAudio(boardId, setAudioNotes);
+  }, [boardId]);
+
   useEffect(() => {
     if (!boardId) return;
     return pathService.subscribeToBoardTextElements(boardId, (incoming) => {
@@ -632,6 +653,14 @@ export function useBoardElements(
   const visibleImages = useMemo(
     () => images.filter((img) => !blockedIds.includes(img.userId)).sort(byZ),
     [images, blockedIds]
+  );
+  // Month 5 — voice notes. Blocked-user filtered like every other layer; not
+  // z-ordered (no z-stacking concept for a badge overlay) and not fed into
+  // the spatial index / culling below — see the BoardElements interface
+  // comment on `audioNotes`.
+  const visibleAudioNotes = useMemo(
+    () => audioNotes.filter((a) => !blockedIds.includes(a.userId)),
+    [audioNotes, blockedIds]
   );
 
   // Keep the synchronous hit-test source (eraser/select) current.
@@ -899,6 +928,12 @@ export function useBoardElements(
         captureException(e, { op: "board.erase" });
         onError("Some strokes couldn't be erased.");
       });
+    });
+    // Month 5 — anchor cascade: an erased stroke can carry a voice note.
+    // Fire-and-forget, like the per-path deletes above — a cascade failure
+    // must not surface as "Some strokes couldn't be erased."
+    audioService.deleteVoiceNotesForElements(boardId, hits).catch((e) => {
+      captureException(e, { op: "board.erase.audioCascade" });
     });
     onScheduleSave();
   };
@@ -1319,6 +1354,17 @@ export function useBoardElements(
       setPaths((prev) => prev.filter((p) => p.id !== pathId));
       await pathService.deletePath(boardId, pathId);
       onScheduleSave();
+      // Month 5 — anchor cascade: the stroke being replaced could carry a
+      // voice note. The new shape gets a different id, so re-anchoring isn't
+      // attempted here (out of scope — a rare path: shape recognition on a
+      // stroke that already has a note); deleting it is the deliberate
+      // trade-off over leaving it permanently orphaned and unreachable (its
+      // `anchorElementId` would point at nothing this hook ever renders
+      // again). Fire-and-forget, like every other cascade call site — must
+      // not surface as "Couldn't perfect the shape."
+      audioService.deleteVoiceNotesForElements(boardId, [pathId]).catch((e) => {
+        captureException(e, { op: "board.perfectShape.audioCascade" });
+      });
     } catch (e) {
       captureException(e, { op: "board.perfectShape" });
       onError("Couldn't perfect the shape.");
@@ -1416,6 +1462,16 @@ export function useBoardElements(
           imageService.batchDeleteImages(boardId, imageIds),
         ]);
         onScheduleSave();
+        // Month 5 — anchor cascade (the other half of the orphan fix): any
+        // voice note anchored to one of these ids must not survive them.
+        // Fire-and-forget with its own catch, not awaited inside the try
+        // above — a cascade failure must never surface as "Failed to delete
+        // some elements" when the primary elements are already gone (same
+        // reasoning as the eraser's per-path deletes below). Only fires once
+        // the real deletes have actually committed.
+        audioService.deleteVoiceNotesForElements(boardId, ids).catch((e) => {
+          captureException(e, { op: "board.deleteSelected.audioCascade" });
+        });
       } catch (e) {
         captureException(e, { op: "board.deleteSelected" });
         onError("Failed to delete some elements.");
@@ -1915,6 +1971,12 @@ export function useBoardElements(
       selection.remove(elementId);
       onEditText(null);
       onScheduleSave();
+      // Month 5 — anchor cascade: a text element can carry a voice note.
+      // Fire-and-forget so a cascade failure can't surface as "Failed to
+      // delete text element" once the element itself is already gone.
+      audioService.deleteVoiceNotesForElements(boardId, [elementId]).catch((e) => {
+        captureException(e, { op: "board.deleteTextElement.audioCascade" });
+      });
     } catch {
       onError("Failed to delete text element.");
     }
@@ -1955,6 +2017,12 @@ export function useBoardElements(
       await pathService.deleteTextNote(boardId, noteId);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       onScheduleSave();
+      // Month 5 — anchor cascade: a sticky note can carry a voice note
+      // (ROADMAP.md:584 names "sticky" explicitly). Fire-and-forget, same
+      // reasoning as every other cascade call site.
+      audioService.deleteVoiceNotesForElements(boardId, [noteId]).catch((e) => {
+        captureException(e, { op: "board.deleteNote.audioCascade" });
+      });
     } catch {
       Alert.alert("Error", "Failed to delete note");
     }
@@ -1975,6 +2043,13 @@ export function useBoardElements(
       const { id: _id, createdAt: _createdAt, ...redoEntry } = targetPath;
       setRedoStack((prev) => [...prev, redoEntry]);
       onScheduleSave();
+      // Month 5 — anchor cascade: the undone stroke can carry a voice note.
+      // Redo re-creates the stroke as a NEW doc/id (savePath below), so a
+      // cascaded note can't be un-deleted by redo either way — same
+      // trade-off as replaceStrokeWithShape's comment. Fire-and-forget.
+      audioService.deleteVoiceNotesForElements(boardId, [targetPath.id]).catch((e) => {
+        captureException(e, { op: "board.undo.audioCascade" });
+      });
     } catch {
       onError("Undo failed.");
     }
@@ -2078,12 +2153,15 @@ export function useBoardElements(
     texts: textElements,
     notes,
     images,
+    audioNotes,
     visible: {
       paths: culledPaths,
       shapes: culledShapes,
       texts: culledTextElements,
       notes: culledNotes,
       images: culledImages,
+      // Not viewport-culled — see the BoardElements interface comment.
+      audioNotes: visibleAudioNotes,
     },
     loading: !canvasReady,
 

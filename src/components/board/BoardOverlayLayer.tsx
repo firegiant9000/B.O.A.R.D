@@ -4,8 +4,9 @@ import TextNoteOverlay from "../TextNoteOverlay";
 import TextElementView from "../TextElementView";
 import SelectionOverlay, { HandleId } from "../SelectionOverlay";
 import CommentPinLayer, { CommentPin } from "../CommentPinLayer";
+import AudioAffordance from "./AudioAffordance";
 import { Bounds, Point, Viewport } from "../../lib/viewport";
-import { TextElement, TextNote } from "../../types";
+import { AudioElement, Plan, TextElement, TextNote } from "../../types";
 
 /**
  * The board-space overlay layer (Month 5/6 Task 1 — extracted verbatim from
@@ -72,6 +73,22 @@ interface BoardOverlayLayerProps {
   commentPins: CommentPin[];
   activeCommentId: string | null;
   onPressPin: (id: string) => void;
+
+  // Voice notes (Month 5, ROADMAP.md:583-587)
+  boardId: string;
+  /** The workspace's plan — the advisory Pro gate AudioAffordance reads
+   *  (see audioService.canRecordVoiceNotes's header). */
+  plan: Plan;
+  /** Every existing voice note the viewer can see (blocked-user filtered by
+   *  the caller); rendered as a play/pause + long-press-delete badge at each
+   *  note's own persisted `x`/`y` — not viewport-culled, like `commentPins`. */
+  audioNotes: AudioElement[];
+  /**
+   * The record-entry-point affordance: set only while exactly one element is
+   * selected AND it has no voice note yet (the caller computes both — this
+   * layer has no selection logic of its own). `null` renders nothing extra.
+   */
+  newVoiceNoteAnchor: { elementId: string; x: number; y: number } | null;
 }
 
 export default function BoardOverlayLayer({
@@ -109,6 +126,10 @@ export default function BoardOverlayLayer({
   commentPins,
   activeCommentId,
   onPressPin,
+  boardId,
+  plan,
+  audioNotes,
+  newVoiceNoteAnchor,
 }: BoardOverlayLayerProps) {
   // Overlay transform — mirrors the SVG <G transform>. transformOrigin "0 0"
   // makes RN's transform anchor at the top-left so it matches SVG semantics
@@ -123,6 +144,11 @@ export default function BoardOverlayLayer({
         transformOrigin: "0 0" as const,
       }
     : undefined;
+
+  // Month 5 — counter-scale for the voice-note badges, same technique
+  // CommentPinLayer uses internally: divide out the board's zoom so the icon
+  // stays a constant on-screen size instead of shrinking/growing with it.
+  const audioInv = 1 / (viewport.scale || 1);
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -177,6 +203,51 @@ export default function BoardOverlayLayer({
             activeId={activeCommentId}
             onPressPin={onPressPin}
           />
+        )}
+        {/* Month 5 — voice notes (ROADMAP.md:583-587). Every existing note
+            renders as a play/pause + long-press-delete badge at its own
+            persisted position ("Tap a speaker icon on the element to
+            play"). The record-entry-point (`newVoiceNoteAnchor`, set only
+            while exactly one element is selected and has no note yet) is
+            the same component in its `audio={null}` state. Counter-scaled
+            like the comment pins above so it doesn't shrink/grow with zoom. */}
+        {audioNotes.map((note) => (
+          <View
+            key={note.id}
+            pointerEvents="box-none"
+            style={{ position: "absolute", left: note.x, top: note.y, transform: [{ scale: audioInv }] }}
+          >
+            <AudioAffordance
+              boardId={boardId}
+              anchorElementId={note.anchorElementId}
+              userId={currentUserId ?? ""}
+              x={note.x}
+              y={note.y}
+              plan={plan}
+              audio={note}
+            />
+          </View>
+        ))}
+        {newVoiceNoteAnchor && (
+          <View
+            pointerEvents="box-none"
+            style={{
+              position: "absolute",
+              left: newVoiceNoteAnchor.x,
+              top: newVoiceNoteAnchor.y,
+              transform: [{ scale: audioInv }],
+            }}
+          >
+            <AudioAffordance
+              boardId={boardId}
+              anchorElementId={newVoiceNoteAnchor.elementId}
+              userId={currentUserId ?? ""}
+              x={newVoiceNoteAnchor.x}
+              y={newVoiceNoteAnchor.y}
+              plan={plan}
+              audio={null}
+            />
+          </View>
         )}
       </View>
     </View>

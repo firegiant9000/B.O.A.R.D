@@ -60,6 +60,7 @@ import type { BoardTools, Tool } from "../../../hooks/useBoardTools";
 import type { BoardCollab } from "../../../hooks/useBoardCollab";
 import type { BoardAI } from "../../../hooks/useBoardAI";
 import type { BoardComments } from "../../../hooks/useBoardComments";
+import type { Plan } from "../../../types";
 
 /**
  * BoardCanvas.test.tsx — the Month 5 presenter content-creation lock.
@@ -78,7 +79,8 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     texts: [],
     notes: [],
     images: [],
-    visible: { paths: [], shapes: [], texts: [], notes: [], images: [] },
+    audioNotes: [],
+    visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] },
     loading: false,
 
     selection: {
@@ -287,6 +289,7 @@ interface RenderOpts {
   collab?: Partial<BoardCollab>;
   ai?: Partial<BoardAI>;
   comments?: Partial<BoardComments>;
+  plan?: Plan;
 }
 
 function renderCanvas(opts: RenderOpts) {
@@ -303,6 +306,7 @@ function renderCanvas(opts: RenderOpts) {
       isAdmin={false}
       backgroundTemplate="blank"
       blockedIds={[]}
+      plan={opts.plan ?? "free"}
       enablePanZoom={true}
       viewport={{ x: 0, y: 0, scale: 1 }}
       canvasSize={{ width: 800, height: 600 }}
@@ -730,5 +734,140 @@ describe("BoardCanvas — presenter banner vs. follow banner", () => {
 
     expect(screen.getByText("Alex paused presenting")).toBeTruthy();
     expect(screen.queryByText(/^Following/)).toBeNull();
+  });
+});
+
+// Month 5 — voice notes (ROADMAP.md:583-587). BoardOverlayLayer is mocked
+// out (see the top of this file), so these assert what BoardCanvas computes
+// and hands it, not the deep render — same recipe as every describe block
+// above.
+function selectionOf(id: string | null, count: number) {
+  return {
+    selectedIds: id ? new Set([id]) : new Set<string>(),
+    selectedId: id,
+    count,
+    anchor: "elements" as const,
+    isSelected: jest.fn(() => false),
+    select: jest.fn(),
+    setMany: jest.fn(),
+    addMany: jest.fn(),
+    toggle: jest.fn(),
+    remove: jest.fn(),
+    clear: jest.fn(),
+  };
+}
+
+const OVERLAY_BOUNDS = { minX: 10, minY: 20, maxX: 50, maxY: 60 };
+
+describe("BoardCanvas — voice notes: plan and existing notes pass through", () => {
+  it("passes the plan and elements.visible.audioNotes straight through", () => {
+    const audioNotes = [
+      {
+        id: "a1",
+        schemaVersion: 1 as const,
+        boardId: "board1",
+        userId: "self",
+        anchorElementId: "el1",
+        storagePath: "boards/board1/audio/a1/note.m4a",
+        downloadUrl: "https://dl/a1",
+        durationMs: 3000,
+        x: 5,
+        y: 5,
+        createdAt: new Date(),
+      },
+    ];
+    renderCanvas({
+      plan: "pro",
+      elements: { visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes } as any },
+    });
+    expect(mockOverlayProps.plan).toBe("pro");
+    expect(mockOverlayProps.audioNotes).toBe(audioNotes);
+    expect(mockOverlayProps.boardId).toBe("board1");
+  });
+});
+
+describe("BoardCanvas — voice notes: the record-entry-point (newVoiceNoteAnchor)", () => {
+  it("appears next to a lone selection with no voice note, at the box's top-right + margin", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        overlayBounds: OVERLAY_BOUNDS,
+        visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] } as any,
+      },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toEqual({ elementId: "el1", x: 58, y: 20 });
+  });
+
+  it("is null when the selected element already has a voice note", () => {
+    const audioNotes = [
+      {
+        id: "a1",
+        schemaVersion: 1 as const,
+        boardId: "board1",
+        userId: "self",
+        anchorElementId: "el1",
+        storagePath: "boards/board1/audio/a1/note.m4a",
+        downloadUrl: "https://dl/a1",
+        durationMs: 3000,
+        x: 5,
+        y: 5,
+        createdAt: new Date(),
+      },
+    ];
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        overlayBounds: OVERLAY_BOUNDS,
+        visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes } as any,
+      },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  it("is null when nothing is selected", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: { selection: selectionOf(null, 0) as any, overlayBounds: null },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  it("is null when more than one element is selected", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: { selection: selectionOf(null, 2) as any, overlayBounds: OVERLAY_BOUNDS },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  it("is null when the select tool isn't active", () => {
+    renderCanvas({
+      tools: { activeTool: "pen" },
+      elements: { selection: selectionOf("el1", 1) as any, overlayBounds: OVERLAY_BOUNDS },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  it("is null mid-transform (dragOffset set), matching showSelectionActions' own guard", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        overlayBounds: OVERLAY_BOUNDS,
+        dragOffset: { dx: 3, dy: 3 },
+      },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  it("is suppressed while a presentation locks content creation, like onDuplicateSelected", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      collab: { presenterLocksContentCreation: true },
+      elements: { selection: selectionOf("el1", 1) as any, overlayBounds: OVERLAY_BOUNDS },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
   });
 });

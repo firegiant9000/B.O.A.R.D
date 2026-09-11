@@ -16,7 +16,7 @@ import type { BoardTools } from "../../hooks/useBoardTools";
 import type { BoardCollab } from "../../hooks/useBoardCollab";
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardComments } from "../../hooks/useBoardComments";
-import { BackgroundTemplate, CommentAnchorKind } from "../../types";
+import { BackgroundTemplate, CommentAnchorKind, Plan } from "../../types";
 
 /**
  * The board's canvas stage (Month 5/6 Task 1 — extracted verbatim from
@@ -47,6 +47,11 @@ interface BoardCanvasProps {
   backgroundTemplate: BackgroundTemplate;
   /** Uids whose cursors the viewer has blocked. */
   blockedIds: string[];
+  /** The board's workspace plan — Month 5's voice notes are the first
+   *  consumer (the advisory Pro gate in AudioAffordance, threaded through
+   *  BoardOverlayLayer). Passed down rather than read here so this stays
+   *  props-only, same as every other value on this interface. */
+  plan: Plan;
 
   /** Phase 2 pan/zoom transform; false renders at identity (the rollback path). */
   enablePanZoom: boolean;
@@ -91,6 +96,7 @@ export default function BoardCanvas({
   isAdmin,
   backgroundTemplate,
   blockedIds,
+  plan,
   enablePanZoom,
   viewport,
   canvasSize,
@@ -154,11 +160,17 @@ export default function BoardCanvas({
   //     accepting persists a shape in place of the freehand stroke —
   //     reachable even if the lock begins after the prompt is already on
   //     screen.
-  // For all five, the lock is applied by passing `undefined` instead of the
-  // real handler rather than wiring a no-op: each of the underlying
-  // components renders no button at all for an undefined handler (matches
-  // `SelectionOverlay`'s existing `btn()` pattern), so the audience isn't
-  // shown an affordance that silently does nothing. `onAcceptOcr` and
+  //   - `newVoiceNoteAnchor` (below, Month 5): the record-entry-point that
+  //     appears next to a single selection with no voice note yet — like
+  //     `onDuplicateSelected`, reachable through the select tool, which stays
+  //     usable while presenting. Rolled into the `singleSelectedId` gate
+  //     itself (not passed through separately at the JSX call site) so a
+  //     locked audience never even sees it computed as non-null.
+  // For all six, the lock is applied by passing `undefined`/`null` instead of
+  // the real handler or value rather than wiring a no-op: each of the
+  // underlying components renders no button at all for an undefined handler
+  // (matches `SelectionOverlay`'s existing `btn()` pattern), so the audience
+  // isn't shown an affordance that silently does nothing. `onAcceptOcr` and
   // `acceptPerfect` each keep their dismiss/discard action available so the
   // prompt can still be closed.
   //
@@ -371,6 +383,29 @@ export default function BoardCanvas({
 
   const inGroupGesture = !!elements.dragOffset || !!elements.transformPreview;
 
+  // Month 5 — voice notes' record-entry-point (ROADMAP.md:583-587). Live
+  // only while exactly one element is selected with the select tool, not
+  // mid-transform (the selection box is moving/resizing, same guard as the
+  // selection action bar's `showSelectionActions`), and that element has no
+  // note yet — `AudioAffordance` itself is what renders the existing note's
+  // play badge once one exists, from `elements.visible.audioNotes` below.
+  // Positioned at the selection box's top-right corner + a small margin so
+  // it never sits on top of `SelectionOverlay`'s own action bar/handles.
+  const singleSelectedId =
+    tools.activeTool === "select" &&
+    !inGroupGesture &&
+    !presenterLocksContentCreation &&
+    elements.selection.count === 1
+      ? elements.selection.selectedId
+      : null;
+  const selectedHasVoiceNote =
+    !!singleSelectedId &&
+    elements.visible.audioNotes.some((a) => a.anchorElementId === singleSelectedId);
+  const newVoiceNoteAnchor =
+    singleSelectedId && !selectedHasVoiceNote && elements.overlayBounds
+      ? { elementId: singleSelectedId, x: elements.overlayBounds.maxX + 8, y: elements.overlayBounds.minY }
+      : null;
+
   return (
     <View
       style={styles.canvasContainer}
@@ -452,6 +487,10 @@ export default function BoardCanvas({
         commentPins={commentPins}
         activeCommentId={comments.activeCommentId}
         onPressPin={comments.openThread}
+        boardId={boardId}
+        plan={plan}
+        audioNotes={elements.visible.audioNotes}
+        newVoiceNoteAnchor={newVoiceNoteAnchor}
       />
       {/* Phase 6 — live cursors. A separate, self-subscribing top layer so
           remote cursor updates repaint only this overlay, never the element
