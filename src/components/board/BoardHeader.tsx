@@ -48,7 +48,7 @@ interface BoardHeaderProps {
   onEndSession: () => void;
   onStartSession: () => void;
 
-  // Task 14 — admin/host-only presenter controls. Gated on the same `isAdmin`
+  // Month 5 — admin/host-only presenter controls. Gated on the same `isAdmin`
   // as the session controls above: this board has no separate "host" role.
   isPresenting: boolean;
   /** Meaningless while `isPresenting` is false. */
@@ -179,7 +179,7 @@ export default function BoardHeader({
                 <Text style={styles.startSessionText}>Session</Text>
               </TouchableOpacity>
             )}
-            {/* Task 14 — presenter toggle, same isAdmin gate as Session above. */}
+            {/* Month 5 — presenter toggle, same isAdmin gate as Session above. */}
             {isPresenting ? (
               <>
                 <TouchableOpacity

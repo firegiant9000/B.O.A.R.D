@@ -124,28 +124,61 @@ export default function BoardCanvas({
   // Only pen and eraser produce live strokes; text/select route through taps.
   const isDrawingTool = tools.activeTool === "pen" || tools.activeTool === "eraser";
 
-  // Task 14 — an active, unpaused presenter locks out everyone else's drawing.
-  // `activePresenter` is always null on the presenter's own client (see
-  // `useBoardCollab`), so this never blocks the presenter. UI-only affordance:
-  // the screen already steers `activeTool` away from a drawing tool and hides
-  // the toolbar's drawing buttons while this is true (see `app/board/[id].tsx`)
-  // — these are a second guard on the gesture handlers themselves, not a
-  // security boundary (no Firestore rule backs presenter state).
+  // Month 5 — an active, unpaused presenter locks out everyone else's new
+  // content creation. `activePresenter` (and so `presenterLocksContentCreation`,
+  // computed once in `useBoardCollab`) is always false/null on the
+  // presenter's own client, so this never blocks the presenter. UI-only
+  // affordance: the screen already steers `activeTool` away from a drawing
+  // tool and hides the toolbar's drawing buttons while this is true (see
+  // `app/board/[id].tsx`) — these are a second guard on the gesture handlers
+  // themselves, not a security boundary (no Firestore rule backs presenter
+  // state).
   //
-  // Scope: this guards the *drawing* tools (pen, eraser, shape, text) — every
-  // point where they'd otherwise reach a `useBoardElements` write path, which
-  // is stroke start/move/end and the tap handler below, not only stroke
-  // start. It deliberately does NOT cover the select tool's drag-to-move
+  // Scope — "no new content creation," not "read-only": this guards every
+  // reachable path in this component that creates, draws, or replaces board
+  // content while a presentation is live —
+  //   - the drawing tools (pen, eraser, shape, text): stroke start/move/end
+  //     and the tap handler below, not only stroke start;
+  //   - `onDuplicateSelected` (below): a selection-actions button that writes
+  //     new elements even though the select tool itself stays usable;
+  //   - `onAcceptOcr` (below): accepting an OCR result creates a new text
+  //     element and spends AI quota;
+  //   - `acceptPerfect`, wired as `PerfectShapePrompt`'s `onAccept` (below):
+  //     accepting persists a shape in place of the freehand stroke —
+  //     reachable even if the lock begins after the prompt is already on
+  //     screen.
+  // For these three, the lock is applied by passing `undefined` instead of
+  // the real handler rather than wiring a no-op: each of the three
+  // components renders no button at all for an undefined handler (matches
+  // `SelectionOverlay`'s existing `btn()` pattern), so the audience isn't
+  // shown an affordance that silently does nothing. `onAcceptOcr` and
+  // `acceptPerfect` each keep their dismiss/discard action available so the
+  // prompt can still be closed.
+  //
+  // It deliberately does NOT cover the select tool's drag-to-move
   // (`moveSelectGesture` → `commitMove`) or the resize/rotate handles
-  // (`beginTransform`/`moveTransform`/`endTransform`): those stay reachable
-  // while presenting, the same as they already are for an ordinary
-  // `canEdit: false` viewer (Toolbar's read-only row keeps Select enabled
-  // too) — presenting narrows to "no new drawing tools," not "read-only."
-  const presenterLocksDrawing = !!collab.activePresenter && !collab.activePresenter.paused;
+  // (`beginTransform`/`moveTransform`/`endTransform`): repositioning existing
+  // content isn't *new* content, and those stay reachable while presenting
+  // the same way they already are for an ordinary `canEdit: false` viewer
+  // (Toolbar's read-only row keeps Select enabled too).
+  //
+  // This is not a complete inventory of every content/quota-spending path a
+  // presentation leaves open — it's the three named above, which is what was
+  // scoped. At least these are known and un-gated, same as the
+  // duplicate/paste keyboard shortcuts (`app/board/[id].tsx`), which were
+  // already a separate pre-existing gap: `AiSelectionActions`' "Recognize
+  // text" (`ai.recognizeText` places a text element directly on a
+  // high-confidence result, not only through the confirm prompt this guards)
+  // and "Explain this" (`ai.explain`, which always creates a text element)
+  // are reachable through the same forced `activeTool === "select"` and both
+  // spend AI quota; `ai.generateDiagram` (opened from `BoardHeader`, gated
+  // only on the diagram feature flag) creates a batch of elements. None of
+  // these are closed by this guard.
+  const presenterLocksContentCreation = collab.presenterLocksContentCreation;
 
   const handleStrokeStart = () => {
     if (tools.activeTool === "select") { elements.beginSelectGesture(); return; }
-    if (presenterLocksDrawing) return;
+    if (presenterLocksContentCreation) return;
     if (tools.activeTool === "shape") { tools.beginShapeDraft(); return; }
     if (!isDrawingTool) return;
     lastSampleRef.current = 0; // first move of a new stroke always records
@@ -158,13 +191,13 @@ export default function BoardCanvas({
       elements.moveSelectGesture(point, isShiftHeld());
       return;
     }
-    // Task 14 — DrawingCanvas fires move/end for a gesture regardless of what
+    // Month 5 — DrawingCanvas fires move/end for a gesture regardless of what
     // onStrokeStart did (it has no way to signal "ignore the rest of this
     // gesture"), so the lock has to be re-checked here too: without this,
     // `handleStrokeStart`'s early return above was cosmetic — `moveShapeDraft`
     // has no guard against a missing `beginShapeDraft`, and the eraser branch
     // below calls `eraseAtPoint` (a real, immediate mutation) on every move.
-    if (presenterLocksDrawing) return;
+    if (presenterLocksContentCreation) return;
     if (tools.activeTool === "shape") {
       tools.moveShapeDraft(point, isShiftHeld(), elements.shapeGuideTargets());
       return;
@@ -185,12 +218,16 @@ export default function BoardCanvas({
       await elements.endSelectGesture();
       return;
     }
-    // Task 14 — same reasoning as the guard in handleStrokeMove: this is the
+    // Month 5 — same reasoning as the guard in handleStrokeMove: this is the
     // call that actually persists a stroke/shape (`commitStroke` /
     // `saveShapeFromDraft`), so it must not rely on handleStrokeStart alone
     // having skipped initialization. Clear any points a pre-lock portion of
-    // this same gesture already accumulated rather than committing them.
-    if (presenterLocksDrawing) {
+    // this same gesture already accumulated rather than committing them, and
+    // close an eraser batch `beginEraseStroke()` may have opened before the
+    // lock kicked in mid-gesture — otherwise `erasedIdsRef` (useBoardElements)
+    // stays populated until the next eraser stroke's own `beginEraseStroke()`.
+    if (presenterLocksContentCreation) {
+      if (tools.activeTool === "eraser") elements.endEraseStroke();
       setCurrentPoints(null);
       return;
     }
@@ -269,13 +306,13 @@ export default function BoardCanvas({
       elements.selectAtPoint(point, isShiftHeld());
       return;
     }
-    // Task 14 — same drawing-tool lock as stroke start/move/end, applied to
-    // the tap path: a stationary tap is how text gets created, the eraser
+    // Month 5 — same content-creation lock as stroke start/move/end, applied
+    // to the tap path: a stationary tap is how text gets created, the eraser
     // deletes, and the pen drops a dot, so all three are real mutations that
     // need the same guard. Comment tapping (above) and select (above) are
     // deliberately outside this check — see the scope note on
-    // `presenterLocksDrawing`.
-    if (presenterLocksDrawing) return;
+    // `presenterLocksContentCreation`.
+    if (presenterLocksContentCreation) return;
     if (tools.activeTool === "text") {
       if (editingTextId || elements.selection.count > 0) {
         // First tap on blank canvas deselects the active element
@@ -382,7 +419,9 @@ export default function BoardCanvas({
         selectionCount={elements.selection.count}
         showSelectionActions={!inGroupGesture}
         onDeleteSelected={onDeleteSelected}
-        onDuplicateSelected={elements.duplicateSelected}
+        onDuplicateSelected={
+          presenterLocksContentCreation ? undefined : elements.duplicateSelected
+        }
         onBringToFront={elements.bringToFront}
         onSendToBack={elements.sendToBack}
         onTransformStart={elements.beginTransform}
@@ -440,7 +479,7 @@ export default function BoardCanvas({
       <PerfectShapePrompt
         viewport={viewport}
         shape={tools.perfectCandidate?.shape ?? null}
-        onAccept={acceptPerfect}
+        onAccept={presenterLocksContentCreation ? undefined : acceptPerfect}
         onDismiss={tools.dismissPerfect}
       />
       <AiSelectionActions
@@ -459,7 +498,7 @@ export default function BoardCanvas({
         explainBusy={ai.explainBusy}
         onExplain={ai.explain}
         ocrCandidate={ai.ocrCandidate}
-        onAcceptOcr={ai.acceptOcr}
+        onAcceptOcr={presenterLocksContentCreation ? undefined : ai.acceptOcr}
         onDismissOcr={ai.dismissOcr}
       />
     </View>

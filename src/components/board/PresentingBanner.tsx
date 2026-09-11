@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 /**
- * Task 14 — the audience-facing presenter-mode banner.
+ * Month 5 — the audience-facing presenter-mode banner.
  *
  * Props-only: this component owns no subscription and calls no service — the
  * hook (`useBoardCollab`'s `activePresenter`) owns the cursor subscription

@@ -16,7 +16,9 @@ interface PerfectShapePromptProps {
   viewport: Viewport;
   /** The recognized primitive awaiting confirmation, or null to render nothing. */
   shape: RecognizedShape | null;
-  onAccept: () => void;
+  /** Undefined suppresses the accept (checkmark) button (Month 5 presenter
+   *  lock) — dismiss stays available so the prompt can still be closed. */
+  onAccept?: () => void;
   onDismiss: () => void;
 }
 
@@ -38,9 +40,11 @@ export default function PerfectShapePrompt({
     >
       <Ionicons name="sparkles-outline" size={15} color="#2563eb" />
       <Text style={styles.perfectPromptText}>Perfect it?</Text>
-      <TouchableOpacity style={styles.perfectAccept} onPress={onAccept}>
-        <Ionicons name="checkmark" size={16} color="#fff" />
-      </TouchableOpacity>
+      {onAccept && (
+        <TouchableOpacity style={styles.perfectAccept} onPress={onAccept}>
+          <Ionicons name="checkmark" size={16} color="#fff" />
+        </TouchableOpacity>
+      )}
       <TouchableOpacity style={styles.perfectDismiss} onPress={onDismiss}>
         <Ionicons name="close" size={16} color="#6b7280" />
       </TouchableOpacity>

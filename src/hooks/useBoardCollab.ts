@@ -10,10 +10,10 @@ import type { Tool } from "./useBoardTools";
 
 /**
  * Board collaboration state (Month 5/6 Task 1 — extracted verbatim from
- * `app/board/[id].tsx`; Task 14 added presenter mode).
+ * `app/board/[id].tsx`; Month 5 added presenter mode).
  *
  * Owns presence (join / subscribe / leave), the Phase 6 cursor side channel,
- * Phase 7 follow mode with both of its cycle guards, and Task 14 presenter
+ * Phase 7 follow mode with both of its cycle guards, and Month 5 presenter
  * mode (see `src/lib/presenter.ts#resolveViewportSource` for the precedence
  * between an active presenter and an individual follow choice). Cursor
  * *publishing* is side-effect-only — it never sets state, so a pointer move
@@ -27,7 +27,7 @@ import type { Tool } from "./useBoardTools";
  * the resolved viewport source through `onLeaderViewport` rather than
  * driving a controller it was handed, so it composes with anything.
  *
- * Task 14's decision on `onLeaderViewport`'s churn (previously flagged here,
+ * Month 5's decision on `onLeaderViewport`'s churn (previously flagged here,
  * in a three-place warning, as "intentionally unstable — do not memoize"):
  * FIXED. The callback is now read through `onLeaderViewportRef` (assigned
  * fresh every render, read only from inside the cursor-subscription
@@ -64,7 +64,7 @@ export interface BoardCollabOptions {
    * unpaused presenter, or the individually-followed leader — see
    * `src/lib/presenter.ts#resolveViewportSource`).
    *
-   * Task 14: this is now read through a ref inside the hook rather than
+   * Month 5: this is now read through a ref inside the hook rather than
    * listed as an effect dependency, so its identity no longer matters — pass
    * a fresh closure every render or a memoized one, either is fine. (It was
    * previously a load-bearing *unstable* dependency; see the file-level
@@ -103,6 +103,17 @@ export interface BoardCollab {
    * `resolveViewportSource`.
    */
   activePresenter: ActivePresenter | null;
+  /**
+   * True while someone *other* than me is presenting and hasn't paused —
+   * always false on the presenter's own client (`activePresenter` excludes
+   * self). The single source of truth for every caller that needs to lock
+   * out new content creation while a presentation is live; computed once
+   * here instead of re-derived from `activePresenter` at each call site.
+   * Named for the boundary it enforces (no new content), not "drawing" —
+   * it also gates duplicate and the AI/auto-perfect accept actions, which
+   * create content without drawing anything.
+   */
+  presenterLocksContentCreation: boolean;
   /** Start presenting: overrides every viewer's individual follow choice. */
   startPresenting: () => void;
   /** Stop presenting: viewers fall back to their individual follow choice. */
@@ -139,7 +150,7 @@ export function useBoardCollab(
   // user who only opens the board doesn't publish a phantom cursor at (0,0).
   const hasPointerRef = useRef(false);
 
-  // Task 14 — presenter mode. `isPresenting`/`isPresenterPaused` are MY OWN
+  // Month 5 — presenter mode. `isPresenting`/`isPresenterPaused` are MY OWN
   // state; `activePresenter` is who (if anyone but me) is presenting, derived
   // from the cursor subscription below.
   const [isPresenting, setIsPresenting] = useState(false);
@@ -152,6 +163,24 @@ export function useBoardCollab(
   // its dependency array. See the file-level comment for the decision.
   const onLeaderViewportRef = useRef(onLeaderViewport);
   onLeaderViewportRef.current = onLeaderViewport;
+
+  // Month 5 — the last viewport actually forwarded to `onLeaderViewport`, so
+  // the cursor-subscription effect below can skip calling it again when the
+  // resolved source's viewport hasn't changed. See that effect's long
+  // comment for why this is necessary: the subscription is collection-wide
+  // (it maps every doc in the board's cursors collection), so its callback
+  // fires on *any* participant's cursor write, not only the resolved
+  // source's — up to 20 Hz per other participant. And even the source's own
+  // writes repeat the same viewport: while they're actively drawing or
+  // pointing (not panning), `publishPointer` still republishes their
+  // *current* viewport on every throttled ~20Hz pointer-move write, unchanged
+  // frame after frame. Without this dedupe, `animateTo` — which
+  // unconditionally re-bases its ease from the current camera
+  // (`useViewport.ts`) — would restart a fresh glide toward that same
+  // unchanged target on every one of those deliveries: the exact "stutter of
+  // restarted eases" the old per-render-resubscribe bug produced, just from
+  // a different root cause.
+  const lastAppliedViewportRef = useRef<Viewport | null>(null);
 
   // Presence: join on mount, subscribe to updates, leave on unmount. Skipped in
   // embed mode — the read-only embed identity has no write rights to presence.
@@ -218,7 +247,7 @@ export function useBoardCollab(
   );
 
   // Phase 7 — broadcast our viewport when it changes from our own pan/zoom, so
-  // followers (and, since Task 14, the whole audience while presenting) track
+  // followers (and, since Month 5, the whole audience while presenting) track
   // moves that aren't pointer-driven (pinch, fling, zoom buttons). Suppressed
   // while following someone else: that viewport is a mirror, not our intent.
   useEffect(() => {
@@ -261,7 +290,7 @@ export function useBoardCollab(
     [user?.uid, isPresenting]
   );
 
-  // Task 14 — presenter mode actions. Each publishes an immediate cursor frame
+  // Month 5 — presenter mode actions. Each publishes an immediate cursor frame
   // (not a per-frame write: this is one write per discrete start/stop/pause/
   // resume action) so the room learns of the change without waiting on the
   // next pointer move. The regular `publishPointer` / viewport-broadcast paths
@@ -332,19 +361,19 @@ export function useBoardCollab(
     });
   }, [boardId, user, embedMode, isPresenting, displayName, activeTool, viewport]);
 
-  // Phase 7 / Task 14 — subscribe to the board's cursors to resolve who (if
+  // Phase 7 / Month 5 — subscribe to the board's cursors to resolve who (if
   // anyone) our camera should mirror, and whether the audience banner should
   // be showing. This runs whenever we're a live participant, not only while
   // `followingId` is set: presenter mode (case 1 of the precedence rule in
   // `src/lib/presenter.ts`) can pull anyone's camera, including someone who
-  // never chose to follow anybody. Before Task 14 this listener opened only
+  // never chose to follow anybody. Before Month 5 this listener opened only
   // during a manual follow; it is now open for the lifetime of the board
   // visit — mirroring the always-on cursor subscription `CursorLayer`
   // (`src/components/CursorLayer.tsx`) already keeps for rendering remote
   // pointers, so this is a second listener on the same collection, not a
   // novel cost in kind.
   //
-  // ⚠ TASK 14's DECISION ON `onLeaderViewport` CHURN — READ BEFORE CHANGING
+  // ⚠ MONTH 5's DECISION ON `onLeaderViewport` CHURN — READ BEFORE CHANGING
   // THIS EFFECT'S DEPENDENCY ARRAY.
   //
   // Before Task 1's screen split, this effect depended on the whole
@@ -363,7 +392,7 @@ export function useBoardCollab(
   // now only re-subscribes on an actual state change (`boardId`, `user`,
   // `embedMode`, `followingId`), not on every render.
   //
-  // Why fix it rather than keep it: Task 14 widens this same effect to run
+  // Why fix it rather than keep it: Month 5 widens this same effect to run
   // for the entire board visit rather than only during a manual follow (see
   // above), so the old per-render churn would now cost a teardown/recreate on
   // *every* render for *every* board occupant, not just an active follower —
@@ -427,7 +456,23 @@ export function useBoardCollab(
       const sourceId = resolveViewportSource(live, user.uid, followingId);
       if (!sourceId) return;
       const source = live.find((c) => c.userId === sourceId);
-      if (source?.viewport) onLeaderViewportRef.current(source.viewport);
+      if (!source?.viewport) return;
+      // Dedupe against the last viewport we actually forwarded — see the
+      // long comment on `lastAppliedViewportRef` above for why this matters:
+      // this callback fires far more often than the source's viewport
+      // actually changes, and every unnecessary call restarts `animateTo`'s
+      // ease from scratch.
+      const last = lastAppliedViewportRef.current;
+      if (
+        last &&
+        last.x === source.viewport.x &&
+        last.y === source.viewport.y &&
+        last.scale === source.viewport.scale
+      ) {
+        return;
+      }
+      lastAppliedViewportRef.current = source.viewport;
+      onLeaderViewportRef.current(source.viewport);
     });
     return unsub;
   }, [boardId, user, embedMode, followingId]);
@@ -438,6 +483,12 @@ export function useBoardCollab(
     if (!presence.some((p) => p.userId === followingId)) setFollowingId(null);
   }, [presence, followingId]);
 
+  // Single source of truth for "someone else is presenting, unpaused" — see
+  // the `BoardCollab` field doc. `activePresenter` already excludes self (the
+  // cursor-subscription effect above filters `c.userId !== user.uid`), so
+  // this is never true on the presenter's own client.
+  const presenterLocksContentCreation = !!activePresenter && !activePresenter.paused;
+
   return {
     presence,
     followingId,
@@ -447,6 +498,7 @@ export function useBoardCollab(
     isPresenting,
     isPresenterPaused,
     activePresenter,
+    presenterLocksContentCreation,
     startPresenting,
     stopPresenting,
     pausePresenting,

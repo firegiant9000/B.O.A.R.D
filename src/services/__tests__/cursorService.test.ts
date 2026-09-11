@@ -62,7 +62,7 @@ describe("subscribeToCursors", () => {
     expect(typeof unsub).toBe("function");
   });
 
-  it("maps presenting/presenterPaused, defaulting a pre-Task-14 doc to false (Task 14)", () => {
+  it("maps presenting/presenterPaused, defaulting a pre-presenter-mode doc to false (Month 5)", () => {
     let received: any[] = [];
     onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
       cb(
@@ -96,7 +96,94 @@ describe("subscribeToCursors", () => {
   });
 });
 
-describe("publishCursor — presenter fields (Task 14)", () => {
+describe("subscribeToCursors — A.6 listener multiplexing (Month 5)", () => {
+  it("multiplexes two subscribers on one board into a single onSnapshot call, fanning out to both", () => {
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([["u10", { userId: "u10", displayName: "Ten", x: 1, y: 1, tool: "pen", updatedAt: 1 }]]));
+      return jest.fn();
+    });
+
+    let receivedA: any[] = [];
+    let receivedB: any[] = [];
+    const unsubA = subscribeToCursors("mux1", (cursors) => { receivedA = cursors; });
+    const unsubB = subscribeToCursors("mux1", (cursors) => { receivedB = cursors; });
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(receivedA).toHaveLength(1);
+    expect(receivedA[0]).toMatchObject({ userId: "u10" });
+    expect(receivedB).toEqual(receivedA);
+
+    unsubA();
+    unsubB();
+  });
+
+  it("keeps the surviving subscriber live after one unsubscribes, without opening a second onSnapshot", () => {
+    let deliver: (snap: unknown) => void = () => {};
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      deliver = cb;
+      cb(makeQuerySnap([]));
+      return jest.fn();
+    });
+
+    let receivedA: any[] | null = null;
+    let receivedB: any[] | null = null;
+    const unsubA = subscribeToCursors("mux2", (cursors) => { receivedA = cursors; });
+    const unsubB = subscribeToCursors("mux2", (cursors) => { receivedB = cursors; });
+
+    unsubA();
+    receivedA = null;
+    receivedB = null;
+    deliver(
+      makeQuerySnap([["u11", { userId: "u11", displayName: "Eleven", x: 0, y: 0, tool: "pen", updatedAt: 1 }]])
+    );
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1); // still the one underlying listener
+    expect(receivedA).toBeNull(); // the detached subscriber gets nothing more
+    expect(receivedB).not.toBeNull();
+    expect(receivedB![0]).toMatchObject({ userId: "u11" });
+
+    unsubB();
+  });
+
+  it("calls the underlying unsubscribe only once the last local subscriber detaches", () => {
+    const underlyingUnsub = jest.fn();
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([]));
+      return underlyingUnsub;
+    });
+
+    const unsubA = subscribeToCursors("mux3", () => {});
+    const unsubB = subscribeToCursors("mux3", () => {});
+
+    unsubA();
+    expect(underlyingUnsub).not.toHaveBeenCalled();
+
+    unsubB();
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+
+    // Idempotent: detaching an already-detached subscriber is a no-op, not a
+    // second teardown call.
+    unsubB();
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a second board its own onSnapshot listener rather than sharing the first board's", () => {
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([]));
+      return jest.fn();
+    });
+
+    const unsubA = subscribeToCursors("mux4", () => {});
+    const unsubB = subscribeToCursors("mux5", () => {});
+
+    expect(onSnapshot).toHaveBeenCalledTimes(2);
+
+    unsubA();
+    unsubB();
+  });
+});
+
+describe("publishCursor — presenter fields (Month 5)", () => {
   it("omits presenting/presenterPaused from the written doc when false", () => {
     publishCursor("b5", "u6", {
       displayName: "U6",

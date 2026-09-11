@@ -58,7 +58,8 @@ interface BoardOverlayLayerProps {
   /** False while a transform/drag is in flight, which hides the action bar. */
   showSelectionActions: boolean;
   onDeleteSelected: () => void;
-  onDuplicateSelected: () => void;
+  /** Undefined suppresses the duplicate button entirely (Month 5 presenter lock). */
+  onDuplicateSelected?: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
   onTransformStart: (handle: HandleId) => void;

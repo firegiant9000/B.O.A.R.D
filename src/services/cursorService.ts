@@ -33,7 +33,7 @@ export interface CursorPayload {
   /** Phase 7: who this author is following (for the cross-client cycle guard). */
   following?: string | null;
   /**
-   * Task 14 (presenter mode): true while this author is presenting to the
+   * Month 5 (presenter mode): true while this author is presenting to the
    * whole board. Additive field on this same ephemeral payload — presenter
    * mode is deliberately NOT a second realtime channel. See
    * `src/lib/presenter.ts#resolveViewportSource` for the precedence between
@@ -41,7 +41,7 @@ export interface CursorPayload {
    */
   presenting?: boolean;
   /**
-   * Task 14: true while the presenter above has paused. A pause releases
+   * Month 5: true while the presenter above has paused. A pause releases
    * every viewer's viewport but does not itself clear `presenting` — the
    * audience banner stays up through a pause.
    */
@@ -128,7 +128,7 @@ export const firestoreTransport: CursorTransport = {
               ? data.viewport
               : undefined,
           following: typeof data.following === "string" ? data.following : null,
-          // Task 14: tolerate a pre-presenter-mode doc (field absent) by
+          // Month 5: tolerate a pre-presenter-mode doc (field absent) by
           // defaulting to false rather than leaving it undefined.
           presenting: data.presenting === true,
           presenterPaused: data.presenterPaused === true,
@@ -160,11 +160,70 @@ export function publishCursor(
   active.publish(boardId, userId, payload);
 }
 
+/**
+ * Month 5 (A.6 listener budget) — one real `onSnapshot` per board, fanned out
+ * to every local subscriber, reference-counted so the underlying listener
+ * tears down only once the last one detaches.
+ *
+ * Before this, every caller of `subscribeToCursors` opened its own
+ * `onSnapshot`. `CursorLayer` already holds one permanently for rendering
+ * remote pointers; once `useBoardCollab`'s follow/presenter-detection
+ * subscription became always-on for the whole board visit (not just during a
+ * manual follow), a normal board visit opened two cursor listeners per user
+ * against Appendix A.6's budget of one. Multiplexing here — rather than in
+ * each caller — means both keep their existing single call to
+ * `subscribeToCursors` and both keep working unmodified; the laser-pointer
+ * feature planned alongside presenter mode (`docs/month-5-phases.md`,
+ * Phase 6) becomes a third subscriber on this same channel for free.
+ *
+ * The first subscriber on a board is added to the fan-out set *before* the
+ * underlying `active.subscribe` call so a transport that invokes its callback
+ * synchronously (Firestore's `onSnapshot` delivers its cached snapshot
+ * immediately on a fresh listener) still reaches it. A *later* subscriber
+ * joining an already-active board gets that same immediate-delivery
+ * guarantee via `lastCursors`: onSnapshot's real contract is "every listener
+ * gets the current snapshot right away, then updates" — without replaying
+ * it here, a second local subscriber (say `useBoardCollab`'s follow/presenter
+ * effect mounting after `CursorLayer` already opened the one real listener)
+ * would otherwise see nothing until somebody's next cursor write.
+ */
+interface CursorSubscriptionEntry {
+  unsubscribe: Unsubscribe;
+  listeners: Set<(cursors: CursorPresence[]) => void>;
+  lastCursors: CursorPresence[] | null;
+}
+const cursorSubscriptions = new Map<string, CursorSubscriptionEntry>();
+
 export function subscribeToCursors(
   boardId: string,
   cb: (cursors: CursorPresence[]) => void
 ): Unsubscribe {
-  return active.subscribe(boardId, cb);
+  const existing = cursorSubscriptions.get(boardId);
+  if (existing) {
+    existing.listeners.add(cb);
+    if (existing.lastCursors) cb(existing.lastCursors);
+  } else {
+    const listeners = new Set<(cursors: CursorPresence[]) => void>([cb]);
+    const entry: CursorSubscriptionEntry = { unsubscribe: () => {}, listeners, lastCursors: null };
+    cursorSubscriptions.set(boardId, entry);
+    entry.unsubscribe = active.subscribe(boardId, (cursors) => {
+      entry.lastCursors = cursors;
+      // Snapshot before iterating: a listener that unsubscribes itself (or
+      // another) synchronously during this fan-out must not mutate the set
+      // while it's still being iterated.
+      for (const listener of [...listeners]) listener(cursors);
+    });
+  }
+
+  return () => {
+    const e = cursorSubscriptions.get(boardId);
+    if (!e || !e.listeners.has(cb)) return; // already detached — idempotent
+    e.listeners.delete(cb);
+    if (e.listeners.size === 0) {
+      e.unsubscribe();
+      cursorSubscriptions.delete(boardId);
+    }
+  };
 }
 
 export function removeCursor(boardId: string, userId: string): Promise<void> {

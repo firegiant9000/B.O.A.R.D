@@ -1,4 +1,4 @@
-// Presenter mode precedence (Month 5/6 Task 14). Pure so it's unit-testable
+// Presenter mode precedence (Month 5/6). Pure so it's unit-testable
 // without a live cursor subscription — mirrors the style of
 // `src/lib/followMode.ts`, which it composes with rather than replaces: this
 // module does not itself guard against a follow cycle. `wouldCreateCycle`

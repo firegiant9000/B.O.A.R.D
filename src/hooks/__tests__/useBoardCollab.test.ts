@@ -121,6 +121,8 @@ describe("useBoardCollab — presenter precedence (Task 14)", () => {
       displayName: "p",
       paused: false,
     });
+    // The single source of truth every content-creation gate reads.
+    expect(result.current.presenterLocksContentCreation).toBe(true);
   });
 
   it("case 2: a paused presenter releases the viewport but keeps the banner", () => {
@@ -151,6 +153,9 @@ describe("useBoardCollab — presenter precedence (Task 14)", () => {
       displayName: "p",
       paused: true,
     });
+    // A pause releases the viewport (above) *and* the content-creation lock —
+    // both derive from the same "unpaused and active" condition.
+    expect(result.current.presenterLocksContentCreation).toBe(false);
   });
 
   it("case 4: wouldCreateCycle still guards manual follow", () => {
@@ -217,21 +222,54 @@ describe("useBoardCollab — onLeaderViewport churn decision (Task 14)", () => {
     const { rerender } = renderCollab(first);
     rerender({ onLeaderViewport: second });
 
-    act(() => {
-      latestCursorsCallback()([cursor("self")]);
-      // No follow/presenter active yet, so seed one now that the ref has swapped.
-    });
-
-    // Establish a follow, then deliver a leader viewport — the *second*
-    // closure (current at call time) must be the one invoked, not the first.
-    // (renderCollab's initial hook has no follow target here, so trigger via
-    // a presenter instead, which needs no extra follow state.)
+    // Deliver a presenter's viewport now that the ref has swapped — the
+    // *second* closure (current at call time) must be the one invoked, not
+    // the first.
     act(() => {
       latestCursorsCallback()([cursor("self"), cursor("p", { presenting: true, viewport: { x: 1, y: 2, scale: 1 } })]);
     });
 
     expect(second).toHaveBeenCalledWith({ x: 1, y: 2, scale: 1 });
     expect(first).not.toHaveBeenCalled();
+  });
+});
+
+describe("useBoardCollab — viewport dedupe (Task 14 fix round)", () => {
+  it("calls onLeaderViewport once for a repeated leader viewport, again only on a real change", () => {
+    const onLeaderViewport = jest.fn();
+    const { result } = renderCollab(onLeaderViewport);
+    act(() => {
+      result.current.toggleFollowUser("b");
+    });
+
+    act(() => {
+      latestCursorsCallback()([
+        cursor("self"),
+        cursor("b", { viewport: { x: 10, y: 10, scale: 2 } }),
+      ]);
+    });
+    expect(onLeaderViewport).toHaveBeenCalledTimes(1);
+
+    // "b"'s throttled cursor writes repeat the same viewport frame after frame
+    // while they're stationary — without the dedupe this would call through
+    // again and restart animateTo's ease every delivery.
+    act(() => {
+      latestCursorsCallback()([
+        cursor("self"),
+        cursor("b", { viewport: { x: 10, y: 10, scale: 2 } }),
+      ]);
+    });
+    expect(onLeaderViewport).toHaveBeenCalledTimes(1);
+
+    // A genuine change still calls through.
+    act(() => {
+      latestCursorsCallback()([
+        cursor("self"),
+        cursor("b", { viewport: { x: 20, y: 20, scale: 2 } }),
+      ]);
+    });
+    expect(onLeaderViewport).toHaveBeenCalledTimes(2);
+    expect(onLeaderViewport).toHaveBeenLastCalledWith({ x: 20, y: 20, scale: 2 });
   });
 });
 

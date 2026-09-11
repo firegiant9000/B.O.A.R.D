@@ -35,7 +35,9 @@ interface AiSelectionActionsProps {
   onExplain: () => void;
   /** A held-back low-confidence OCR result, or null. */
   ocrCandidate: OcrCandidate | null;
-  onAcceptOcr: () => void;
+  /** Undefined suppresses the "Insert anyway" button (Month 5 presenter lock) —
+   *  the prompt itself and "Discard" stay available either way. */
+  onAcceptOcr?: () => void;
   onDismissOcr: () => void;
 }
 
@@ -150,9 +152,15 @@ export default function AiSelectionActions({
               <TouchableOpacity style={styles.ocrPromptDismiss} onPress={onDismissOcr}>
                 <Text style={styles.ocrPromptDismissText}>Discard</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.ocrPromptAccept} onPress={onAcceptOcr}>
-                <Text style={styles.ocrPromptAcceptText}>Insert anyway</Text>
-              </TouchableOpacity>
+              {/* Month 5 — omitted (rather than wired to a no-op) while a
+                  presentation locks content creation, so the audience isn't
+                  shown a button that silently does nothing; "Discard" above
+                  stays available so the prompt can still be dismissed. */}
+              {onAcceptOcr && (
+                <TouchableOpacity style={styles.ocrPromptAccept} onPress={onAcceptOcr}>
+                  <Text style={styles.ocrPromptAcceptText}>Insert anyway</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         );
