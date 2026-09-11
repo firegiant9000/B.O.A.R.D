@@ -8,15 +8,19 @@
 
 export const MIN_EASE = 1.3;
 
+/** A study card with its current scheduling state.
+ *
+ *  Month 6 — Callers loading cards from storage must validate that all numeric
+ *  fields (repetitions, intervalDays, easeFactor, dueAtMs) are finite. If passed
+ *  a corrupted card with NaN for easeFactor, `review()` does not catch it;
+ *  Math.max(1.3, NaN) silently returns NaN, which propagates into the returned
+ *  ease, interval and due date. Validation is the caller's responsibility. */
 export interface Card {
   repetitions: number;
   intervalDays: number;
   easeFactor: number;
   dueAtMs: number;
 }
-
-/** Callers must guarantee that numeric fields are finite (not NaN or Infinity).
- *  This function does not validate them; Task 30 validates cards loaded from storage. */
 
 export const INITIAL_CARD: Card = Object.freeze({
   repetitions: 0,
@@ -36,6 +40,9 @@ export const INITIAL_CARD: Card = Object.freeze({
  * and floored at MIN_EASE (1.3).
  *
  * Intervals follow the pattern: 1 day, 6 days, then previous * new_EF (rounded).
+ *
+ * Caller must ensure the input card's numeric fields are finite (not NaN or
+ * Infinity); this function does not validate them. See Card interface docs.
  */
 export function review(card: Card, quality: number, now: number): Card {
   // Validate quality: must be integer 0-5, not NaN or Infinity
