@@ -119,11 +119,21 @@ export default function AudioAffordance({
   // stale) is the same "are we mid-recording" signal `stopAndSave` itself
   // uses. Fire-and-forget: the component is gone, so there's nothing to
   // upload the result to and no error UI left to show.
+  //
+  // Fix round 2 — abandoning a recording this way must ALSO reset the audio
+  // mode, same as `stopAndSave`'s own `finally` does (item 5, fix round 1):
+  // Finding 4's fix is what made this path ordinary in the first place
+  // (selecting a different element used to reuse the instance; now it
+  // unmounts), so "record, then click something else" is a ROUTINE flow,
+  // not an edge case — and without this line it lands exactly in the state
+  // item 5 exists to eliminate: iOS stuck on `.playAndRecord` (quiet
+  // playback) until some later record→stop cycle happens to reset it.
   useEffect(() => {
     return () => {
       clearAutoStop();
       if (startedAtRef.current != null) {
         recorder.stop().catch(() => undefined);
+        setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
       }
     };
   }, [clearAutoStop, recorder]);

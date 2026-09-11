@@ -173,6 +173,38 @@ describe("recording flow", () => {
       expect.stringMatching(/network down/)
     );
   });
+
+  // Fix round 2: Finding 4 (unmount stops the recorder) and Finding 5 (the
+  // audio mode resets after recording) were fixed as two separate code
+  // paths — stopAndSave's `finally`, and the unmount cleanup. Finding 4 is
+  // also what made "record, then select something else" unmount this
+  // component instead of reusing it, so this is now a ROUTINE flow, not an
+  // edge case. This test locks both halves together so the two paths can't
+  // silently drift apart again.
+  it("stops the recorder AND resets the audio mode when unmounted mid-recording", async () => {
+    const { unmount } = render(<AudioAffordance {...baseProps} plan="pro" audio={null} />);
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("audio-affordance-record"));
+    });
+    expect(expoAudio.setAudioModeAsync).toHaveBeenLastCalledWith({ allowsRecording: true });
+    expect(mockRecorder.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      unmount();
+    });
+
+    expect(mockRecorder.stop).toHaveBeenCalledTimes(1);
+    expect(expoAudio.setAudioModeAsync).toHaveBeenLastCalledWith({ allowsRecording: false });
+  });
+
+  it("does not touch the recorder or the audio mode when unmounted while idle (never recorded)", async () => {
+    const { unmount } = render(<AudioAffordance {...baseProps} plan="pro" audio={null} />);
+    await act(async () => {
+      unmount();
+    });
+    expect(mockRecorder.stop).not.toHaveBeenCalled();
+    expect(expoAudio.setAudioModeAsync).not.toHaveBeenCalled();
+  });
 });
 
 describe("playback of an existing note", () => {
