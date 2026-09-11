@@ -28,25 +28,28 @@ jest.mock("../../services/friendService", () => ({ getFriends: jest.fn().mockRes
 jest.mock("../../services/embedService", () => ({ createEmbedLink: jest.fn() }));
 jest.mock("../../services/workspaceService", () => ({ getWorkspace: jest.fn().mockResolvedValue(null) }));
 jest.mock("../../lib/errorReporting", () => ({ captureException: jest.fn() }));
-// Month 6 — the two functions under test here are ShareBoardModal's actual
+// Month 6 — the three functions under test here are ShareBoardModal's actual
 // export wiring: mocking the module they come from lets these tests assert
 // exactly what the component decided to call them with, the same altitude
 // BoardCanvas.test.tsx asserts its own content-creation call sites at.
 jest.mock("../../utils/recapExport", () => ({
   exportBoardPdf: jest.fn(),
   exportBoardPng: jest.fn(),
+  exportBoardSvg: jest.fn(),
 }));
 
 import React from "react";
+import { Platform } from "react-native";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react-native";
 import ShareBoardModal from "../ShareBoardModal";
 import { getDoc } from "firebase/firestore";
 import { makeDocSnap } from "../../test-utils/firestoreMock";
-import { exportBoardPdf, exportBoardPng } from "../../utils/recapExport";
+import { exportBoardPdf, exportBoardPng, exportBoardSvg } from "../../utils/recapExport";
 import type { DrawPath } from "../../types";
 
 const mockExportBoardPdf = exportBoardPdf as jest.Mock;
 const mockExportBoardPng = exportBoardPng as jest.Mock;
+const mockExportBoardSvg = exportBoardSvg as jest.Mock;
 
 const pathData: DrawPath = {
   id: "p1",
@@ -172,5 +175,44 @@ describe("ShareBoardModal — board export (Month 6, ROADMAP A3)", () => {
       resolveExport?.();
       await Promise.resolve();
     });
+  });
+});
+
+describe("ShareBoardModal — SVG export (Month 6, ROADMAP A3, web only)", () => {
+  const originalOS = Platform.OS;
+  afterEach(() => {
+    Platform.OS = originalOS;
+    jest.clearAllMocks();
+  });
+
+  it("does not render the SVG download action on native", () => {
+    Platform.OS = "ios";
+    renderModal();
+    expect(screen.queryByText("SVG")).toBeNull();
+  });
+
+  it("renders the SVG download action on web and wires it to exportBoardSvg with the converted elements and bounds", async () => {
+    Platform.OS = "web";
+    renderModal();
+    fireEvent.press(screen.getByText("SVG"));
+
+    await waitFor(() => expect(mockExportBoardSvg).toHaveBeenCalledTimes(1));
+    const [elements, bounds, opts] = mockExportBoardSvg.mock.calls[0];
+    expect(elements).toEqual(expect.arrayContaining([{ kind: "path", data: pathData }]));
+    expect(bounds).toEqual({ x: 0, y: 0, width: 100, height: 100 });
+    expect(opts).toEqual({ title: "My Board" });
+  });
+
+  it("surfaces exportBoardSvg's own thrown error message in the UI", async () => {
+    Platform.OS = "web";
+    mockExportBoardSvg.mockRejectedValueOnce(
+      new Error("SVG export isn't available on this platform yet")
+    );
+    renderModal();
+    fireEvent.press(screen.getByText("SVG"));
+
+    await waitFor(() =>
+      expect(screen.getByText("SVG export isn't available on this platform yet")).toBeTruthy()
+    );
   });
 });

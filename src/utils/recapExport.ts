@@ -424,3 +424,62 @@ export async function exportBoardPng(canvasRef: any, opts?: BoardPngExportOption
     });
   }
 }
+
+export interface BoardSvgExportOptions {
+  /** Used as the web download's filename (sanitized), mirroring
+   *  `exportBoardPdf`/`exportBoardPng`'s own `title`. */
+  title?: string;
+  /** Per-image-id `data:` URI overrides — see `svgExport.ts`'s IMAGE
+   *  PORTABILITY section. Any image element not covered here is fetched
+   *  automatically (see `buildImageHrefs`), same as `exportBoardPdf`, so a
+   *  downloaded SVG is self-contained rather than carrying live Storage
+   *  URLs a later opener may not have access to. */
+  imageHrefs?: Record<string, string>;
+}
+
+/**
+ * Downloads the board as a single, self-contained SVG document — WEB ONLY.
+ * Reuses `exportBoardPng`'s own web download mechanism (build an `<a
+ * download>`, click it, remove it — no new dependency, no WebView) and
+ * `exportBoardPdf`'s self-contained-image fetch (`buildImageHrefs`), for
+ * the same reason PDF needs it: a downloaded file is meant to outlive this
+ * session and this device, so a bare Storage-URL reference isn't good
+ * enough.
+ *
+ * NATIVE GAP — stated plainly, not a "verify later" caveat like PNG's G7
+ * one: this function is NOT implemented on native, and that isn't a risk to
+ * confirm, it's a real capability gap. `Sharing.shareAsync` needs a local
+ * file; writing an arbitrary SVG text file to one needs a filesystem-write
+ * dependency (`expo-file-system` is the obvious candidate) that is not
+ * currently a dependency of this app and has not been approved to add.
+ * PNG's native path sidesteps this via `expo-image-manipulator`, which only
+ * accepts raster sources (a local file or a base64 data URI), never an
+ * arbitrary text string; PDF's sidesteps it via `expo-print`, which renders
+ * HTML into its own PDF file rather than writing one directly. Neither
+ * trick extends to a raw SVG document. This throws on native — loudly,
+ * naming why — rather than silently no-op'ing, so a caller can't wire a
+ * dead button by accident. Adding `expo-file-system` (or another way to
+ * close this gap) is a dependency decision for a human, not this function.
+ */
+export async function exportBoardSvg(
+  elements: SvgExportElement[],
+  bounds: SvgExportBounds,
+  opts?: BoardSvgExportOptions
+): Promise<void> {
+  if (Platform.OS !== "web") {
+    throw new Error(
+      "SVG export isn't available on this platform yet: writing the file for the share sheet needs a filesystem dependency (e.g. expo-file-system) this app doesn't have, and adding one hasn't been approved."
+    );
+  }
+  if (typeof document === "undefined") return;
+  const imageHrefs = await buildImageHrefs(elements, opts?.imageHrefs);
+  const svg = toSvgDocument(elements, bounds, { imageHrefs });
+  const filename = `${(opts?.title ?? "board").replace(/[^a-z0-9-_]+/gi, "-")}.svg`;
+
+  const link = document.createElement("a");
+  link.href = svgPageDataUri(svg);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}

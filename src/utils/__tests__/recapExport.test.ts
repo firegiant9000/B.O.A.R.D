@@ -18,6 +18,7 @@ import {
   buildImageHrefs,
   exportBoardPdf,
   exportBoardPng,
+  exportBoardSvg,
   MAX_EXPORT_PAGES,
 } from "../recapExport";
 import { Session } from "../../types";
@@ -347,6 +348,24 @@ describe("exportBoardPdf", () => {
 
     global.fetch = originalFetch;
   });
+
+  it("succeeds when a board tiles into exactly MAX_EXPORT_PAGES pages — the boundary itself, not just one page over it", async () => {
+    Platform.OS = "ios";
+    (Print.printToFileAsync as jest.Mock).mockResolvedValue({ uri: "file:///cache/board.pdf" });
+    (Sharing.isAvailableAsync as jest.Mock).mockResolvedValue(true);
+
+    // Exactly MAX_EXPORT_PAGES single-row pages — `pages.length >
+    // MAX_EXPORT_PAGES` must stay false here. An off-by-one (`>=` instead of
+    // `>`) would refuse this legitimate export instead of only the illegal
+    // one above.
+    const bounds: SvgExportBounds = { x: 0, y: 0, width: A4.width * MAX_EXPORT_PAGES, height: A4.height };
+    await exportBoardPdf([pathEl], bounds);
+
+    expect(Print.printToFileAsync).toHaveBeenCalledTimes(1);
+    const html = (Print.printToFileAsync as jest.Mock).mock.calls[0][0].html as string;
+    expect((html.match(/class="page"/g) ?? []).length).toBe(MAX_EXPORT_PAGES);
+    expect(Sharing.shareAsync).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("exportBoardPng", () => {
@@ -400,5 +419,61 @@ describe("exportBoardPng", () => {
     (captureBoardImageForExport as jest.Mock).mockResolvedValue(null);
 
     await expect(exportBoardPng(null)).rejects.toThrow(/PNG export failed/);
+  });
+});
+
+describe("exportBoardSvg", () => {
+  const originalOS = Platform.OS;
+  afterEach(() => {
+    Platform.OS = originalOS;
+    jest.clearAllMocks();
+  });
+
+  const pathEl: SvgExportElement = {
+    kind: "path",
+    data: {
+      id: "p1",
+      boardId: "b1",
+      userId: "u1",
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      color: "#000000",
+      strokeWidth: 2,
+      tool: "pen",
+      createdAt: new Date(),
+    },
+  };
+  const bounds: SvgExportBounds = { x: 0, y: 0, width: 100, height: 100 };
+
+  it("throws on native, naming the missing filesystem dependency, rather than silently doing nothing", async () => {
+    Platform.OS = "ios";
+    await expect(exportBoardSvg([pathEl], bounds)).rejects.toThrow(/filesystem/i);
+  });
+
+  it("triggers a browser download of the actual serialized SVG document on web, not just a button press", async () => {
+    Platform.OS = "web";
+    const link = { click: jest.fn(), href: "", download: "" };
+    const appendChild = jest.fn();
+    const removeChild = jest.fn();
+    (global as any).document = {
+      createElement: jest.fn(() => link),
+      body: { appendChild, removeChild },
+    };
+
+    await exportBoardSvg([pathEl], bounds, { title: "My Board" });
+
+    expect(link.download).toBe("My-Board.svg");
+    expect(link.href).toContain("data:image/svg+xml");
+    // Decode the data URI back to prove the REAL toSvgDocument output
+    // reached the download, not merely that some href was set.
+    const encoded = link.href.split(",").slice(1).join(",");
+    const svg = decodeURIComponent(encoded);
+    expect(svg).toContain("<path");
+    expect(svg).toContain('d="M 0 0 L 10 10"');
+    expect(link.click).toHaveBeenCalled();
+
+    delete (global as any).document;
   });
 });

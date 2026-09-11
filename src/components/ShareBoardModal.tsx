@@ -23,7 +23,7 @@ import { BoardRole, WorkspaceRole } from "../types";
 import { captureException } from "../lib/errorReporting";
 import { Bounds } from "../lib/viewport";
 import { BoardElementSets, toSvgExportElements, SvgExportBounds } from "../lib/svgExport";
-import { exportBoardPdf, exportBoardPng } from "../utils/recapExport";
+import { exportBoardPdf, exportBoardPng, exportBoardSvg } from "../utils/recapExport";
 
 interface Friend {
   uid: string;
@@ -121,9 +121,10 @@ export default function ShareBoardModal({
   const [wsMembers, setWsMembers] = useState<Record<string, WorkspaceRole>>({});
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [roleBusyUid, setRoleBusyUid] = useState<string | null>(null);
-  // Month 6 — board export (PNG/PDF). `null` idle; the in-progress format
-  // while busy, so the two buttons can independently show their own spinner.
-  const [exportBusy, setExportBusy] = useState<"png" | "pdf" | null>(null);
+  // Month 6 — board export (PNG/PDF/SVG). `null` idle; the in-progress
+  // format while busy, so the buttons can independently show their own
+  // spinner and none of them can be pressed mid-export.
+  const [exportBusy, setExportBusy] = useState<"png" | "pdf" | "svg" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   // Sync member/role lists when props change
@@ -261,6 +262,28 @@ export default function ShareBoardModal({
     } catch (e: any) {
       captureException(e, { op: "ShareBoardModal.exportPng" });
       setExportError(e?.message ?? "Couldn't export the board as a PNG.");
+    } finally {
+      setExportBusy(null);
+    }
+  };
+
+  // Month 6 (ROADMAP A3) — web-only: `exportBoardSvg` throws on native (see
+  // its own doc comment) rather than silently no-op'ing, so this button is
+  // only ever rendered on web in the first place (below) — this handler
+  // never runs on native.
+  const handleExportSvg = async () => {
+    const bounds = buildExportBounds();
+    if (!bounds) {
+      setExportError("Nothing to export yet — add some content to the board first.");
+      return;
+    }
+    setExportError(null);
+    setExportBusy("svg");
+    try {
+      await exportBoardSvg(toSvgExportElements(boardElements), bounds, { title: boardTitle });
+    } catch (e: any) {
+      captureException(e, { op: "ShareBoardModal.exportSvg" });
+      setExportError(e?.message ?? "Couldn't export the board as an SVG.");
     } finally {
       setExportBusy(null);
     }
@@ -414,7 +437,11 @@ export default function ShareBoardModal({
           </Text>
 
           {/* Month 6 (ROADMAP A3 — Print + export polish). PNG rasterizes the
-              live canvas; PDF tiles the board across A4 pages. Both platforms. */}
+              live canvas; PDF tiles the board across A4 pages; SVG downloads
+              the same standalone document `toSvgDocument` produces — web
+              only for now (see exportBoardSvg's own doc comment for exactly
+              why native isn't wired: a real, stated gap, not a "coming
+              soon"). PNG/PDF work on both platforms. */}
           <Text style={styles.label}>Export Board</Text>
           <View style={styles.exportRow}>
             <TouchableOpacity
@@ -441,6 +468,20 @@ export default function ShareBoardModal({
               )}
               <Text style={styles.exportBtnText}>PDF</Text>
             </TouchableOpacity>
+            {Platform.OS === "web" && (
+              <TouchableOpacity
+                style={styles.exportBtn}
+                onPress={handleExportSvg}
+                disabled={exportBusy !== null}
+              >
+                {exportBusy === "svg" ? (
+                  <ActivityIndicator size="small" color="#2563eb" />
+                ) : (
+                  <Ionicons name="code-slash-outline" size={16} color="#2563eb" />
+                )}
+                <Text style={styles.exportBtnText}>SVG</Text>
+              </TouchableOpacity>
+            )}
           </View>
           {exportError && (
             <Text style={[styles.hint, styles.errorText]}>{exportError}</Text>
