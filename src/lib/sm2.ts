@@ -12,14 +12,18 @@ export interface Card {
   repetitions: number;
   intervalDays: number;
   easeFactor: number;
-  dueAtMs?: number;
+  dueAtMs: number;
 }
 
-export const INITIAL_CARD: Card = {
+/** Callers must guarantee that numeric fields are finite (not NaN or Infinity).
+ *  This function does not validate them; Task 30 validates cards loaded from storage. */
+
+export const INITIAL_CARD: Card = Object.freeze({
   repetitions: 0,
   intervalDays: 0,
   easeFactor: 2.5,
-};
+  dueAtMs: 0,
+});
 
 /**
  * Schedules the next review for a card using the SM-2 algorithm.

@@ -49,4 +49,26 @@ describe("SM-2", () => {
     expect(() => review(INITIAL_CARD, 6 as never, T)).toThrow();
     expect(() => review(INITIAL_CARD, -1 as never, T)).toThrow();
   });
+
+  it("computes dueAtMs correctly on a second review", () => {
+    const c = review(review(INITIAL_CARD, 5, T), 5, T);
+    expect(c.dueAtMs).toBe(T + 6 * DAY);
+  });
+
+  it("computes dueAtMs correctly on a third review with ease factor multiplier", () => {
+    let c = review(review(review(INITIAL_CARD, 5, T), 5, T), 5, T);
+    expect(c.dueAtMs).toBe(T + c.intervalDays * DAY);
+  });
+
+  it("rejects NaN quality", () => {
+    expect(() => review(INITIAL_CARD, NaN, T)).toThrow();
+  });
+
+  it("rejects Infinity quality", () => {
+    expect(() => review(INITIAL_CARD, Infinity as never, T)).toThrow();
+  });
+
+  it("rejects non-integer quality", () => {
+    expect(() => review(INITIAL_CARD, 3.5 as never, T)).toThrow();
+  });
 });
