@@ -8,6 +8,18 @@ import AudioAffordance from "./AudioAffordance";
 import { Bounds, Point, Viewport } from "../../lib/viewport";
 import { AudioElement, Plan, TextElement, TextNote } from "../../types";
 
+// Month 5 — an existing voice note, paired with the LIVE board-space
+// position its badge should render at. The caller (BoardCanvas) resolves
+// this from the anchor element's current bounds (`boxOfElement`), not from
+// the note's own persisted `x`/`y` — see AudioElement's type comment for why
+// those aren't trustworthy for rendering. This layer stays "dumb": it just
+// places what it's given.
+export interface PositionedAudioNote {
+  note: AudioElement;
+  x: number;
+  y: number;
+}
+
 /**
  * The board-space overlay layer (Month 5/6 Task 1 — extracted verbatim from
  * `app/board/[id].tsx`).
@@ -80,9 +92,10 @@ interface BoardOverlayLayerProps {
    *  (see audioService.canRecordVoiceNotes's header). */
   plan: Plan;
   /** Every existing voice note the viewer can see (blocked-user filtered by
-   *  the caller); rendered as a play/pause + long-press-delete badge at each
-   *  note's own persisted `x`/`y` — not viewport-culled, like `commentPins`. */
-  audioNotes: AudioElement[];
+   *  the caller), each paired with its LIVE render position; rendered as a
+   *  play/pause + long-press-delete badge — not viewport-culled, like
+   *  `commentPins`. */
+  audioNotes: PositionedAudioNote[];
   /**
    * The record-entry-point affordance: set only while exactly one element is
    * selected AND it has no voice note yet (the caller computes both — this
@@ -145,9 +158,18 @@ export default function BoardOverlayLayer({
       }
     : undefined;
 
-  // Month 5 — counter-scale for the voice-note badges, same technique
-  // CommentPinLayer uses internally: divide out the board's zoom so the icon
-  // stays a constant on-screen size instead of shrinking/growing with it.
+  // Month 5, fix round 1 (item 11) — counter-scale for the voice-note
+  // badges. Divides out the board's zoom so the icon stays a constant
+  // on-screen size instead of shrinking/growing with it, matching
+  // CommentPinLayer's OWN technique exactly: that layer scales the pin's
+  // rendered *dimensions* (width/height/fontSize, all multiplied by `inv`)
+  // on a plain `left`/`top`-positioned box, never a `transform: scale`. RN's
+  // transform scale is center-origin, so applying it to a wrapping View (an
+  // earlier version of this code did) drifts the badge's visual top-left
+  // away from its true board-space `(x, y)` at any zoom ≠ 1 — the wrapper's
+  // own center stays fixed, not its corner. `AudioAffordance`'s own `scale`
+  // prop applies this the same way CommentPinLayer does, to its own
+  // dimensions and icon size.
   const audioInv = 1 / (viewport.scale || 1);
 
   return (
@@ -205,38 +227,36 @@ export default function BoardOverlayLayer({
           />
         )}
         {/* Month 5 — voice notes (ROADMAP.md:583-587). Every existing note
-            renders as a play/pause + long-press-delete badge at its own
-            persisted position ("Tap a speaker icon on the element to
-            play"). The record-entry-point (`newVoiceNoteAnchor`, set only
-            while exactly one element is selected and has no note yet) is
-            the same component in its `audio={null}` state. Counter-scaled
-            like the comment pins above so it doesn't shrink/grow with zoom. */}
-        {audioNotes.map((note) => (
-          <View
-            key={note.id}
-            pointerEvents="box-none"
-            style={{ position: "absolute", left: note.x, top: note.y, transform: [{ scale: audioInv }] }}
-          >
+            renders as a play/pause + long-press-delete badge at its LIVE
+            resolved position ("Tap a speaker icon on the element to play").
+            The record-entry-point (`newVoiceNoteAnchor`, set only while
+            exactly one element is selected and has no note yet) is the same
+            component in its `audio={null}` state. Positioned with plain
+            `left`/`top` (no transform) — see `audioInv`'s comment for why. */}
+        {audioNotes.map(({ note, x, y }) => (
+          <View key={note.id} pointerEvents="box-none" style={{ position: "absolute", left: x, top: y }}>
             <AudioAffordance
               boardId={boardId}
               anchorElementId={note.anchorElementId}
               userId={currentUserId ?? ""}
-              x={note.x}
-              y={note.y}
+              x={x}
+              y={y}
               plan={plan}
+              scale={audioInv}
               audio={note}
             />
           </View>
         ))}
         {newVoiceNoteAnchor && (
           <View
+            // Fix round 1, item 4: keyed by the anchor's own element id so
+            // selecting a DIFFERENT element mid-recording unmounts this
+            // instance instead of React reusing it with a new
+            // `anchorElementId` prop — without this, a manual stop would
+            // save the in-flight recording against the wrong element.
+            key={newVoiceNoteAnchor.elementId}
             pointerEvents="box-none"
-            style={{
-              position: "absolute",
-              left: newVoiceNoteAnchor.x,
-              top: newVoiceNoteAnchor.y,
-              transform: [{ scale: audioInv }],
-            }}
+            style={{ position: "absolute", left: newVoiceNoteAnchor.x, top: newVoiceNoteAnchor.y }}
           >
             <AudioAffordance
               boardId={boardId}
@@ -245,6 +265,7 @@ export default function BoardOverlayLayer({
               x={newVoiceNoteAnchor.x}
               y={newVoiceNoteAnchor.y}
               plan={plan}
+              scale={audioInv}
               audio={null}
             />
           </View>

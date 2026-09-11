@@ -52,6 +52,13 @@ interface BoardCanvasProps {
    *  BoardOverlayLayer). Passed down rather than read here so this stays
    *  props-only, same as every other value on this interface. */
   plan: Plan;
+  /** Effective board role can write (doc.canEdit, app/board/[id].tsx). Gates
+   *  the voice-note record-entry-point (`newVoiceNoteAnchor` below): without
+   *  it, a viewer/commenter could see the mic and record, uploading real
+   *  Storage bytes before firestore.rules' editor-only `audio` write denies
+   *  the doc — `saveVoiceNote` cleans that specific case up, but the fix on
+   *  this end is to not offer the affordance to a role that can't use it. */
+  canEdit: boolean;
 
   /** Phase 2 pan/zoom transform; false renders at identity (the rollback path). */
   enablePanZoom: boolean;
@@ -97,6 +104,7 @@ export default function BoardCanvas({
   backgroundTemplate,
   blockedIds,
   plan,
+  canEdit,
   enablePanZoom,
   viewport,
   canvasSize,
@@ -386,15 +394,21 @@ export default function BoardCanvas({
   // Month 5 — voice notes' record-entry-point (ROADMAP.md:583-587). Live
   // only while exactly one element is selected with the select tool, not
   // mid-transform (the selection box is moving/resizing, same guard as the
-  // selection action bar's `showSelectionActions`), and that element has no
-  // note yet — `AudioAffordance` itself is what renders the existing note's
-  // play badge once one exists, from `elements.visible.audioNotes` below.
-  // Positioned at the selection box's top-right corner + a small margin so
-  // it never sits on top of `SelectionOverlay`'s own action bar/handles.
+  // selection action bar's `showSelectionActions`), the viewer can actually
+  // write to this board (`canEdit` — a viewer/commenter would otherwise see
+  // a mic that uploads real bytes before firestore.rules' editor-only
+  // `audio` write denies the doc; see the `canEdit` prop's own comment), and
+  // that element has no note yet — `AudioAffordance` itself is what renders
+  // the existing note's play badge once one exists, from
+  // `elements.visible.audioNotes` below (playback is never `canEdit`-gated —
+  // any board member may listen). Positioned at the selection box's
+  // top-right corner + a small margin so it never sits on top of
+  // `SelectionOverlay`'s own action bar/handles.
   const singleSelectedId =
     tools.activeTool === "select" &&
     !inGroupGesture &&
     !presenterLocksContentCreation &&
+    canEdit &&
     elements.selection.count === 1
       ? elements.selection.selectedId
       : null;
@@ -405,6 +419,21 @@ export default function BoardCanvas({
     singleSelectedId && !selectedHasVoiceNote && elements.overlayBounds
       ? { elementId: singleSelectedId, x: elements.overlayBounds.maxX + 8, y: elements.overlayBounds.minY }
       : null;
+
+  // Month 5, fix round 1 (item 7) — an existing note's badge must track its
+  // anchor, not stay frozen at the position recorded at creation time (see
+  // AudioElement's type comment). `boxOfElement` already resolves ANY
+  // element kind's live box by id (kind omitted, exactly like
+  // `anchorElementId` is kind-agnostic); positioned the same way as
+  // `newVoiceNoteAnchor` above (top-right corner + margin) so a note looks
+  // identical before and after it's actually saved. A note whose anchor no
+  // longer exists (deleted, cascade hasn't caught up yet, or hidden by the
+  // blocked-user filter `boxOfElement` reads through) renders nothing rather
+  // than a stale badge with no element under it.
+  const positionedAudioNotes = elements.visible.audioNotes.flatMap((note) => {
+    const box = elements.boxOfElement(note.anchorElementId);
+    return box ? [{ note, x: box.maxX + 8, y: box.minY }] : [];
+  });
 
   return (
     <View
@@ -489,7 +518,7 @@ export default function BoardCanvas({
         onPressPin={comments.openThread}
         boardId={boardId}
         plan={plan}
-        audioNotes={elements.visible.audioNotes}
+        audioNotes={positionedAudioNotes}
         newVoiceNoteAnchor={newVoiceNoteAnchor}
       />
       {/* Phase 6 — live cursors. A separate, self-subscribing top layer so

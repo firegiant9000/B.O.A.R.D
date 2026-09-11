@@ -4,12 +4,17 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   useAudioRecorder,
   useAudioPlayer,
+  useAudioPlayerStatus,
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from "expo-audio";
 import * as audioService from "../../services/audioService";
 import { AudioElement, Plan } from "../../types";
+
+// Base (scale: 1) dimensions — see the `scale` prop's comment.
+const BASE_BUTTON_SIZE = 28;
+const BASE_ICON_SIZE = 16;
 
 export interface AudioAffordanceProps {
   boardId: string;
@@ -18,6 +23,14 @@ export interface AudioAffordanceProps {
   x: number;
   y: number;
   plan: Plan;
+  /** Counter-scale factor (typically `1 / viewport.scale`, from the caller)
+   *  so the badge holds a constant on-screen size through zoom — same
+   *  technique CommentPinLayer uses, applied to THIS component's own
+   *  dimensions/icon size (never a wrapping `transform: scale`, which is
+   *  center-origin in RN and drifts the badge off its board-space position
+   *  at any zoom ≠ 1). Defaults to 1 (no scaling) for callers that don't
+   *  need it. */
+  scale?: number;
   /** The anchor's existing voice note, or `null` when none has been recorded
    *  yet. Owned by the caller's own subscription (mirrors every other
    *  element kind on this board) — this component never subscribes itself. */
@@ -61,17 +74,27 @@ export default function AudioAffordance({
   x,
   y,
   plan,
+  scale = 1,
   audio,
   onSaved,
   onDeleted,
   onUpgradeRequested,
 }: AudioAffordanceProps) {
   const canRecord = audioService.canRecordVoiceNotes(plan);
+  const buttonSize = BASE_BUTTON_SIZE * scale;
+  const iconSize = BASE_ICON_SIZE * scale;
+  const sizeStyle = { width: buttonSize, height: buttonSize, borderRadius: buttonSize / 2 };
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const player = useAudioPlayer(audio?.downloadUrl ?? null);
+  // Item 6, fix round 1: `playing` here tracks the ACTUAL player, unlike the
+  // local `useState` this replaced (toggled only by taps, with nothing ever
+  // resetting it when playback reached the end on its own — the icon stuck
+  // on "pause" and the very next tap called `player.pause()` on an already-
+  // finished player, so replaying a note that had ended took two taps).
+  const playerStatus = useAudioPlayerStatus(player);
+  const isPlaying = playerStatus.playing;
 
   const [status, setStatus] = useState<"idle" | "recording" | "saving">("idle");
-  const [isPlaying, setIsPlaying] = useState(false);
   const startedAtRef = useRef<number | null>(null);
   const autoStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,11 +105,28 @@ export default function AudioAffordance({
     }
   }, []);
 
-  // If this affordance unmounts mid-recording (the user navigates away, the
-  // element it's anchored to gets deleted, ...) the 60s auto-stop timer must
-  // not fire afterward — it would call `recorder.stop()`/`saveVoiceNote` for
-  // a component nobody can see the result of, and leak a live timer besides.
-  useEffect(() => clearAutoStop, [clearAutoStop]);
+  // If this affordance unmounts mid-recording — the user taps empty canvas
+  // (clearing the selection), selects a different element (this instance is
+  // now keyed by anchor id in BoardOverlayLayer, so a changed selection
+  // unmounts rather than reuses it), or the anchor element itself gets
+  // deleted — the 60s auto-stop timer must not fire afterward (it would call
+  // `stopAndSave` for a component nobody can see the result of), AND the
+  // native recorder must actually be told to stop. Before this fix only the
+  // timer was cleared: the recorder kept running with nothing left to ever
+  // call `.stop()` on it, discarding the in-progress recording with no
+  // feedback and leaving the native recording session open. Checking
+  // `startedAtRef` (not `status`, which this cleanup's closure could see
+  // stale) is the same "are we mid-recording" signal `stopAndSave` itself
+  // uses. Fire-and-forget: the component is gone, so there's nothing to
+  // upload the result to and no error UI left to show.
+  useEffect(() => {
+    return () => {
+      clearAutoStop();
+      if (startedAtRef.current != null) {
+        recorder.stop().catch(() => undefined);
+      }
+    };
+  }, [clearAutoStop, recorder]);
 
   // Stops the recorder (via the recorder's own `.stop()`, whether called by
   // a tap or by the 60s auto-stop timer below) and uploads what was
@@ -102,34 +142,44 @@ export default function AudioAffordance({
     startedAtRef.current = null;
     if (startedAt == null) return;
     try {
-      await recorder.stop();
-    } catch (e) {
-      setStatus("idle");
-      Alert.alert("Recording failed", e instanceof Error ? e.message : "Please try again.");
-      return;
-    }
-    const uri = recorder.uri;
-    if (!uri) {
-      setStatus("idle");
-      return;
-    }
-    const durationMs = Math.min(Date.now() - startedAt, audioService.MAX_DURATION_MS);
-    setStatus("saving");
-    try {
-      const id = await audioService.saveVoiceNote({
-        boardId,
-        anchorElementId,
-        uri,
-        durationMs,
-        userId,
-        x,
-        y,
-      });
-      onSaved?.(id);
-    } catch (e) {
-      Alert.alert("Couldn't save voice note", e instanceof Error ? e.message : "Please try again.");
+      try {
+        await recorder.stop();
+      } catch (e) {
+        setStatus("idle");
+        Alert.alert("Recording failed", e instanceof Error ? e.message : "Please try again.");
+        return;
+      }
+      const uri = recorder.uri;
+      if (!uri) {
+        setStatus("idle");
+        return;
+      }
+      const durationMs = Math.min(Date.now() - startedAt, audioService.MAX_DURATION_MS);
+      setStatus("saving");
+      try {
+        const id = await audioService.saveVoiceNote({
+          boardId,
+          anchorElementId,
+          uri,
+          durationMs,
+          userId,
+          x,
+          y,
+        });
+        onSaved?.(id);
+      } catch (e) {
+        Alert.alert("Couldn't save voice note", e instanceof Error ? e.message : "Please try again.");
+      } finally {
+        setStatus("idle");
+      }
     } finally {
-      setStatus("idle");
+      // Item 5, fix round 1: `startRecording` sets `allowsRecording: true`,
+      // which on iOS maps to the `.playAndRecord` audio session category and
+      // routes output to the receiver at low volume — so playback of ANY
+      // note (not just this one) stays quiet until this resets. Reset on
+      // every exit path out of a started recording, success or failure —
+      // best-effort, since there's nothing more useful to do if it fails.
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     }
   }, [recorder, clearAutoStop, boardId, anchorElementId, userId, x, y, onSaved]);
 
@@ -169,10 +219,8 @@ export default function AudioAffordance({
   const togglePlayback = useCallback(() => {
     if (isPlaying) {
       player.pause();
-      setIsPlaying(false);
     } else {
       player.play();
-      setIsPlaying(true);
     }
   }, [player, isPlaying]);
 
@@ -180,7 +228,6 @@ export default function AudioAffordance({
     if (!audio) return;
     if (isPlaying) {
       player.pause();
-      setIsPlaying(false);
     }
     await audioService.deleteVoiceNote(boardId, audio.id);
     onDeleted?.();
@@ -192,11 +239,11 @@ export default function AudioAffordance({
         testID="audio-affordance-play"
         accessibilityRole="button"
         accessibilityLabel={isPlaying ? "Pause voice note" : "Play voice note"}
-        style={[styles.button, styles.playButton]}
+        style={[styles.button, sizeStyle, styles.playButton]}
         onPress={togglePlayback}
         onLongPress={handleDelete}
       >
-        <Ionicons name={isPlaying ? "pause" : "volume-high"} size={16} color="#fff" />
+        <Ionicons name={isPlaying ? "pause" : "volume-high"} size={iconSize} color="#fff" />
       </TouchableOpacity>
     );
   }
@@ -207,10 +254,10 @@ export default function AudioAffordance({
         testID="audio-affordance-locked"
         accessibilityRole="button"
         accessibilityLabel="Voice notes are a Pro feature"
-        style={[styles.button, styles.lockedButton]}
+        style={[styles.button, sizeStyle, styles.lockedButton]}
         onPress={showUpgradePrompt}
       >
-        <Ionicons name="mic-off-outline" size={16} color="#9ca3af" />
+        <Ionicons name="mic-off-outline" size={iconSize} color="#9ca3af" />
       </TouchableOpacity>
     );
   }
@@ -221,19 +268,18 @@ export default function AudioAffordance({
       accessibilityRole="button"
       accessibilityLabel={status === "recording" ? "Stop recording" : "Record a voice note"}
       disabled={status === "saving"}
-      style={[styles.button, status === "recording" ? styles.recordingButton : styles.recordButton]}
+      style={[styles.button, sizeStyle, status === "recording" ? styles.recordingButton : styles.recordButton]}
       onPress={status === "recording" ? stopAndSave : startRecording}
     >
-      <Ionicons name={status === "recording" ? "square" : "mic-outline"} size={16} color="#fff" />
+      <Ionicons name={status === "recording" ? "square" : "mic-outline"} size={iconSize} color="#fff" />
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
+  // Dimensions (width/height/borderRadius) come from `sizeStyle`, computed
+  // per-render from the `scale` prop — see BASE_BUTTON_SIZE.
   button: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },

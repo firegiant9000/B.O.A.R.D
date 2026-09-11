@@ -290,6 +290,7 @@ interface RenderOpts {
   ai?: Partial<BoardAI>;
   comments?: Partial<BoardComments>;
   plan?: Plan;
+  canEdit?: boolean;
 }
 
 function renderCanvas(opts: RenderOpts) {
@@ -307,6 +308,7 @@ function renderCanvas(opts: RenderOpts) {
       backgroundTemplate="blank"
       blockedIds={[]}
       plan={opts.plan ?? "free"}
+      canEdit={opts.canEdit ?? true}
       enablePanZoom={true}
       viewport={{ x: 0, y: 0, scale: 1 }}
       canvasSize={{ width: 800, height: 600 }}
@@ -760,29 +762,56 @@ function selectionOf(id: string | null, count: number) {
 const OVERLAY_BOUNDS = { minX: 10, minY: 20, maxX: 50, maxY: 60 };
 
 describe("BoardCanvas — voice notes: plan and existing notes pass through", () => {
-  it("passes the plan and elements.visible.audioNotes straight through", () => {
-    const audioNotes = [
-      {
-        id: "a1",
-        schemaVersion: 1 as const,
-        boardId: "board1",
-        userId: "self",
-        anchorElementId: "el1",
-        storagePath: "boards/board1/audio/a1/note.m4a",
-        downloadUrl: "https://dl/a1",
-        durationMs: 3000,
-        x: 5,
-        y: 5,
-        createdAt: new Date(),
-      },
-    ];
+  const audioNotes = [
+    {
+      id: "a1",
+      schemaVersion: 1 as const,
+      boardId: "board1",
+      userId: "self",
+      anchorElementId: "el1",
+      storagePath: "boards/board1/audio/a1/note.m4a",
+      downloadUrl: "https://dl/a1",
+      durationMs: 3000,
+      // Deliberately far from ANCHOR_BOX below — item 7 (fix round 1) means
+      // these persisted values must NOT be what ends up on screen.
+      x: 999,
+      y: 999,
+      createdAt: new Date(),
+    },
+  ];
+  const ANCHOR_BOX = { minX: 10, minY: 20, maxX: 50, maxY: 60 };
+
+  it("passes the plan and boardId straight through", () => {
     renderCanvas({
       plan: "pro",
       elements: { visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes } as any },
     });
     expect(mockOverlayProps.plan).toBe("pro");
-    expect(mockOverlayProps.audioNotes).toBe(audioNotes);
     expect(mockOverlayProps.boardId).toBe("board1");
+  });
+
+  it("resolves each note's render position from its anchor's LIVE bounds via boxOfElement, not from the note's own persisted x/y", () => {
+    renderCanvas({
+      plan: "pro",
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes } as any,
+        boxOfElement: jest.fn((id: string) => (id === "el1" ? ANCHOR_BOX : null)),
+      },
+    });
+    expect(mockOverlayProps.audioNotes).toEqual([
+      { note: audioNotes[0], x: ANCHOR_BOX.maxX + 8, y: ANCHOR_BOX.minY },
+    ]);
+  });
+
+  it("omits a note whose anchor can't be found (boxOfElement returns null) instead of rendering it at a stale position", () => {
+    renderCanvas({
+      plan: "pro",
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes } as any,
+        boxOfElement: jest.fn(() => null),
+      },
+    });
+    expect(mockOverlayProps.audioNotes).toEqual([]);
   });
 });
 
@@ -866,6 +895,18 @@ describe("BoardCanvas — voice notes: the record-entry-point (newVoiceNoteAncho
     renderCanvas({
       tools: { activeTool: "select" },
       collab: { presenterLocksContentCreation: true },
+      elements: { selection: selectionOf("el1", 1) as any, overlayBounds: OVERLAY_BOUNDS },
+    });
+    expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+
+  // Fix round 1, item 3 — a viewer/commenter must never see the mic: the
+  // upload would succeed (storage.rules allows any board member) before
+  // firestore.rules' editor-only `audio` write denies the doc.
+  it("is null when the viewer cannot edit the board (canEdit: false)", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      canEdit: false,
       elements: { selection: selectionOf("el1", 1) as any, overlayBounds: OVERLAY_BOUNDS },
     });
     expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();

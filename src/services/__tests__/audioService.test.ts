@@ -54,7 +54,7 @@ describe("saveVoiceNote", () => {
     expect(id).toMatch(/^[A-Za-z0-9]{20}$/);
   });
 
-  it("uploads to boards/{boardId}/audio/{audioId}/note.m4a as audio/m4a", async () => {
+  it("uploads to boards/{boardId}/audio/{audioId}/note.m4a with a registered audio MIME type", async () => {
     const id = await saveVoiceNote({
       boardId: "b1",
       anchorElementId: "e1",
@@ -64,7 +64,11 @@ describe("saveVoiceNote", () => {
     expect(uploadBytes).toHaveBeenCalledTimes(1);
     const [ref, , options] = uploadBytes.mock.calls[0];
     expect(ref.path).toBe(`boards/b1/audio/${id}/note.m4a`);
-    expect(options).toEqual({ contentType: "audio/m4a" });
+    // "audio/m4a" isn't a registered MIME type; players expect audio/mp4 (or
+    // audio/x-m4a) as the Content-Type for an .m4a file. Either way it must
+    // still satisfy storage.rules' isValidAudioUpload `audio/.*` match.
+    expect(options).toEqual({ contentType: "audio/mp4" });
+    expect((options as { contentType: string }).contentType).toMatch(/^audio\//);
   });
 
   it("writes a Firestore doc carrying schemaVersion 1, the anchor id, and the resolved download URL", async () => {
@@ -100,6 +104,39 @@ describe("saveVoiceNote", () => {
     ).rejects.toThrow(/60/);
     expect(uploadBytes).not.toHaveBeenCalled();
     expect(setDoc).not.toHaveBeenCalled();
+  });
+
+  // Item 3, fix round 1: firestore.rules' `audio` match only allows an
+  // editor to write the doc, while storage.rules' matching block allows any
+  // board member to upload — so a doc-write denial (a viewer somehow
+  // reaching this, or a real permission error) must not strand the bytes
+  // that already landed in Storage.
+  it("deletes the just-uploaded Storage object when the doc write fails", async () => {
+    setDoc.mockRejectedValueOnce(new Error("permission-denied"));
+    await expect(
+      saveVoiceNote({ boardId: "b1", anchorElementId: "e1", uri: "file://x", durationMs: 5_000 })
+    ).rejects.toThrow(/permission-denied/);
+    expect(uploadBytes).toHaveBeenCalledTimes(1);
+    const uploadedPath = uploadBytes.mock.calls[0][0].path;
+    expect(deleteObject).toHaveBeenCalledTimes(1);
+    expect(deleteObject.mock.calls[0][0].path).toBe(uploadedPath);
+  });
+
+  it("deletes the just-uploaded Storage object when resolving the download URL fails", async () => {
+    (storage.getDownloadURL as jest.Mock).mockRejectedValueOnce(new Error("network error"));
+    await expect(
+      saveVoiceNote({ boardId: "b1", anchorElementId: "e1", uri: "file://x", durationMs: 5_000 })
+    ).rejects.toThrow(/network error/);
+    expect(deleteObject).toHaveBeenCalledTimes(1);
+    expect(setDoc).not.toHaveBeenCalled();
+  });
+
+  it("still rejects with the original error even if the Storage cleanup itself fails", async () => {
+    setDoc.mockRejectedValueOnce(new Error("permission-denied"));
+    deleteObject.mockRejectedValueOnce(new Error("cleanup also failed"));
+    await expect(
+      saveVoiceNote({ boardId: "b1", anchorElementId: "e1", uri: "file://x", durationMs: 5_000 })
+    ).rejects.toThrow(/permission-denied/);
   });
 });
 
@@ -184,6 +221,39 @@ describe("subscribeToBoardAudio", () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0]).toMatchObject({ id: "a1", schemaVersion: 1, anchorElementId: "e1" });
     expect(returned).toBe(unsub);
+  });
+
+  // Item 7, fix round 1: x/y are a write-time snapshot the live canvas no
+  // longer trusts for the badge's position (derived from the anchor's
+  // current bounds instead) — a doc missing them is still a usable note,
+  // not a malformed one that should be dropped.
+  it("maps a doc missing x/y (defaults to 0), unlike a doc missing anchorElementId/storagePath/downloadUrl", () => {
+    const unsub = jest.fn();
+    (fs.onSnapshot as jest.Mock).mockImplementationOnce((_q, cb) => {
+      cb(
+        makeQuerySnap([
+          [
+            "a1",
+            {
+              boardId: "b1",
+              userId: "u1",
+              anchorElementId: "e1",
+              storagePath: "boards/b1/audio/a1/note.m4a",
+              downloadUrl: "https://dl/note",
+              durationMs: 5000,
+              createdAt: ts(new Date()),
+              // x/y intentionally absent
+            },
+          ],
+        ])
+      );
+      return unsub;
+    });
+    const onChange = jest.fn();
+    audioService.subscribeToBoardAudio("b1", onChange);
+    const emitted = onChange.mock.calls[0][0];
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ id: "a1", x: 0, y: 0 });
   });
 });
 

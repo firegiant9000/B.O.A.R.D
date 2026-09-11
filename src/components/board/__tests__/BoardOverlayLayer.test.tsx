@@ -19,7 +19,7 @@ jest.mock("../AudioAffordance", () => ({
 
 import React from "react";
 import { render } from "@testing-library/react-native";
-import BoardOverlayLayer from "../BoardOverlayLayer";
+import BoardOverlayLayer, { PositionedAudioNote } from "../BoardOverlayLayer";
 import { AudioElement } from "../../../types";
 
 /**
@@ -69,7 +69,7 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof BoardOverlayLa
     onPressPin: jest.fn(),
     boardId: "board1",
     plan: "pro" as const,
-    audioNotes: [] as AudioElement[],
+    audioNotes: [] as PositionedAudioNote[],
     newVoiceNoteAnchor: null,
     ...overrides,
   };
@@ -84,18 +84,24 @@ const NOTE: AudioElement = {
   storagePath: "boards/board1/audio/a1/note.m4a",
   downloadUrl: "https://dl/a1",
   durationMs: 4000,
-  x: 30,
-  y: 40,
+  // Deliberately different from the positioned x/y below — item 7 (fix
+  // round 1) means the note's own persisted x/y must never reach the render.
+  x: 999,
+  y: 999,
   createdAt: new Date(),
 };
+
+// The caller (BoardCanvas) resolves this from the anchor's live bounds; this
+// layer just places what it's handed.
+const POSITIONED_NOTE: PositionedAudioNote = { note: NOTE, x: 30, y: 40 };
 
 beforeEach(() => {
   mockAudioAffordanceCalls.length = 0;
 });
 
 describe("existing voice notes", () => {
-  it("renders one AudioAffordance per note, in playback mode, at its own x/y", () => {
-    render(<BoardOverlayLayer {...baseProps({ audioNotes: [NOTE] })} />);
+  it("renders one AudioAffordance per note, in playback mode, at the caller-resolved position (not the note's own x/y)", () => {
+    render(<BoardOverlayLayer {...baseProps({ audioNotes: [POSITIONED_NOTE] })} />);
     expect(mockAudioAffordanceCalls).toHaveLength(1);
     expect(mockAudioAffordanceCalls[0]).toMatchObject({
       boardId: "board1",
@@ -114,8 +120,9 @@ describe("existing voice notes", () => {
   });
 
   it("renders one AudioAffordance per note for multiple notes", () => {
-    const note2: AudioElement = { ...NOTE, id: "a2", anchorElementId: "el2", x: 99, y: 1 };
-    render(<BoardOverlayLayer {...baseProps({ audioNotes: [NOTE, note2] })} />);
+    const note2: AudioElement = { ...NOTE, id: "a2", anchorElementId: "el2" };
+    const positioned2: PositionedAudioNote = { note: note2, x: 99, y: 1 };
+    render(<BoardOverlayLayer {...baseProps({ audioNotes: [POSITIONED_NOTE, positioned2] })} />);
     expect(mockAudioAffordanceCalls).toHaveLength(2);
     expect(mockAudioAffordanceCalls.map((p) => p.anchorElementId).sort()).toEqual(["el1", "el2"]);
   });
@@ -144,7 +151,7 @@ describe("the record-entry-point (newVoiceNoteAnchor)", () => {
     render(
       <BoardOverlayLayer
         {...baseProps({
-          audioNotes: [NOTE],
+          audioNotes: [POSITIONED_NOTE],
           newVoiceNoteAnchor: { elementId: "el2", x: 12, y: 34 },
         })}
       />
@@ -158,7 +165,7 @@ describe("the record-entry-point (newVoiceNoteAnchor)", () => {
 describe("plan and userId threading", () => {
   it("falls back to an empty userId when currentUserId is undefined", () => {
     render(
-      <BoardOverlayLayer {...baseProps({ currentUserId: undefined, audioNotes: [NOTE] })} />
+      <BoardOverlayLayer {...baseProps({ currentUserId: undefined, audioNotes: [POSITIONED_NOTE] })} />
     );
     expect(mockAudioAffordanceCalls[0].userId).toBe("");
   });
@@ -170,5 +177,32 @@ describe("plan and userId threading", () => {
       />
     );
     expect(mockAudioAffordanceCalls[0].plan).toBe("free");
+  });
+});
+
+// Item 11, fix round 1: the badge must counter-scale via AudioAffordance's
+// own `scale` prop (dimensions), never a wrapping `transform: scale`
+// (center-origin in RN — drifts the badge off its board-space position at
+// any zoom ≠ 1). This is the regression test for that fix.
+describe("counter-scale (item 11)", () => {
+  it("passes 1 / viewport.scale as AudioAffordance's scale prop, not a wrapper transform", () => {
+    render(
+      <BoardOverlayLayer
+        {...baseProps({
+          viewport: { x: 0, y: 0, scale: 2 },
+          audioNotes: [POSITIONED_NOTE],
+          newVoiceNoteAnchor: { elementId: "el9", x: 0, y: 0 },
+        })}
+      />
+    );
+    expect(mockAudioAffordanceCalls).toHaveLength(2);
+    for (const props of mockAudioAffordanceCalls) {
+      expect(props.scale).toBeCloseTo(0.5);
+    }
+  });
+
+  it("defaults to scale 1 at viewport.scale 1", () => {
+    render(<BoardOverlayLayer {...baseProps({ audioNotes: [POSITIONED_NOTE] })} />);
+    expect(mockAudioAffordanceCalls[0].scale).toBe(1);
   });
 });

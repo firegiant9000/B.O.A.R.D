@@ -144,6 +144,10 @@ beforeEach(async () => {
       inviteCode: null,
     });
     await setDoc(doc(db, "boards/boardWrite/paths/seed"), { userId: ALICE });
+    // Month 5 — voice notes (ROADMAP.md:583-587). Same member-read /
+    // editor-write gate as every other canvas-content subcollection; seeded
+    // here so the denial tests below have a real doc to read.
+    await setDoc(doc(db, "boards/boardWrite/audio/seed"), { userId: ALICE });
 
     // M5 seat cap fixtures. `collaboratorsPerBoard` counts the whole `members`
     // array, so free = 4 total.
@@ -321,6 +325,14 @@ describe("cross-workspace read denied", () => {
 
   it("a different workspace's owner cannot read content of a board they don't belong to", async () => {
     await assertFails(getDoc(doc(db(BOB), "boards/boardCoded/paths/p1")));
+  });
+
+  // Month 5 — voice notes' `audio` subcollection gets the same gate as
+  // `paths`/`images`/etc. above; this is the actual emulator-backed proof
+  // that a non-member is denied (a grep of this file for "audio" returned
+  // zero matches before this test existed).
+  it("a non-member cannot read the audio subcollection", async () => {
+    await assertFails(getDoc(doc(db(BOB), "boards/boardWrite/audio/seed")));
   });
 });
 
@@ -732,6 +744,8 @@ describe("sessions inherit workspace", () => {
 describe("per-board roles", () => {
   const path = (uid, docId) =>
     setDoc(doc(db(uid), `boards/boardWrite/paths/${docId}`), { userId: uid });
+  const audio = (uid, docId) =>
+    setDoc(doc(db(uid), `boards/boardWrite/audio/${docId}`), { userId: uid });
 
   it("the board owner can write canvas content", async () => {
     await assertSucceeds(path(ALICE, "byAlice"));
@@ -744,6 +758,13 @@ describe("per-board roles", () => {
   it("viewer write denied: a workspace viewer cannot write canvas content", async () => {
     // carol is a wsA viewer; even her 'editor' board override is floor-capped.
     await assertFails(path(CAROL, "byCarol"));
+  });
+
+  // Month 5 — voice notes' `audio` match uses the same isBoardEditor() write
+  // gate as `paths` above; proves it actually denies a viewer rather than
+  // merely mirroring the images rule in text.
+  it("viewer write denied: a workspace viewer cannot write to the audio subcollection", async () => {
+    await assertFails(audio(CAROL, "byCarol"));
   });
 
   it("a member demoted to viewer via a per-board override cannot write", async () => {

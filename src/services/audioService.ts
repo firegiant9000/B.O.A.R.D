@@ -40,28 +40,30 @@ const ID_ALPHABET =
  *  bypasses the UI — a duplicate/paste path added later, a direct call into
  *  this module — still cannot persist an over-cap note through THIS
  *  function. Like `canRecordVoiceNotes` below, this is a client-side check
- *  only: storage.rules' matching `isValidAudioUpload` caps upload *size*
- *  (2 MB), which is a rough proxy for ~60s at this format's bitrate, not an
- *  actual duration check — Storage rules have no notion of audio duration.
- *  A raw SDK call that skips `saveVoiceNote` entirely can still write a
- *  longer note under that byte ceiling (e.g. a lower-bitrate recording).
- *  Closing that fully needs a Cloud Function on this write path, same as the
- *  plan gate — not added here; see the module-level comment below. */
+ *  only. storage.rules' matching `isValidAudioUpload` WOULD cap upload
+ *  *size* (2 MB, a rough proxy for ~60s at this format's bitrate, not an
+ *  actual duration check — Storage rules have no notion of audio duration)
+ *  once that file is deployed — as of this writing `firebase.json` has no
+ *  `storage` entry, so storage.rules (this block and the Month 2 image
+ *  rules alike) has never been deployed and enforces nothing yet. Even once
+ *  it is, a raw SDK call that skips `saveVoiceNote` entirely could still
+ *  write a longer note under that byte ceiling (e.g. a lower-bitrate
+ *  recording). Closing that fully needs a Cloud Function on this write path,
+ *  same as the plan gate — not added here; see the module-level comment
+ *  below. */
 export const MAX_DURATION_MS = 60_000;
 
 function storagePathFor(boardId: string, audioId: string): string {
   return `boards/${boardId}/audio/${audioId}/note.m4a`;
 }
 
+// `x`/`y` are NOT required here (unlike `anchorElementId`/`storagePath`/
+// `downloadUrl`, which a note is meaningless without) — see AudioElement's
+// type comment: they're a write-time snapshot no render path should trust
+// for the badge's live position, so a doc missing them is still a
+// perfectly usable note, not a malformed one.
 function mapAudioDoc(id: string, data: any): AudioElement | null {
-  if (
-    !data ||
-    !data.anchorElementId ||
-    !data.storagePath ||
-    !data.downloadUrl ||
-    data.x === undefined ||
-    data.y === undefined
-  ) {
+  if (!data || !data.anchorElementId || !data.storagePath || !data.downloadUrl) {
     return null;
   }
   return {
@@ -73,8 +75,8 @@ function mapAudioDoc(id: string, data: any): AudioElement | null {
     storagePath: data.storagePath,
     downloadUrl: data.downloadUrl,
     durationMs: data.durationMs ?? 0,
-    x: data.x,
-    y: data.y,
+    x: data.x ?? 0,
+    y: data.y ?? 0,
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
 }
@@ -96,6 +98,19 @@ export interface SaveVoiceNoteInput {
  * Upload a recorded voice note to Storage and create its Firestore doc.
  * Rejects up front — before any network call — when `durationMs` exceeds the
  * 60s cap, so an over-cap recording never reaches Storage or Firestore.
+ *
+ * Bytes land in Storage before the doc is written (the doc's `downloadUrl`
+ * needs the object to already exist), which briefly creates the exact class
+ * of stranded object this task was chartered to eliminate: storage.rules
+ * lets any board member upload, but firestore.rules' `audio` match only
+ * lets an editor write the doc, so a caller whose upload succeeds and whose
+ * doc write is denied (a viewer/commenter — see AudioAffordance's `canEdit`
+ * gate, which exists precisely to make this rare) would otherwise leave the
+ * object behind with nothing ever referencing it. Any failure from here on
+ * — `getDownloadURL` or `setDoc` — deletes the just-uploaded object
+ * (best-effort) before rethrowing, so a denied/failed write never strands
+ * bytes the way a *lost* one would.
+ *
  * Returns the new audio doc's id.
  */
 export async function saveVoiceNote(input: SaveVoiceNoteInput): Promise<string> {
@@ -112,22 +127,27 @@ export async function saveVoiceNote(input: SaveVoiceNoteInput): Promise<string> 
   const response = await fetch(uri);
   const blob = await response.blob();
   await uploadBytes(storageRef(storage, storagePath), blob, {
-    contentType: "audio/m4a",
+    contentType: "audio/mp4",
   });
-  const downloadUrl = await getDownloadURL(storageRef(storage, storagePath));
 
-  await setDoc(doc(db, "boards", boardId, "audio", audioId), {
-    schemaVersion: 1,
-    boardId,
-    userId: userId ?? "",
-    anchorElementId,
-    storagePath,
-    downloadUrl,
-    durationMs,
-    x: x ?? 0,
-    y: y ?? 0,
-    createdAt: serverTimestamp(),
-  });
+  try {
+    const downloadUrl = await getDownloadURL(storageRef(storage, storagePath));
+    await setDoc(doc(db, "boards", boardId, "audio", audioId), {
+      schemaVersion: 1,
+      boardId,
+      userId: userId ?? "",
+      anchorElementId,
+      storagePath,
+      downloadUrl,
+      durationMs,
+      x: x ?? 0,
+      y: y ?? 0,
+      createdAt: serverTimestamp(),
+    });
+  } catch (e) {
+    await deleteObject(storageRef(storage, storagePath)).catch(() => undefined);
+    throw e;
+  }
   return audioId;
 }
 
@@ -186,29 +206,27 @@ export async function clearBoardVoiceNotes(boardId: string): Promise<void> {
 }
 
 /**
- * Deletes every voice note anchored to any of `elementIds` — the other half
- * of the orphan fix. Before this task, no element referenced a Storage
- * object owned by a different collection; now that a note can be anchored to
- * a stroke/sticky/text/image, deleting THAT element (single-delete,
- * group-delete, the eraser, undo, or auto-perfect's stroke→shape swap — every
- * real delete call site in useBoardElements.ts) must not leave its note (a
- * Firestore doc *and* a Storage object) behind, unreachable and un-owned.
+ * Deletes every voice note anchored to any of `elementIds` — a `getDocs`
+ * read over the whole `audio` subcollection, filtered client-side (same
+ * shape as `clearBoardVoiceNotes`, no `where("anchorElementId", "in", ...)`
+ * — that sidesteps the `in` operator's per-query id ceiling and needs no
+ * composite index, since a single unfiltered `getDocs` never does), then
+ * routed through `batchDeleteVoiceNotes` above.
  *
- * Reads the board's whole `audio` subcollection and filters client-side by
- * `anchorElementId`, rather than a `where("anchorElementId", "in", ...)`
- * query — deliberately: it reuses the exact read `clearBoardVoiceNotes`
- * already does (no new query shape to reason about), sidesteps the `in`
- * operator's per-query id ceiling entirely (a large group-delete could
- * exceed it), and needs no composite index (a single unfiltered
- * `getDocs(collection(...))`, like every other read in this file, never
- * does). Voice notes per board are expected to be few, so the extra reads
- * this trades for are cheap. Matching ids are then routed through
- * `batchDeleteVoiceNotes` above — no new delete logic.
+ * NOT the primary path: `useBoardElements.ts`'s `cascadeDeleteVoiceNotes`
+ * already holds every note in memory via its own live `onSnapshot`
+ * (`subscribeToBoardAudio`), so its usual path filters that in-memory list
+ * and calls `batchDeleteVoiceNotes` directly — zero Firestore reads in the
+ * overwhelmingly common case where nothing anchored is being deleted. THIS
+ * function exists only as that hook's fallback for the brief window before
+ * its subscription's first snapshot has landed, when the in-memory list
+ * can't yet be trusted. Call it directly only if you have no live
+ * subscription of your own to filter instead.
  *
- * Callers must treat this as best-effort and never let its rejection fail
- * the element delete it's cascading from (mirrors every other Storage
- * cleanup in this file/imageService.ts) — see the fire-and-forget
- * `.catch(...)` call sites in useBoardElements.ts.
+ * Best-effort either way: callers must never let its rejection fail the
+ * element delete it's cascading from (mirrors every other Storage cleanup in
+ * this file/imageService.ts) — see the fire-and-forget `.catch(...)` call
+ * sites in useBoardElements.ts.
  */
 export async function deleteVoiceNotesForElements(
   boardId: string,

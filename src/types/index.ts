@@ -440,9 +440,20 @@ export interface ImageElement {
 // URL persisted alongside it so playback has a usable source without an
 // async lookup per element, mirroring ImageElement's url/thumbnailUrl split.
 // `anchorElementId` names the element (of any kind, any collection) the note
-// is attached to; `x`/`y` are the note's own board-space position for the
-// speaker-icon affordance, independent of the anchor's own geometry/box shape
-// so placing and hit-testing the icon never needs to know the anchor's kind.
+// is attached to.
+//
+// `x`/`y` are the board-space position the speaker-icon affordance was
+// placed at when the note was FIRST recorded — a write-time snapshot, not a
+// live position. Fix round 1 found that rendering the badge from these
+// directly leaves it behind when the anchor is moved/resized/rotated (no
+// write path updates them, and none should — that would mean touching every
+// element kind's commitMove/resize/rotate for a value only this badge
+// needs). The canvas instead derives each note's on-screen position from the
+// anchor's CURRENT bounds at render time (BoardCanvas + `boxOfElement`, kind-
+// agnostic the same way `anchorElementId` is), so the badge tracks its
+// element. These fields still round-trip through Firestore (harmless, and
+// readable as "where this was recorded") but are not what positions the
+// badge on a live board — do not reintroduce a render path that trusts them.
 // `schemaVersion: 1` from inception — see the Global Constraint on new
 // element types; readers tolerate a missing/partial doc (`data?.field ??
 // default`), same as every other element kind here.

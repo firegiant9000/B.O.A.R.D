@@ -10,9 +10,14 @@ const mockPlayer = {
   play: jest.fn(),
   pause: jest.fn(),
 };
+// Mutable so tests can simulate the player's own status changing (e.g. a
+// note finishing on its own, not via a tap) and re-render to observe it —
+// see the "toggles play/pause" test below.
+const mockPlayerStatus: { playing: boolean } = { playing: false };
 jest.mock("expo-audio", () => ({
   useAudioRecorder: jest.fn(() => mockRecorder),
   useAudioPlayer: jest.fn(() => mockPlayer),
+  useAudioPlayerStatus: jest.fn(() => mockPlayerStatus),
   RecordingPresets: { HIGH_QUALITY: {} },
   requestRecordingPermissionsAsync: jest.fn(async () => ({ granted: true })),
   setAudioModeAsync: jest.fn(async () => undefined),
@@ -26,7 +31,7 @@ jest.mock("../../../services/audioService", () => ({
 }));
 
 import React from "react";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
 import { render, fireEvent, act, screen } from "@testing-library/react-native";
 import AudioAffordance from "../AudioAffordance";
 import * as audioService from "../../../services/audioService";
@@ -65,6 +70,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
   mockRecorder.uri = "file://recorded.m4a";
+  mockPlayerStatus.playing = false;
 });
 
 describe("advisory Pro gate", () => {
@@ -170,13 +176,41 @@ describe("recording flow", () => {
 });
 
 describe("playback of an existing note", () => {
-  it("toggles play/pause on tap", () => {
-    render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
-    const button = screen.getByTestId("audio-affordance-play");
-    fireEvent.press(button);
+  it("toggles play/pause on tap, reading the real player status rather than a local flag", () => {
+    const { rerender } = render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+    const button = () => screen.getByTestId("audio-affordance-play");
+
+    fireEvent.press(button());
     expect(mockPlayer.play).toHaveBeenCalledTimes(1);
-    fireEvent.press(button);
+
+    // The real `useAudioPlayerStatus` would flip `playing` on its own once
+    // playback actually starts; simulate that and re-render.
+    mockPlayerStatus.playing = true;
+    rerender(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+    fireEvent.press(button());
     expect(mockPlayer.pause).toHaveBeenCalledTimes(1);
+  });
+
+  // Item 6, fix round 1: this test would have passed under the old
+  // "local isPlaying state, toggled only by taps" model too — that model's
+  // bug only shows up when playback ends ON ITS OWN. This is the case that
+  // model got wrong: a single tap after the note finishes must immediately
+  // call `.play()` again, not spend one tap re-syncing a stale flag.
+  it("replays with a single tap after the note finishes on its own", () => {
+    const { rerender } = render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+    fireEvent.press(screen.getByTestId("audio-affordance-play"));
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
+
+    // Playback starts, then the real player reports it finished — nobody
+    // tapped anything.
+    mockPlayerStatus.playing = true;
+    rerender(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+    mockPlayerStatus.playing = false;
+    rerender(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+
+    fireEvent.press(screen.getByTestId("audio-affordance-play"));
+    expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+    expect(mockPlayer.pause).not.toHaveBeenCalled();
   });
 
   it("deletes the note on long-press", async () => {
@@ -195,5 +229,27 @@ describe("playback of an existing note", () => {
     render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
     expect(screen.getByTestId("audio-affordance-play")).toBeTruthy();
     expect(screen.queryByTestId("audio-affordance-locked")).toBeNull();
+  });
+});
+
+// Item 11, fix round 1: the `scale` prop must resize THIS component's own
+// button (dimensions), never rely on a caller wrapping it in a
+// `transform: scale` (RN's transform is center-origin and drifts a
+// top-left-positioned box off its true coordinate at any zoom ≠ 1).
+describe("the scale prop (item 11)", () => {
+  it("defaults to the base 28px button size when scale is omitted", () => {
+    render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} />);
+    const flat = StyleSheet.flatten(screen.getByTestId("audio-affordance-play").props.style);
+    expect(flat.width).toBe(28);
+    expect(flat.height).toBe(28);
+    expect(flat.borderRadius).toBe(14);
+  });
+
+  it("scales the button's own dimensions instead of leaving sizing to a wrapper", () => {
+    render(<AudioAffordance {...baseProps} plan="free" audio={existingAudio} scale={0.5} />);
+    const flat = StyleSheet.flatten(screen.getByTestId("audio-affordance-play").props.style);
+    expect(flat.width).toBe(14);
+    expect(flat.height).toBe(14);
+    expect(flat.borderRadius).toBe(7);
   });
 });

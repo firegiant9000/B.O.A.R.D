@@ -482,6 +482,18 @@ export function useBoardElements(
   const visibleShapesRef = useRef<ShapeElement[]>([]);
   const visibleTextElementsRef = useRef<TextElement[]>([]);
   const visibleImagesRef = useRef<ImageElement[]>([]);
+  // Month 5 — synchronous source for the anchor-delete cascade (see
+  // `cascadeDeleteVoiceNotes` below). Unfiltered (not the blocked-user
+  // `visibleAudioNotes` memo): a blocked user's note must still be cascaded
+  // away when its anchor is deleted, same as every other kind's delete path
+  // doesn't consult the blocked-user filter either.
+  const audioNotesRef = useRef<AudioElement[]>([]);
+  // True once the audio subscription's first snapshot has landed. Firestore's
+  // onSnapshot always fires once immediately with the current cached/server
+  // state, so this flips shortly after mount — `cascadeDeleteVoiceNotes`
+  // falls back to a real read only in the brief window before it does,
+  // rather than trusting an empty initial array as "no notes exist".
+  const audioNotesLoadedRef = useRef(false);
   // rbush index over every visible element's bbox, rebuilt when the set changes,
   // queried during a marquee drag for O(log n) hit-testing.
   const spatialIndexRef = useRef<ElementIndex>(buildElementIndex([]));
@@ -610,10 +622,16 @@ export function useBoardElements(
   // Month 5 — voice notes. A separate, independent subscription (its own
   // subcollection, no shared listener with any other kind) since it's not
   // part of the paths/shapes/text/images write-path family the rest of this
-  // section mirrors.
+  // section mirrors. `audioNotesLoadedRef` flips on the first snapshot (see
+  // its own comment) so the cascade below knows when the in-memory list
+  // becomes trustworthy.
   useEffect(() => {
     if (!boardId) return;
-    return audioService.subscribeToBoardAudio(boardId, setAudioNotes);
+    audioNotesLoadedRef.current = false;
+    return audioService.subscribeToBoardAudio(boardId, (incoming) => {
+      setAudioNotes(incoming);
+      audioNotesLoadedRef.current = true;
+    });
   }, [boardId]);
 
   useEffect(() => {
@@ -676,6 +694,49 @@ export function useBoardElements(
   useEffect(() => {
     visibleImagesRef.current = visibleImages;
   }, [visibleImages]);
+  // Month 5 — synced from the raw `audioNotes` state, not `visibleAudioNotes`
+  // (see the ref's own comment on why blocked-user filtering doesn't apply
+  // to the cascade).
+  useEffect(() => {
+    audioNotesRef.current = audioNotes;
+  }, [audioNotes]);
+
+  // Month 5 — anchor-delete cascade (the orphan fix's other half): any voice
+  // note anchored to one of `elementIds` must not survive that element's
+  // deletion. Filters the already-subscribed `audioNotesRef` in memory and
+  // calls `audioService.batchDeleteVoiceNotes` directly on an actual match —
+  // no Firestore read at all in the overwhelmingly common "no notes on this
+  // board" case, unlike a naive per-call `getDocs`. A two-second eraser drag
+  // samples this at ~30Hz (`STROKE_SAMPLE_MS`, BoardCanvas.tsx); this hook
+  // already carries a live `onSnapshot` for every element kind precisely so
+  // call sites don't have to re-fetch what's already in memory.
+  //
+  // Falls back to `audioService.deleteVoiceNotesForElements` (a real read)
+  // only in the brief window before the subscription's first snapshot has
+  // landed (`audioNotesLoadedRef`) — an empty initial array must not be
+  // trusted as "this board has no notes." Every caller already treats this
+  // as best-effort (fire-and-forget with its own `.catch`), so neither path
+  // blocks or fails the element delete it's cascading from.
+  const cascadeDeleteVoiceNotes = useCallback(
+    (elementIds: string[]) => {
+      if (elementIds.length === 0) return;
+      if (!audioNotesLoadedRef.current) {
+        audioService.deleteVoiceNotesForElements(boardId, elementIds).catch((e) => {
+          captureException(e, { op: "board.audioCascade.fallbackRead" });
+        });
+        return;
+      }
+      const idSet = new Set(elementIds);
+      const matchingIds = audioNotesRef.current
+        .filter((a) => idSet.has(a.anchorElementId))
+        .map((a) => a.id);
+      if (matchingIds.length === 0) return;
+      audioService.batchDeleteVoiceNotes(boardId, matchingIds).catch((e) => {
+        captureException(e, { op: "board.audioCascade" });
+      });
+    },
+    [boardId]
+  );
 
   // ────────── SPATIAL INDEX (rbush, for marquee hit-testing) ────────────
   // Rebuild the marquee spatial index whenever the visible set changes. This is
@@ -930,11 +991,9 @@ export function useBoardElements(
       });
     });
     // Month 5 — anchor cascade: an erased stroke can carry a voice note.
-    // Fire-and-forget, like the per-path deletes above — a cascade failure
-    // must not surface as "Some strokes couldn't be erased."
-    audioService.deleteVoiceNotesForElements(boardId, hits).catch((e) => {
-      captureException(e, { op: "board.erase.audioCascade" });
-    });
+    // In-memory lookup (see `cascadeDeleteVoiceNotes`) — a two-second eraser
+    // drag calls this at ~30Hz, so this must never be a Firestore read.
+    cascadeDeleteVoiceNotes(hits);
     onScheduleSave();
   };
 
@@ -1360,11 +1419,8 @@ export function useBoardElements(
       // stroke that already has a note); deleting it is the deliberate
       // trade-off over leaving it permanently orphaned and unreachable (its
       // `anchorElementId` would point at nothing this hook ever renders
-      // again). Fire-and-forget, like every other cascade call site — must
-      // not surface as "Couldn't perfect the shape."
-      audioService.deleteVoiceNotesForElements(boardId, [pathId]).catch((e) => {
-        captureException(e, { op: "board.perfectShape.audioCascade" });
-      });
+      // again).
+      cascadeDeleteVoiceNotes([pathId]);
     } catch (e) {
       captureException(e, { op: "board.perfectShape" });
       onError("Couldn't perfect the shape.");
@@ -1464,20 +1520,14 @@ export function useBoardElements(
         onScheduleSave();
         // Month 5 — anchor cascade (the other half of the orphan fix): any
         // voice note anchored to one of these ids must not survive them.
-        // Fire-and-forget with its own catch, not awaited inside the try
-        // above — a cascade failure must never surface as "Failed to delete
-        // some elements" when the primary elements are already gone (same
-        // reasoning as the eraser's per-path deletes below). Only fires once
-        // the real deletes have actually committed.
-        audioService.deleteVoiceNotesForElements(boardId, ids).catch((e) => {
-          captureException(e, { op: "board.deleteSelected.audioCascade" });
-        });
+        // Only fires once the real deletes have actually committed.
+        cascadeDeleteVoiceNotes(ids);
       } catch (e) {
         captureException(e, { op: "board.deleteSelected" });
         onError("Failed to delete some elements.");
       }
     },
-    [boardId, onScheduleSave, onError]
+    [boardId, onScheduleSave, onError, cascadeDeleteVoiceNotes]
   );
 
   // Duplicate the selection 16px down-right; the copies become the new selection.
@@ -1972,11 +2022,7 @@ export function useBoardElements(
       onEditText(null);
       onScheduleSave();
       // Month 5 — anchor cascade: a text element can carry a voice note.
-      // Fire-and-forget so a cascade failure can't surface as "Failed to
-      // delete text element" once the element itself is already gone.
-      audioService.deleteVoiceNotesForElements(boardId, [elementId]).catch((e) => {
-        captureException(e, { op: "board.deleteTextElement.audioCascade" });
-      });
+      cascadeDeleteVoiceNotes([elementId]);
     } catch {
       onError("Failed to delete text element.");
     }
@@ -2018,11 +2064,8 @@ export function useBoardElements(
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       onScheduleSave();
       // Month 5 — anchor cascade: a sticky note can carry a voice note
-      // (ROADMAP.md:584 names "sticky" explicitly). Fire-and-forget, same
-      // reasoning as every other cascade call site.
-      audioService.deleteVoiceNotesForElements(boardId, [noteId]).catch((e) => {
-        captureException(e, { op: "board.deleteNote.audioCascade" });
-      });
+      // (ROADMAP.md:584 names "sticky" explicitly).
+      cascadeDeleteVoiceNotes([noteId]);
     } catch {
       Alert.alert("Error", "Failed to delete note");
     }
@@ -2046,10 +2089,8 @@ export function useBoardElements(
       // Month 5 — anchor cascade: the undone stroke can carry a voice note.
       // Redo re-creates the stroke as a NEW doc/id (savePath below), so a
       // cascaded note can't be un-deleted by redo either way — same
-      // trade-off as replaceStrokeWithShape's comment. Fire-and-forget.
-      audioService.deleteVoiceNotesForElements(boardId, [targetPath.id]).catch((e) => {
-        captureException(e, { op: "board.undo.audioCascade" });
-      });
+      // trade-off as replaceStrokeWithShape's comment.
+      cascadeDeleteVoiceNotes([targetPath.id]);
     } catch {
       onError("Undo failed.");
     }
@@ -2090,6 +2131,11 @@ export function useBoardElements(
     setTextElements([]);
     setShapes([]);
     setImages([]);
+    // Item 12, fix round 1: this was the one kind missing from the
+    // optimistic reset — clearBoardElements already removes every audio doc
+    // server-side (clearBoardVoiceNotes), but without this line their
+    // badges lingered on screen until the next snapshot caught up.
+    setAudioNotes([]);
     setRedoStack([]);
   };
 
