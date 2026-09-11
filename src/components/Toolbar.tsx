@@ -56,6 +56,20 @@ interface ToolbarProps {
    * exists to avoid for read-only viewers.
    */
   canInsertImage?: boolean;
+  /** Insert a poll (Month 6) — opens PollComposer; position is chosen by the
+   *  caller (BoardCanvas centers it in the current viewport). */
+  onInsertPoll: () => void;
+  /**
+   * Month 6 — whether the poll-insert button shows at all. Defaults to true.
+   * Mirrors `canInsertImage`'s embed-session caveat exactly, for a related
+   * but distinct reason: firestore.rules' `polls` match carries NO
+   * `isEmbedEditor` disjunct at all (a poll's voter-identity model is a
+   * member-engagement feature, like comments, not bare canvas geometry —
+   * see that rule's own comment) — so an embed editor could never create one
+   * regardless of scope, and this button should not offer what every scope
+   * would have denied.
+   */
+  canInsertPoll?: boolean;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
@@ -110,6 +124,8 @@ export default function Toolbar({
   onOpenWidthPicker,
   onInsertImage,
   canInsertImage = true,
+  onInsertPoll,
+  canInsertPoll = true,
   onUndo,
   onRedo,
   canRedo,
@@ -230,6 +246,16 @@ export default function Toolbar({
               icon="image-outline"
               active={false}
               onPress={onInsertImage}
+            />
+          )}
+          {/* Month 6 — polls, quiz sequencing, dot voting. Opens PollComposer;
+              creation itself is editor-only under firestore.rules, same as
+              this whole branch already requires (`canEdit`). */}
+          {canInsertPoll && (
+            <ToolButton
+              icon="bar-chart-outline"
+              active={false}
+              onPress={onInsertPoll}
             />
           )}
         </View>

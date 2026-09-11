@@ -24,6 +24,7 @@ const baseProps = {
   onOpenColorPicker: jest.fn(),
   onOpenWidthPicker: jest.fn(),
   onInsertImage: jest.fn(),
+  onInsertPoll: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
   onSave: jest.fn(),
@@ -101,6 +102,22 @@ describe("Toolbar — canInsertImage (Month 5, embed edit sessions)", () => {
       <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertImage={false} />
     );
     expect(screen.queryByText("image-outline")).toBeNull();
+  });
+});
+
+describe("Toolbar — canInsertPoll (Month 6, embed edit sessions)", () => {
+  it("shows the poll-insert button by default, wired to onInsertPoll", () => {
+    const onInsertPoll = jest.fn();
+    render(<Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onInsertPoll={onInsertPoll} />);
+    fireEvent.press(screen.getByText("bar-chart-outline"));
+    expect(onInsertPoll).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the poll-insert button when canInsertPoll is false", () => {
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertPoll={false} />
+    );
+    expect(screen.queryByText("bar-chart-outline")).toBeNull();
   });
 });
 

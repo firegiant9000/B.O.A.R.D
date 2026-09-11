@@ -27,10 +27,20 @@ jest.mock("../ReactionBadge", () => ({
   },
 }));
 
+// Month 6 — same recipe for the poll card.
+const mockPollCardCalls: any[] = [];
+jest.mock("../PollCard", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockPollCardCalls.push(props);
+    return null;
+  },
+}));
+
 import React from "react";
 import { render } from "@testing-library/react-native";
-import BoardOverlayLayer, { PositionedAudioNote, PositionedReactionBadge } from "../BoardOverlayLayer";
-import { AudioElement, REACTION_EMOJIS } from "../../../types";
+import BoardOverlayLayer, { PositionedAudioNote, PositionedPoll, PositionedReactionBadge } from "../BoardOverlayLayer";
+import { AudioElement, PollElement, REACTION_EMOJIS } from "../../../types";
 import type { ReactionCount } from "../../../hooks/useBoardReactions";
 
 /**
@@ -85,6 +95,30 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof BoardOverlayLa
     reactionBadges: [] as PositionedReactionBadge[],
     canReact: true,
     onToggleReaction: jest.fn(),
+    positionedPolls: [] as PositionedPoll[],
+    canManagePolls: true,
+    canVotePolls: true,
+    onVotePoll: jest.fn(),
+    onToggleDotPoll: jest.fn(),
+    onDeletePoll: jest.fn(),
+    onAdvanceQuiz: jest.fn(),
+    ...overrides,
+  };
+}
+
+function makePoll(overrides: Partial<PollElement> = {}): PollElement {
+  return {
+    id: "p1",
+    schemaVersion: 1,
+    boardId: "board1",
+    question: "Q?",
+    options: ["A", "B"],
+    anonymous: false,
+    mode: "single",
+    x: 10,
+    y: 20,
+    createdById: "author",
+    createdAt: new Date(),
     ...overrides,
   };
 }
@@ -116,6 +150,7 @@ const POSITIONED_NOTE: PositionedAudioNote = { note: NOTE, x: 30, y: 40 };
 beforeEach(() => {
   mockAudioAffordanceCalls.length = 0;
   mockReactionBadgeCalls.length = 0;
+  mockPollCardCalls.length = 0;
 });
 
 describe("existing voice notes", () => {
@@ -274,5 +309,82 @@ describe("reaction badges", () => {
       />
     );
     expect(mockReactionBadgeCalls[0].scale).toBeCloseTo(0.5);
+  });
+});
+
+// Month 6 — polls. Same "this layer is dumb" recipe as reaction badges above:
+// asserts what's handed reaches PollCard unchanged, at the poll's OWN
+// persisted (x, y) — there is no live-element-geometry join for polls (see
+// PositionedPoll's comment), unlike reactions/audio.
+describe("polls", () => {
+  const POLL: PositionedPoll = { poll: makePoll({ id: "p1", x: 12, y: 34 }), results: null, myVote: [] };
+
+  it("renders one PollCard per entry, with results/myVote/canVote/canManage threaded through", () => {
+    render(
+      <BoardOverlayLayer
+        {...baseProps({ positionedPolls: [POLL], canVotePolls: true, canManagePolls: false })}
+      />
+    );
+    expect(mockPollCardCalls).toHaveLength(1);
+    expect(mockPollCardCalls[0]).toMatchObject({
+      poll: POLL.poll,
+      results: null,
+      myVote: [],
+      canVote: true,
+      canManage: false,
+    });
+  });
+
+  it("renders nothing when there are no polls to show", () => {
+    render(<BoardOverlayLayer {...baseProps()} />);
+    expect(mockPollCardCalls).toHaveLength(0);
+  });
+
+  it("renders one PollCard per poll for multiple polls", () => {
+    const poll2: PositionedPoll = { poll: makePoll({ id: "p2" }), results: null, myVote: [] };
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL, poll2] })} />);
+    expect(mockPollCardCalls).toHaveLength(2);
+  });
+
+  it("composes onVote so tapping an option calls the layer's onVotePoll with (pollId, optionIndex)", () => {
+    const onVotePoll = jest.fn();
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL], onVotePoll })} />);
+    mockPollCardCalls[0].onVote(1);
+    expect(onVotePoll).toHaveBeenCalledWith("p1", 1);
+  });
+
+  it("composes onToggleDot so tapping a dot calls the layer's onToggleDotPoll with (pollId, optionIndex)", () => {
+    const onToggleDotPoll = jest.fn();
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL], onToggleDotPoll })} />);
+    mockPollCardCalls[0].onToggleDot(2);
+    expect(onToggleDotPoll).toHaveBeenCalledWith("p1", 2);
+  });
+
+  it("composes onDelete so it calls the layer's onDeletePoll with the pollId", () => {
+    const onDeletePoll = jest.fn();
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL], onDeletePoll })} />);
+    mockPollCardCalls[0].onDelete();
+    expect(onDeletePoll).toHaveBeenCalledWith("p1");
+  });
+
+  it("omits onAdvanceQuiz for a standalone (non-quiz) poll", () => {
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL] })} />);
+    expect(mockPollCardCalls[0].onAdvanceQuiz).toBeUndefined();
+  });
+
+  it("composes onAdvanceQuiz for a quiz question, calling the layer's onAdvanceQuiz with its quizId", () => {
+    const onAdvanceQuiz = jest.fn();
+    const quizPoll: PositionedPoll = { poll: makePoll({ id: "q1", quizId: "quiz1", active: true }), results: null, myVote: [] };
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [quizPoll], onAdvanceQuiz })} />);
+    expect(mockPollCardCalls[0].onAdvanceQuiz).toBeInstanceOf(Function);
+    mockPollCardCalls[0].onAdvanceQuiz();
+    expect(onAdvanceQuiz).toHaveBeenCalledWith("quiz1");
+  });
+
+  it("passes 1 / viewport.scale as PollCard's scale prop, same as the other overlay badges", () => {
+    render(
+      <BoardOverlayLayer {...baseProps({ viewport: { x: 0, y: 0, scale: 2 }, positionedPolls: [POLL] })} />
+    );
+    expect(mockPollCardCalls[0].scale).toBeCloseTo(0.5);
   });
 });

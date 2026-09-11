@@ -262,6 +262,75 @@ beforeEach(async () => {
     await setDoc(doc(db, "boards/boardWrite/reactions/seed_👍_alice"), seedReaction(ALICE));
     await setDoc(doc(db, "boards/boardPrivate/reactions/seed_👍_alice"), seedReaction(ALICE));
 
+    // Month 6 — poll fixtures. `pollSingle` is a genuinely NON-anonymous poll
+    // with one real seeded vote (alice) so the "a member can read a
+    // non-anonymous poll's votes" positive control below has a real doc to
+    // read, not an empty collection that would pass for the wrong reason.
+    // `pollAnon` is the anonymous twin, same shape, so every "denied" test
+    // against it has a same-board, same-actor, same-shape "allowed" sibling
+    // differing ONLY in `anonymous` — proving the denial is about anonymity,
+    // not about votes being unreadable in general.
+    const seedPoll = (overrides) => ({
+      schemaVersion: 1,
+      boardId: "boardWrite",
+      question: "Favorite color?",
+      options: ["Red", "Blue", "Green"],
+      anonymous: false,
+      mode: "single",
+      x: 10,
+      y: 10,
+      createdById: ALICE,
+      ...overrides,
+    });
+    await setDoc(doc(db, "boards/boardWrite/polls/pollSingle"), seedPoll());
+    await setDoc(doc(db, "boards/boardWrite/polls/pollSingle/votes/alice"), {
+      userId: ALICE,
+      optionIndices: [0],
+    });
+    await setDoc(doc(db, "boards/boardWrite/polls/pollAnon"), seedPoll({ anonymous: true }));
+    await setDoc(doc(db, "boards/boardWrite/polls/pollAnon/votes/alice"), {
+      userId: ALICE,
+      optionIndices: [1],
+    });
+    // A dots-mode poll (4 options) — same board/read/write boundary, only
+    // `mode` differs, for the dot-voting-specific rules tests below.
+    await setDoc(
+      doc(db, "boards/boardWrite/polls/pollDots"),
+      seedPoll({ mode: "dots", options: ["A", "B", "C", "D"] })
+    );
+
+    // Cross-workspace fixture, mirroring the reaction/comment ones above:
+    // evil is in boardPrivate.members but not in wsA.
+    await setDoc(doc(db, "boards/boardPrivate/polls/pollP"), {
+      schemaVersion: 1,
+      boardId: "boardPrivate",
+      question: "Q?",
+      options: ["A", "B"],
+      anonymous: false,
+      mode: "single",
+      x: 0,
+      y: 0,
+      createdById: ALICE,
+    });
+    await setDoc(doc(db, "boards/boardPrivate/polls/pollP/votes/alice"), {
+      userId: ALICE,
+      optionIndices: [0],
+    });
+
+    // Legacy-board tolerance fixture (no workspaceId) — mirrors reactions'
+    // own "a legacy board lets any member [write]" fixture.
+    await setDoc(doc(db, "boards/boardLegacy/polls/pollLegacy"), {
+      schemaVersion: 1,
+      boardId: "boardLegacy",
+      question: "Q?",
+      options: ["A", "B"],
+      anonymous: false,
+      mode: "single",
+      x: 0,
+      y: 0,
+      createdById: ALICE,
+    });
+
     // Phase 4 — sessions inherit a workspaceId from their board.
     await setDoc(doc(db, "sessions/sessWsA"), {
       workspaceId: "wsA",
@@ -1109,6 +1178,222 @@ describe("reactions", () => {
         userId: DAVE,
       })
     );
+  });
+});
+
+// ── Month 6: polls — persisted votes (never ephemeral / the cursor side
+// channel), quiz sequencing, dot voting. Creating the POLL element itself
+// (question/options/position) is editor-only, like any other canvas content
+// (paths/shapes/textElements) — a poll carries its own board-space (x, y),
+// unlike a reaction which only ever anchors to something that already
+// exists. VOTING is commenter+ (the same boundary as reacting/commenting):
+// a viewer sees a poll's canvas position but cannot cast a vote.
+//
+// The document id under `votes/{voterId}` IS the uid — this is what enforces
+// one vote doc per user. UNLIKE reactions (react/un-react is create/delete
+// only — `allow update: if false`), changing your vote is a legitimate
+// UPDATE to that SAME doc, and this is the one place this rules file must
+// diverge from the reactions shape it otherwise mirrors closely.
+describe("polls", () => {
+  const pollRef = (uid, pollId) => doc(db(uid), `boards/boardWrite/polls/${pollId}`);
+  const voteRef = (uid, pollId, voterId) => doc(db(uid), `boards/boardWrite/polls/${pollId}/votes/${voterId}`);
+
+  const newPoll = (overrides = {}) => ({
+    schemaVersion: 1,
+    boardId: "boardWrite",
+    question: "Q?",
+    options: ["A", "B"],
+    anonymous: false,
+    mode: "single",
+    x: 0,
+    y: 0,
+    createdById: ALICE,
+    ...overrides,
+  });
+
+  const vote = (actorUid, pollId, voterId, optionIndices) =>
+    setDoc(voteRef(actorUid, pollId, voterId), { userId: voterId, optionIndices });
+
+  // ── reading the poll itself: any board member ──────────────────────────────
+  it("a board member can read a poll (read follows board access)", async () => {
+    await assertSucceeds(getDoc(pollRef(FRANK, "pollSingle")));
+  });
+
+  it("a cross-workspace member cannot read a poll", async () => {
+    // evil is in boardPrivate.members but not in wsA — same workspace gate
+    // the comments/reactions describes above already prove.
+    await assertFails(getDoc(pollRef(EVIL, "pollP")));
+  });
+
+  // ── creating the poll element: editor-only, like other canvas content ──────
+  // Positive control for "denies a viewer creating a poll" below: same
+  // board, same shape, only the actor's ROLE differs.
+  it("an effective editor can create a poll", async () => {
+    await assertSucceeds(setDoc(pollRef(ALICE, "newByAlice"), newPoll()));
+    await assertSucceeds(setDoc(doc(db(DAVE), "boards/boardWrite/polls/newByDave"), newPoll({ createdById: DAVE })));
+  });
+
+  it("denies a viewer creating a poll", async () => {
+    // frank's per-board override is 'viewer' (see "comments"/"reactions"
+    // above) — the only difference from the successful dave case above.
+    await assertFails(
+      setDoc(doc(db(FRANK), "boards/boardWrite/polls/byFrank"), newPoll({ createdById: FRANK }))
+    );
+  });
+
+  it("denies a poll with fewer than 2 options", async () => {
+    await assertFails(setDoc(pollRef(ALICE, "tooFew"), newPoll({ options: ["only one"] })));
+  });
+
+  it("denies a poll with more than 6 options", async () => {
+    await assertFails(
+      setDoc(pollRef(ALICE, "tooMany"), newPoll({ options: ["A", "B", "C", "D", "E", "F", "G"] }))
+    );
+  });
+
+  it("denies creating a poll whose createdById names someone other than the caller", async () => {
+    await assertFails(setDoc(doc(db(DAVE), "boards/boardWrite/polls/spoofed"), newPoll({ createdById: ALICE })));
+  });
+
+  it("a legacy board (no workspaceId) lets any member create a poll", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(EVIL), "boards/boardLegacy/polls/byEvil"), {
+        schemaVersion: 1,
+        boardId: "boardLegacy",
+        question: "Q?",
+        options: ["A", "B"],
+        anonymous: false,
+        mode: "single",
+        x: 0,
+        y: 0,
+        createdById: EVIL,
+      })
+    );
+  });
+
+  // ── voting: one doc per uid, update allowed for the voter's own doc ────────
+  it("allows one vote per user per poll — second write to same doc is an update, still one row", async () => {
+    await assertSucceeds(vote(DAVE, "pollSingle", DAVE, [0]));
+    await assertSucceeds(vote(DAVE, "pollSingle", DAVE, [2])); // changed their mind
+
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await getDocs(collection(ctx.firestore(), "boards/boardWrite/polls/pollSingle/votes"));
+      const daveRows = snap.docs.filter((d) => d.id === DAVE);
+      expect(daveRows).toHaveLength(1);
+      expect(daveRows[0].data().optionIndices).toEqual([2]);
+    });
+  });
+
+  // Positive control for "denies voting as another user" below: same actor,
+  // same poll, only the voter identity differs.
+  it("lets a board commenter vote as themselves", async () => {
+    await assertSucceeds(vote(CAROL, "pollSingle", CAROL, [1]));
+  });
+
+  it("denies voting as another user", async () => {
+    // dave is a genuine commenter (proven above) — the only thing wrong with
+    // this write is that the doc id AND the userId field name alice instead
+    // of the caller.
+    await assertFails(vote(DAVE, "pollSingle", ALICE, [0]));
+  });
+
+  it("denies a non-member voting", async () => {
+    // bob owns wsB entirely — not a member of boardWrite at all (unlike
+    // frank/evil below, who ARE board members with a weaker role/workspace).
+    await assertFails(vote(BOB, "pollSingle", BOB, [0]));
+  });
+
+  it("denies a viewer voting", async () => {
+    await assertFails(vote(FRANK, "pollSingle", FRANK, [0]));
+  });
+
+  it("denies a vote whose optionIndices isn't a list at all", async () => {
+    await assertFails(
+      setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: "zero" })
+    );
+  });
+
+  // ── anonymity: hides voter identity from MEMBERS, never from the system ────
+  // Positive control: the identical read succeeds against the NON-anonymous
+  // twin poll for the same actor — proving the denial below is specific to
+  // anonymous mode, not a rule that denies every votes read unconditionally
+  // (which would make the "hides voter identity" test below pass for the
+  // wrong reason).
+  it("a member can read a non-anonymous poll's votes", async () => {
+    await assertSucceeds(getDoc(voteRef(FRANK, "pollSingle", ALICE)));
+  });
+
+  it("hides voter identity from members in anonymous mode", async () => {
+    await assertFails(getDoc(voteRef(FRANK, "pollAnon", ALICE)));
+  });
+
+  it("even the board admin cannot read anonymous votes — anonymous-to-USERS means every user", async () => {
+    await assertFails(getDoc(voteRef(ALICE, "pollAnon", ALICE)));
+  });
+
+  it("denies a count() aggregation on an anonymous poll's votes too — count() needs read permission on the collection, which is exactly why anonymous results need the trigger-maintained tally instead", async () => {
+    await assertFails(getCountFromServer(collection(db(FRANK), "boards/boardWrite/polls/pollAnon/votes")));
+  });
+
+  it("still allows a count() aggregation on a non-anonymous poll's votes (the positive control for the denial above)", async () => {
+    await assertSucceeds(getCountFromServer(collection(db(FRANK), "boards/boardWrite/polls/pollSingle/votes")));
+  });
+
+  // ── the tally subcollection: member-readable, but client writes are always denied ──
+  it("a member can read an anonymous poll's tally doc even though votes are denied", async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "boards/boardWrite/polls/pollAnon/tally/summary"), {
+        counts: { "1": 1 },
+        totalVotes: 1,
+      });
+    });
+    await assertSucceeds(getDoc(doc(db(FRANK), "boards/boardWrite/polls/pollAnon/tally/summary")));
+  });
+
+  it("denies a client write to the tally doc — only the Admin-SDK trigger may write it", async () => {
+    await assertFails(
+      setDoc(doc(db(ALICE), "boards/boardWrite/polls/pollAnon/tally/summary"), { counts: {}, totalVotes: 0 })
+    );
+  });
+
+  // ── dot voting: up to MAX_DOT_VOTES (3) options at once, still one doc ─────
+  it("allows a dots-mode vote with multiple option indices", async () => {
+    await assertSucceeds(vote(DAVE, "pollDots", DAVE, [0, 1]));
+  });
+
+  it("denies a dots-mode vote past the 3-dot cap", async () => {
+    await assertFails(vote(DAVE, "pollDots", DAVE, [0, 1, 2, 3]));
+  });
+
+  it("denies a single-mode vote with more than one option index", async () => {
+    // pollSingle is mode: 'single' — even a genuine commenter voting as
+    // themselves cannot pick two options on a single-choice poll.
+    await assertFails(vote(DAVE, "pollSingle", DAVE, [0, 1]));
+  });
+
+  it("denies a vote with zero option indices — a zero-length selection isn't a vote", async () => {
+    await assertFails(vote(DAVE, "pollSingle", DAVE, []));
+  });
+
+  // ── updating the poll: editor-only — quiz sequencing (advanceQuiz) flips
+  // `active` via exactly this rule, so it must actually allow an editor
+  // update, not just a create/delete.
+  it("an effective editor can update a poll (e.g. advancing a quiz's active flag)", async () => {
+    await assertSucceeds(updateDoc(pollRef(DAVE, "pollSingle"), { active: true }));
+  });
+
+  it("denies a viewer updating a poll", async () => {
+    await assertFails(updateDoc(pollRef(FRANK, "pollSingle"), { active: true }));
+  });
+
+  // ── deleting the poll: editor-only, like create ─────────────────────────────
+  it("an effective editor can delete a poll", async () => {
+    await setDoc(pollRef(ALICE, "toDelete"), newPoll());
+    await assertSucceeds(deleteDoc(pollRef(DAVE, "toDelete")));
+  });
+
+  it("denies a viewer deleting a poll", async () => {
+    await assertFails(deleteDoc(pollRef(FRANK, "pollSingle")));
   });
 });
 

@@ -6,9 +6,11 @@ import SelectionOverlay, { HandleId } from "../SelectionOverlay";
 import CommentPinLayer, { CommentPin } from "../CommentPinLayer";
 import AudioAffordance from "./AudioAffordance";
 import ReactionBadge from "./ReactionBadge";
+import PollCard from "./PollCard";
 import { Bounds, Point, Viewport } from "../../lib/viewport";
-import { AudioElement, Plan, ReactionEmoji, TextElement, TextNote } from "../../types";
+import { AudioElement, Plan, PollElement, ReactionEmoji, TextElement, TextNote } from "../../types";
 import type { ReactionCount } from "../../hooks/useBoardReactions";
+import type { PollResults } from "../../hooks/useBoardPolls";
 
 // Month 5 — an existing voice note, paired with the LIVE board-space
 // position its badge should render at. The caller (BoardCanvas) resolves
@@ -30,6 +32,19 @@ export interface PositionedReactionBadge {
   x: number;
   y: number;
   counts: ReactionCount[];
+}
+
+// Month 6 — a poll ready to render. UNLIKE PositionedAudioNote/
+// PositionedReactionBadge, there is no live-element-geometry join here: a
+// poll isn't anchored to anything, so it renders at its OWN persisted
+// (poll.x, poll.y) — the caller (BoardCanvas) still does the equivalent
+// "resolve what to show" work by computing `results`/`myVote` from
+// useBoardPolls and by filtering the quiz-question set down to the one
+// current question (`poll.active`) before this layer ever sees it.
+export interface PositionedPoll {
+  poll: PollElement;
+  results: PollResults | null;
+  myVote: number[];
 }
 
 /**
@@ -124,6 +139,21 @@ interface BoardOverlayLayerProps {
    *  existing counts but can't toggle one. */
   canReact: boolean;
   onToggleReaction: (elementId: string, emoji: ReactionEmoji) => void;
+
+  // Polls (Month 6). Only the polls BoardCanvas decided should show this
+  // render (standalone polls + each quiz's CURRENT question) ever reach
+  // this prop — see PositionedPoll's own comment.
+  positionedPolls: PositionedPoll[];
+  /** Effective editor (mirrors firestore.rules' `polls` match) — gates
+   *  delete and advancing a quiz. */
+  canManagePolls: boolean;
+  /** Commenter+ (mirrors firestore.rules' `votes` match) — a viewer sees a
+   *  poll's question/options/results but cannot vote. */
+  canVotePolls: boolean;
+  onVotePoll: (pollId: string, optionIndex: number) => void;
+  onToggleDotPoll: (pollId: string, optionIndex: number) => void;
+  onDeletePoll: (pollId: string) => void;
+  onAdvanceQuiz: (quizId: string) => void;
 }
 
 export default function BoardOverlayLayer({
@@ -168,6 +198,13 @@ export default function BoardOverlayLayer({
   reactionBadges,
   canReact,
   onToggleReaction,
+  positionedPolls,
+  canManagePolls,
+  canVotePolls,
+  onVotePoll,
+  onToggleDotPoll,
+  onDeletePoll,
+  onAdvanceQuiz,
 }: BoardOverlayLayerProps) {
   // Overlay transform — mirrors the SVG <G transform>. transformOrigin "0 0"
   // makes RN's transform anchor at the top-left so it matches SVG semantics
@@ -306,6 +343,26 @@ export default function BoardOverlayLayer({
               counts={counts}
               canReact={canReact}
               onToggle={(emoji) => onToggleReaction(elementId, emoji)}
+              scale={audioInv}
+            />
+          </View>
+        ))}
+        {/* Month 6 — polls, quiz sequencing, dot voting. Rendered at the
+            poll's OWN persisted (x, y) — no live-element-geometry join, see
+            PositionedPoll's comment — with the same counter-scale technique
+            as every other overlay badge above. */}
+        {positionedPolls.map(({ poll, results, myVote }) => (
+          <View key={poll.id} pointerEvents="box-none" style={{ position: "absolute", left: poll.x, top: poll.y }}>
+            <PollCard
+              poll={poll}
+              results={results}
+              myVote={myVote}
+              canVote={canVotePolls}
+              canManage={canManagePolls}
+              onVote={(optionIndex) => onVotePoll(poll.id, optionIndex)}
+              onToggleDot={(optionIndex) => onToggleDotPoll(poll.id, optionIndex)}
+              onDelete={() => onDeletePoll(poll.id)}
+              onAdvanceQuiz={poll.quizId ? () => onAdvanceQuiz(poll.quizId as string) : undefined}
               scale={audioInv}
             />
           </View>

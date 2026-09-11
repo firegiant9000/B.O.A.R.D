@@ -84,3 +84,13 @@ export { createPortalSession } from "./callable/createPortalSession";
 // its signing secret set, this answers 500 "not configured" — it has never
 // received a delivery from Stripe. See functions/src/http/stripeWebhook.ts.
 export { stripeWebhook } from "./http/stripeWebhook";
+
+// Month 6 — anonymous-poll tallies. Maintains a server-side vote count at
+// boards/{boardId}/polls/{pollId}/tally/summary on every write (create/
+// update/delete) to a poll's votes subcollection — the ONLY way an anonymous
+// poll (whose votes subcollection firestore.rules denies members from
+// reading, even via count()) can compute or show a result at all. Skips
+// non-anonymous polls entirely (they count the member-readable votes
+// subcollection client-side instead). See functions/src/triggers/
+// pollTally.ts for the eventual-consistency caveat.
+export { onPollVoteWritten } from "./triggers/pollTally";

@@ -10,6 +10,7 @@ import DiagramPromptModal from "../DiagramPromptModal";
 import UpsellModal from "../UpsellModal";
 import ColorPickerModal from "../ColorPickerModal";
 import StrokeWidthModal from "../StrokeWidthModal";
+import PollComposer, { NewPollInput } from "./PollComposer";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
@@ -121,6 +122,12 @@ interface BoardModalsProps {
   activeStrokeWidth: number;
   onChangeStrokeWidth: (w: number) => void;
 
+  // Month 6 — poll composer (Toolbar's "Insert poll" button opens this).
+  // Visibility stays screen state, same convention as every other modal here.
+  pollComposerVisible: boolean;
+  onClosePollComposer: () => void;
+  onCreatePoll: (input: NewPollInput) => void;
+
   /**
    * Month 5 — true while an active, unpaused presenter locks out everyone
    * else's new content creation (`useBoardCollab`'s
@@ -183,6 +190,9 @@ export default function BoardModals({
   activeStrokeWidth,
   onChangeStrokeWidth,
   presenterLocksContentCreation,
+  pollComposerVisible,
+  onClosePollComposer,
+  onCreatePoll,
 }: BoardModalsProps) {
   const activeComment = comments.activeComment;
   const activeCommentDetached =
@@ -311,6 +321,13 @@ export default function BoardModals({
         onClose={onCloseWidthPicker}
         strokeWidth={activeStrokeWidth}
         onChange={onChangeStrokeWidth}
+      />
+
+      {/* Month 6 — the poll-creation form (Toolbar's "Insert poll" button). */}
+      <PollComposer
+        visible={pollComposerVisible}
+        onCancel={onClosePollComposer}
+        onSubmit={onCreatePoll}
       />
 
       {/* Plan-limit upsell, for session create (above) and the three AI

@@ -61,6 +61,7 @@ import type { BoardCollab } from "../../../hooks/useBoardCollab";
 import type { BoardAI } from "../../../hooks/useBoardAI";
 import type { BoardComments } from "../../../hooks/useBoardComments";
 import type { BoardReactions } from "../../../hooks/useBoardReactions";
+import type { BoardPolls } from "../../../hooks/useBoardPolls";
 import type { Plan } from "../../../types";
 
 /**
@@ -311,6 +312,23 @@ function makeReactions(overrides: Partial<BoardReactions> = {}): BoardReactions 
   };
 }
 
+function makePolls(overrides: Partial<BoardPolls> = {}): BoardPolls {
+  return {
+    polls: [],
+    resultsFor: jest.fn(() => null),
+    myVoteFor: jest.fn(() => []),
+    create: jest.fn().mockResolvedValue("newPollId"),
+    vote: jest.fn().mockResolvedValue(undefined),
+    toggleDot: jest.fn().mockResolvedValue(undefined),
+    deletePoll: jest.fn().mockResolvedValue(undefined),
+    advanceQuiz: jest.fn().mockResolvedValue(undefined),
+    clearBoardPolls: jest.fn().mockResolvedValue(undefined),
+    resetLocal: jest.fn(),
+
+    ...overrides,
+  };
+}
+
 interface RenderOpts {
   elements?: Partial<BoardElements>;
   tools?: Partial<BoardTools> & { activeTool: Tool };
@@ -318,6 +336,7 @@ interface RenderOpts {
   ai?: Partial<BoardAI>;
   comments?: Partial<BoardComments>;
   reactions?: Partial<BoardReactions>;
+  polls?: Partial<BoardPolls>;
   plan?: Plan;
   canEdit?: boolean;
   canComment?: boolean;
@@ -330,6 +349,7 @@ function renderCanvas(opts: RenderOpts) {
   const ai = makeAi(opts.ai);
   const comments = makeComments(opts.comments);
   const reactions = makeReactions(opts.reactions);
+  const polls = makePolls(opts.polls);
 
   const withCollab = (c: BoardCollab) => (
     <BoardCanvas
@@ -353,6 +373,7 @@ function renderCanvas(opts: RenderOpts) {
       comments={comments}
       commentPins={[]}
       reactions={reactions}
+      polls={polls}
       editingTextId={null}
       onEditText={jest.fn()}
       isShiftHeld={() => false}
@@ -378,6 +399,7 @@ function renderCanvas(opts: RenderOpts) {
     ai,
     comments,
     reactions,
+    polls,
     /** Re-render with the same elements/tools/ai/comments doubles but a new
      *  `collab` — used to simulate a presentation starting/pausing mid-gesture. */
     rerenderWithCollab: (overrides: Partial<BoardCollab>) => {
@@ -1213,5 +1235,97 @@ describe("BoardCanvas — reactions: canReact and onToggleReaction composition",
     mockOverlayProps.onToggleReaction("el1", "❤️");
 
     expect(reactions.toggle).toHaveBeenCalledWith("el1", "❤️", "text");
+  });
+});
+
+// Month 6 — polls. UNLIKE reactions there is no geometry join to test here
+// (a poll renders at its own persisted x/y); this component's own logic is
+// choosing WHICH polls show — every standalone poll, plus each quiz's
+// CURRENT question only — so that's what these tests pin.
+function makePoll(overrides: Partial<import("../../../types").PollElement> = {}): import("../../../types").PollElement {
+  return {
+    id: "p1",
+    schemaVersion: 1,
+    boardId: "board1",
+    question: "Q?",
+    options: ["A", "B"],
+    anonymous: false,
+    mode: "single",
+    x: 5,
+    y: 6,
+    createdById: "author",
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+describe("BoardCanvas — polls: which polls show this render", () => {
+  it("shows every standalone (non-quiz) poll", () => {
+    const standalone = makePoll({ id: "p1" });
+    renderCanvas({ polls: { polls: [standalone] } });
+    expect(mockOverlayProps.positionedPolls).toEqual([
+      { poll: standalone, results: null, myVote: [] },
+    ]);
+  });
+
+  it("shows only the CURRENT (active) question of a quiz, not the others", () => {
+    const q0 = makePoll({ id: "q0", quizId: "quiz1", quizIndex: 0, active: true });
+    const q1 = makePoll({ id: "q1", quizId: "quiz1", quizIndex: 1, active: false });
+    renderCanvas({ polls: { polls: [q0, q1] } });
+    const shownIds = mockOverlayProps.positionedPolls.map((p: any) => p.poll.id);
+    expect(shownIds).toEqual(["q0"]);
+  });
+
+  it("shows nothing for a quiz with no active question yet", () => {
+    const q0 = makePoll({ id: "q0", quizId: "quiz1", quizIndex: 0, active: false });
+    renderCanvas({ polls: { polls: [q0] } });
+    expect(mockOverlayProps.positionedPolls).toEqual([]);
+  });
+
+  it("resolves results and myVote per poll from the polls hook", () => {
+    const p1 = makePoll({ id: "p1" });
+    const results = { counts: [1, 2], totalVotes: 3, fromTally: false };
+    renderCanvas({
+      polls: {
+        polls: [p1],
+        resultsFor: jest.fn(() => results),
+        myVoteFor: jest.fn(() => [1]),
+      },
+    });
+    expect(mockOverlayProps.positionedPolls).toEqual([{ poll: p1, results, myVote: [1] }]);
+  });
+});
+
+describe("BoardCanvas — polls: role composition (canManagePolls/canVotePolls)", () => {
+  it("passes canEdit straight through as canManagePolls", () => {
+    renderCanvas({ canEdit: false });
+    expect(mockOverlayProps.canManagePolls).toBe(false);
+    renderCanvas({ canEdit: true });
+    expect(mockOverlayProps.canManagePolls).toBe(true);
+  });
+
+  it("passes canComment straight through as canVotePolls", () => {
+    renderCanvas({ canComment: false });
+    expect(mockOverlayProps.canVotePolls).toBe(false);
+    renderCanvas({ canComment: true });
+    expect(mockOverlayProps.canVotePolls).toBe(true);
+  });
+});
+
+describe("BoardCanvas — polls: write-path composition", () => {
+  it("composes onVotePoll/onToggleDotPoll/onDeletePoll/onAdvanceQuiz onto the polls hook", () => {
+    const { polls } = renderCanvas({});
+
+    mockOverlayProps.onVotePoll("p1", 2);
+    expect(polls.vote).toHaveBeenCalledWith("p1", 2);
+
+    mockOverlayProps.onToggleDotPoll("p1", 1);
+    expect(polls.toggleDot).toHaveBeenCalledWith("p1", 1);
+
+    mockOverlayProps.onDeletePoll("p1");
+    expect(polls.deletePoll).toHaveBeenCalledWith("p1");
+
+    mockOverlayProps.onAdvanceQuiz("quiz1");
+    expect(polls.advanceQuiz).toHaveBeenCalledWith("quiz1");
   });
 });

@@ -36,6 +36,15 @@ jest.mock("../../DiagramPromptModal", () => ({
   },
 }));
 
+let mockPollComposerProps: any = null;
+jest.mock("../PollComposer", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockPollComposerProps = props;
+    return null;
+  },
+}));
+
 import React from "react";
 import { Animated } from "react-native";
 import { render } from "@testing-library/react-native";
@@ -137,6 +146,7 @@ function renderModals(opts: {
   workspaceSwatches?: string[];
   onAddSwatch?: jest.Mock;
   onRequestPaletteUpgrade?: jest.Mock;
+  pollComposerVisible?: boolean;
 }) {
   const doc = makeDoc();
   const comments = makeComments();
@@ -144,6 +154,8 @@ function renderModals(opts: {
   const ai = makeAi({ diagramEnabled: true, diagramOpen: true, ...opts.ai });
   const onAddSwatch = opts.onAddSwatch ?? jest.fn();
   const onRequestPaletteUpgrade = opts.onRequestPaletteUpgrade ?? jest.fn();
+  const onClosePollComposer = jest.fn();
+  const onCreatePoll = jest.fn();
 
   render(
     <BoardModals
@@ -190,16 +202,20 @@ function renderModals(opts: {
       activeStrokeWidth={5}
       onChangeStrokeWidth={jest.fn()}
       presenterLocksContentCreation={opts.presenterLocksContentCreation}
+      pollComposerVisible={opts.pollComposerVisible ?? false}
+      onClosePollComposer={onClosePollComposer}
+      onCreatePoll={onCreatePoll}
     />
   );
 
-  return { doc, comments, ai, onAddSwatch, onRequestPaletteUpgrade };
+  return { doc, comments, ai, onAddSwatch, onRequestPaletteUpgrade, onClosePollComposer, onCreatePoll };
 }
 
 beforeEach(() => {
   mockDiagramPromptProps = null;
   mockColorPickerProps = null;
   mockStrokeWidthProps = null;
+  mockPollComposerProps = null;
 });
 
 describe("BoardModals — diagram-generate gate while presenting", () => {
@@ -257,5 +273,26 @@ describe("BoardModals — colour + stroke polish wiring (Month 5, ROADMAP items 
   it("passes the active stroke width straight through to StrokeWidthModal", () => {
     renderModals({ presenterLocksContentCreation: false });
     expect(mockStrokeWidthProps.strokeWidth).toBe(5);
+  });
+});
+
+describe("BoardModals — poll composer wiring (Month 6)", () => {
+  it("passes pollComposerVisible straight through to PollComposer", () => {
+    renderModals({ presenterLocksContentCreation: false, pollComposerVisible: true });
+    expect(mockPollComposerProps.visible).toBe(true);
+
+    renderModals({ presenterLocksContentCreation: false, pollComposerVisible: false });
+    expect(mockPollComposerProps.visible).toBe(false);
+  });
+
+  it("PollComposer's onCancel/onSubmit are the caller-supplied handlers, not re-derived here", () => {
+    const { onClosePollComposer, onCreatePoll } = renderModals({ presenterLocksContentCreation: false });
+
+    mockPollComposerProps.onCancel();
+    expect(onClosePollComposer).toHaveBeenCalledTimes(1);
+
+    const input = { question: "Q?", options: ["A", "B"], anonymous: false, mode: "single" as const };
+    mockPollComposerProps.onSubmit(input);
+    expect(onCreatePoll).toHaveBeenCalledWith(input);
   });
 });

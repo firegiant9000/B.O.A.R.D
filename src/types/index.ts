@@ -445,6 +445,123 @@ export interface Reaction {
   createdAt: Date;
 }
 
+// Month 6 — polls. Unlike Reaction (which only ever anchors to something that
+// already exists on the canvas), a poll is genuinely NEW canvas content: it
+// carries its own board-space (x, y) the way a shape or sticky note does.
+// Lives at `boards/{id}/polls/{pollId}`, member-readable, editor-writable —
+// the same read/write boundary as paths/shapes/textElements (see
+// firestore.rules), not comments/reactions' commenter-write boundary.
+//
+// Votes live in a SEPARATE subcollection, `boards/{id}/polls/{pollId}/votes/
+// {uid}` — **the document id is the voter's uid**, in EVERY mode, including
+// "dots". This is what enforces one vote DOC per user: a member who changes
+// their vote (or adds/removes a dot) overwrites their own doc — a Firestore
+// `update`, not a second row — which is why firestore.rules' `votes` match
+// allows `update` for the voter's own doc, unlike reactions (react/un-react
+// is create/delete only; there is no "change your reaction" concept).
+// Voting itself needs only commenter+ (mirrors reactions/comments), a lower
+// bar than the editor-only bar for creating the poll's canvas position.
+//
+// `anonymous: true` hides voter identity from other MEMBERS — never from the
+// system. The uid is still every vote doc's id (it must be, to dedupe); it
+// is simply kept out of every client-readable path. firestore.rules denies
+// `read` on an anonymous poll's `votes` subcollection outright, to EVERY
+// member (including the board admin and the voter reading their own doc
+// back) — even a listing reveals who voted, without revealing any one
+// choice, so there is no safe partial exception. One consequence: Firestore's
+// `count()` aggregation also requires read permission on the collection it
+// counts, so an anonymous poll cannot compute or display its own results
+// client-side AT ALL. See `PollTally` below for how anonymous polls show a
+// result anyway, and `functions/src/triggers/pollTally.ts` for the header on
+// why that path is eventually consistent.
+//
+// `mode`: "single" is the classic one-vote-counts poll (`optionIndices`
+// always length 1); "dots" is dot-voting, where a member may spread their
+// vote across MULTIPLE options at once, up to `pollService.MAX_DOT_VOTES`
+// (still ONE vote doc — `optionIndices` just holds more than one index).
+//
+// `quizId`/`quizIndex`/`active` sequence a set of polls sharing one `quizId`
+// into an ordered quiz: `active` is true on at most one poll per quizId at a
+// time, and `pollService.advanceQuiz` moves it forward by `quizIndex` order.
+// A standalone (non-quiz) poll carries none of the three.
+export type PollMode = "single" | "dots";
+
+// Kept here (not in pollService.ts) so a pure-presentation component like
+// PollComposer can import just these two numbers without pulling in
+// pollService's own `firebase/firestore` import chain — mirrors
+// REACTION_EMOJIS living here rather than in reactionService.ts, for the
+// same reason. pollService.ts re-exports both for its own callers.
+export const MIN_POLL_OPTIONS = 2;
+export const MAX_POLL_OPTIONS = 6;
+
+export interface PollElement {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  question: string;
+  /** Option labels, 2–6 — enforced by pollService.createPoll and
+   *  firestore.rules on create. A vote references one of these by INDEX
+   *  (PollVote.optionIndices), never by re-typing the label. */
+  options: string[];
+  anonymous: boolean;
+  mode: PollMode;
+  x: number;
+  y: number;
+  createdById: string;
+  /** Present only while this poll is one question of a quiz sequence;
+   *  absent for a standalone poll. */
+  quizId?: string;
+  quizIndex?: number;
+  /** True while this is the currently-shown question of its quiz. Absent/
+   *  false for a standalone poll and for a quiz question not yet reached. */
+  active?: boolean;
+  createdAt: Date;
+}
+
+/** One member's vote. `id` (the doc id) IS `userId` — see PollElement's type
+ *  comment for why, in every mode. `optionIndices` is length 1 in "single"
+ *  mode; 1..MAX_DOT_VOTES in "dots" mode. Firestore rules bound the SIZE of
+ *  this list per the poll's mode but — the rules language has no per-element
+ *  loop/bounds construct for a dynamic-length options array — do not verify
+ *  every index actually falls within the poll's own `options` range; a
+ *  reader must tolerate (never throw on) an out-of-range index, exactly like
+ *  every other tolerant-reader path in this file. That is a correctness gap
+ *  at worst (an uncounted stray vote), never a privacy or vote-stuffing one:
+ *  the doc id / `userId` field pinning is what actually enforces "one vote
+ *  per user," and neither depends on `optionIndices` being valid. */
+export interface PollVote {
+  id: string;
+  userId: string;
+  optionIndices: number[];
+  createdAt: Date;
+}
+
+/** Server-maintained tally for an ANONYMOUS poll, written by a Firestore
+ *  trigger (functions/src/triggers/pollTally.ts) off the `votes`
+ *  subcollection — never by a client; firestore.rules denies every client
+ *  write to `polls/{pollId}/tally/{docId}`, mirroring the metering/billing
+ *  collections' `allow write: if false`. `counts` keys are option INDICES
+ *  as strings (Firestore map keys are always strings), so `counts["0"]` is
+ *  option 0's vote count; an option with zero votes may be entirely absent
+ *  from the map — a reader defaults a missing key to 0, never throws.
+ *  `totalVotes` counts VOTERS (vote docs), not vote-doc-array entries, so it
+ *  undercounts total dot placements on a "dots" poll by design (it answers
+ *  "how many people voted", not "how many dots were placed").
+ *
+ *  EVENTUALLY CONSISTENT: the trigger runs in a separate invocation AFTER
+ *  the triggering vote write commits — there is no way to make a voter's own
+ *  vote land in this document atomically with their own write. A voter may
+ *  briefly see their vote accepted before this tally reflects it. Never
+ *  imply otherwise in UI copy (e.g. no "results update instantly" claim for
+ *  an anonymous poll). Non-anonymous polls never read this at all: their
+ *  `votes` subcollection is member-readable directly, and the client counts
+ *  it live (pollService.subscribeToVotes) instead. */
+export interface PollTally {
+  counts: Record<string, number>;
+  totalVotes: number;
+  updatedAt: Date;
+}
+
 // Phase 8 (Month 3, roadmap item 8). Append-only activity log. An event records a
 // single mutation ("actor did verb to target") and lives in a workspace-scoped
 // collection `workspaces/{wsId}/activity/{eventId}`. `boardId` is denormalized so

@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import DrawingCanvas from "../DrawingCanvas";
 import ZoomControls from "../ZoomControls";
 import CursorLayer from "../CursorLayer";
-import BoardOverlayLayer, { PositionedReactionBadge } from "./BoardOverlayLayer";
+import BoardOverlayLayer, { PositionedPoll, PositionedReactionBadge } from "./BoardOverlayLayer";
 import AiSelectionActions from "./AiSelectionActions";
 import PerfectShapePrompt from "./PerfectShapePrompt";
 import PresentingBanner from "./PresentingBanner";
@@ -17,6 +17,7 @@ import type { BoardCollab } from "../../hooks/useBoardCollab";
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardComments } from "../../hooks/useBoardComments";
 import type { BoardReactions } from "../../hooks/useBoardReactions";
+import type { BoardPolls } from "../../hooks/useBoardPolls";
 import { BackgroundTemplate, CommentAnchorKind, Plan } from "../../types";
 
 /**
@@ -86,6 +87,13 @@ interface BoardCanvasProps {
    *  screen — it needs the live selection to offer a react entry-point on an
    *  element with zero reactions, which this hook has no business knowing. */
   reactions: BoardReactions;
+  /** Month 6 — polls, quiz sequencing, dot voting. UNLIKE reactions/comments,
+   *  there is no live-element-geometry join to do here (a poll isn't
+   *  anchored to anything — it renders at its own persisted x/y), so this
+   *  component's own job is narrower: pick which polls show this render
+   *  (every standalone poll, plus each quiz's CURRENT question only — see
+   *  `positionedPolls` below) and resolve each one's results/myVote. */
+  polls: BoardPolls;
 
   editingTextId: string | null;
   onEditText: (id: string | null) => void;
@@ -129,6 +137,7 @@ export default function BoardCanvas({
   comments,
   commentPins,
   reactions,
+  polls,
   editingTextId,
   onEditText,
   isShiftHeld,
@@ -537,6 +546,20 @@ export default function BoardCanvas({
     }
   );
 
+  // Month 6 — polls. No geometry join (PositionedPoll's comment) — the only
+  // decision this component makes is WHICH polls show this render: every
+  // standalone poll (no `quizId`), plus each quiz's CURRENT question only
+  // (`poll.active`). A quiz question that hasn't been reached yet, or one
+  // already advanced past, is simply never in this list — there is no
+  // separate "hidden" render state for it to carry.
+  const positionedPolls: PositionedPoll[] = polls.polls
+    .filter((poll) => !poll.quizId || poll.active)
+    .map((poll) => ({
+      poll,
+      results: polls.resultsFor(poll.id),
+      myVote: polls.myVoteFor(poll.id),
+    }));
+
   return (
     <View
       style={styles.canvasContainer}
@@ -629,6 +652,13 @@ export default function BoardCanvas({
         onToggleReaction={(elementId, emoji) =>
           reactions.toggle(elementId, emoji, reactions.anchorKindOf(elementId))
         }
+        positionedPolls={positionedPolls}
+        canManagePolls={canEdit}
+        canVotePolls={canComment}
+        onVotePoll={(pollId, optionIndex) => polls.vote(pollId, optionIndex)}
+        onToggleDotPoll={(pollId, optionIndex) => polls.toggleDot(pollId, optionIndex)}
+        onDeletePoll={(pollId) => polls.deletePoll(pollId)}
+        onAdvanceQuiz={(quizId) => polls.advanceQuiz(quizId)}
       />
       {/* Phase 6 — live cursors. A separate, self-subscribing top layer so
           remote cursor updates repaint only this overlay, never the element

@@ -29,6 +29,8 @@ import { useBoardCollab } from "../../src/hooks/useBoardCollab";
 import { useBoardAI } from "../../src/hooks/useBoardAI";
 import { useBoardComments } from "../../src/hooks/useBoardComments";
 import { useBoardReactions } from "../../src/hooks/useBoardReactions";
+import { useBoardPolls } from "../../src/hooks/useBoardPolls";
+import type { NewPollInput } from "../../src/components/board/PollComposer";
 import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
@@ -142,6 +144,9 @@ export default function BoardScreen(
   // picker, opened from Toolbar/PenOptionsBar's "Colour"/"Width" pills.
   const [colorPickerVisible, setColorPickerVisible] = useState(false);
   const [widthPickerVisible, setWidthPickerVisible] = useState(false);
+  // Month 6 — polls, quiz sequencing, dot voting. Opened from Toolbar's
+  // "Insert poll" button, same convention as the pickers above.
+  const [pollComposerVisible, setPollComposerVisible] = useState(false);
   // The plan-limit upsell shown instead of a generic error when session
   // create or an AI affordance is denied for being over its cap.
   const [upsellResource, setUpsellResource] = useState<UpsellResource | null>(null);
@@ -298,6 +303,26 @@ export default function BoardScreen(
     onError: showError,
   });
 
+  // Month 6 — polls, quiz sequencing, dot voting.
+  const polls = useBoardPolls(id!, {
+    user,
+    onError: showError,
+  });
+
+  // New polls are centered in the CURRENT viewport (board-space), same
+  // "insert near what the viewer is looking at" default as pasting from the
+  // clipboard — a poll has no natural anchor point of its own the way a
+  // text-tool tap or a shape drag does, so there is no gesture to place it
+  // from in the first place.
+  const handleCreatePoll = (input: NewPollInput) => {
+    const center = screenToBoard(viewport, {
+      x: canvasSize.width / 2,
+      y: canvasSize.height / 2,
+    });
+    polls.create({ ...input, x: center.x, y: center.y });
+    setPollComposerVisible(false);
+  };
+
   // Adopt newly created elements: switch to select, select them, schedule a save.
   const adoptElements = (
     ids: string[],
@@ -450,10 +475,12 @@ export default function BoardScreen(
         elements.clearBoardElements(),
         comments.clearBoardComments(),
         reactions.clearBoardReactions(),
+        polls.clearBoardPolls(),
       ]);
       elements.resetLocalElements();
       comments.resetLocal();
       reactions.resetLocal();
+      polls.resetLocal();
       setEditingTextId(null);
       elements.selection.clear();
       doc.scheduleSave();
@@ -599,6 +626,7 @@ export default function BoardScreen(
         comments={comments}
         commentPins={commentPins}
         reactions={reactions}
+        polls={polls}
         editingTextId={editingTextId}
         onEditText={setEditingTextId}
         isShiftHeld={isShiftHeld}
@@ -680,6 +708,8 @@ export default function BoardScreen(
           onOpenColorPicker={() => setColorPickerVisible(true)}
           onOpenWidthPicker={() => setWidthPickerVisible(true)}
           onInsertImage={elements.insertImage}
+          onInsertPoll={() => setPollComposerVisible(true)}
+          canInsertPoll={!embedMode}
           onUndo={elements.undo}
           onRedo={elements.redo}
           canRedo={elements.canRedo}
@@ -759,6 +789,9 @@ export default function BoardScreen(
           elements.applyStrokeWidth(w);
         }}
         presenterLocksContentCreation={collab.presenterLocksContentCreation}
+        pollComposerVisible={pollComposerVisible}
+        onClosePollComposer={() => setPollComposerVisible(false)}
+        onCreatePoll={handleCreatePoll}
       />
     </KeyboardAvoidingView>
   );

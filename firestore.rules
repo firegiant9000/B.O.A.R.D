@@ -313,6 +313,52 @@ service cloud.firestore {
       return planOfBoard(boardId) in ['pro', 'edu'];
     }
 
+    // ── Month 6 polls ─────────────────────────────────────────────────────────
+    // Helpers for the `polls`/`votes` match blocks below (inside `boards`).
+    // Split out (rather than inlined at each call site) because `isAnonymousPoll`
+    // and `isValidVotePayload` are each used from more than one `allow` clause,
+    // and the doc-access cache within one rules evaluation (noted at the board
+    // `allow update` above) means the repeat `get()`s below cost nothing extra.
+    function pollExists(boardId, pollId) {
+      return exists(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId));
+    }
+
+    function pollData(boardId, pollId) {
+      return get(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId)).data;
+    }
+
+    // FAIL CLOSED on a missing poll doc (`!pollExists(...) || ...`, defaulting
+    // the `anonymous` field itself to `true` too): a member with delete rights
+    // on the poll (any effective editor) could otherwise delete the poll doc
+    // out from under its own anonymous votes and make them appear "anonymous:
+    // false" by the absence of anything to read `anonymous` off of, unmasking
+    // every voter's identity. Treating "poll missing" as anonymous means a
+    // deleted poll's orphaned votes stay exactly as unreadable as they were the
+    // instant before the delete — see pollService.deletePoll for why the
+    // client-side cleanup path deletes votes/tally BEFORE the poll doc, though
+    // this rule does not depend on that ordering for its own safety.
+    function isAnonymousPoll(boardId, pollId) {
+      return !pollExists(boardId, pollId) ||
+        pollData(boardId, pollId).get('anonymous', true) == true;
+    }
+
+    // Bounds `optionIndices`' SIZE against the poll's mode (single = exactly
+    // one; dots = 1..MAX_DOT_VOTES, mirrored from pollService.MAX_DOT_VOTES —
+    // keep the two in sync) and its TYPE (a list). Deliberately does NOT
+    // validate that every element actually falls within [0, options.size()) —
+    // the rules language has no per-element loop/bounds construct for a
+    // dynamic-length list, and an out-of-range index is a correctness gap a
+    // tolerant reader absorbs (PollVote's type comment in src/types/index.ts),
+    // never a security one: the doc id / `userId` field pinning below is what
+    // actually enforces "one vote per user," independent of this list's
+    // contents.
+    function isValidVotePayload(boardId, pollId) {
+      let idx = request.resource.data.optionIndices;
+      return pollExists(boardId, pollId) &&
+        idx is list && idx.size() >= 1 &&
+        (pollData(boardId, pollId).get('mode', 'single') == 'dots' ? idx.size() <= 3 : idx.size() == 1);
+    }
+
     // ── users ─────────────────────────────────────────────────────────────────
     match /users/{uid} {
       allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
@@ -659,6 +705,77 @@ service cloud.firestore {
         allow delete: if isBoardAdmin(boardId) ||
                         (isBoardCommenter(boardId) &&
                          resource.data.userId == request.auth.uid);
+      }
+
+      // Polls (Month 6) — quiz sequencing + dot voting. UNLIKE reactions, a
+      // poll is genuinely NEW canvas content (its own board-space x/y), not
+      // something anchored to an existing element — so CREATE/UPDATE/DELETE
+      // of the poll doc itself uses `isBoardEditor`, the same canvas-content
+      // write role as paths/shapes/textElements above, not the commenter-level
+      // bound reactions/comments use. VOTING, below, is the commenter-level
+      // action — a viewer sees a poll's position but cannot vote.
+      //
+      // NO `isEmbedEditor` disjunct on the poll doc, unlike paths/shapes/
+      // textElements — deliberately, mirroring comments' own member-only
+      // stance (see isEmbedEditor's header: "COMMENTS stay member-only...
+      // neither ships here"). A poll's voter-identity model (uid dedup,
+      // anonymous-mode masking) is a MEMBER-engagement feature the same way
+      // comments are, not bare canvas geometry; extending it to a host-
+      // asserted embed identity is a real product decision, not an oversight
+      // this file happens to have skipped, and it should be made and rules-
+      // tested on its own if it's ever wanted.
+      match /polls/{pollId} {
+        allow read:   if isBoardMember(boardId);
+        allow create: if isBoardEditor(boardId) &&
+                        request.resource.data.createdById == request.auth.uid &&
+                        request.resource.data.options is list &&
+                        request.resource.data.options.size() >= 2 &&
+                        request.resource.data.options.size() <= 6;
+        allow update, delete: if isBoardEditor(boardId);
+
+        // The document id `{voterId}` IS the uid, in EVERY mode including
+        // "dots" — this is what enforces one vote DOC per user (see
+        // PollElement's type comment, src/types/index.ts). UNLIKE reactions
+        // (`allow update: if false` — react/un-react is create/delete only),
+        // changing your vote is a legitimate UPDATE to that SAME doc, and
+        // this is the one place this file must diverge from the reactions
+        // shape it otherwise mirrors: denying update here would make
+        // "change your vote" impossible, not just idempotent.
+        match /votes/{voterId} {
+          // Anonymous-mode read denial applies to EVERY member, including the
+          // board admin and the voter reading their own doc back — "anonymous
+          // to other users" (the brief's own words) means anonymous to every
+          // user, the voter included; there is no safe partial exception,
+          // because even a single-doc read reveals that THIS uid voted. A
+          // voter's UI tracks its own just-cast selection locally (the write
+          // resolving is the confirmation) rather than reading it back.
+          allow read:   if isBoardMember(boardId) && !isAnonymousPoll(boardId, pollId);
+          allow create: if isBoardCommenter(boardId) &&
+                          voterId == request.auth.uid &&
+                          request.resource.data.userId == request.auth.uid &&
+                          isValidVotePayload(boardId, pollId);
+          allow update: if isBoardCommenter(boardId) &&
+                          voterId == request.auth.uid &&
+                          resource.data.userId == request.auth.uid &&
+                          request.resource.data.userId == request.auth.uid &&
+                          isValidVotePayload(boardId, pollId);
+          allow delete: if isBoardAdmin(boardId) ||
+                          (isBoardCommenter(boardId) &&
+                           voterId == request.auth.uid &&
+                           resource.data.userId == request.auth.uid);
+        }
+
+        // Server-maintained tally for an anonymous poll (PollTally, src/types/
+        // index.ts) — written ONLY by the Admin SDK from
+        // functions/src/triggers/pollTally.ts, which bypasses these rules, so
+        // every client write is denied here exactly like usage/billing above.
+        // Member-readable unconditionally (never gated on isAnonymousPoll):
+        // it carries vote COUNTS only, never a voter's identity, so it is
+        // exactly as safe to read as a non-anonymous poll's live vote count.
+        match /tally/{tallyId} {
+          allow read:  if isBoardMember(boardId);
+          allow write: if false;
+        }
       }
 
       // presence — each user manages only their own presence doc.
