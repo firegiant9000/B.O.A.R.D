@@ -14,11 +14,11 @@ gate, not a suggestion.
   <https://developers.google.com/workspace/meet/add-ons/guides/deploy-add-on>.
 - `panel.html` — the side panel itself: reads `boardId` and `token` from its
   own URL query string and iframes `https://<domain>/embed/b/{boardId}?token=
-  {token}`, i.e. exactly the embed route Task 19/20 hardened. Falls back to a
+  {token}`, i.e. exactly the embed route Month 4/5 hardened. Falls back to a
   visible "not configured" message if either is missing, rather than a blank
   panel.
 
-## What Task 20 actually changed in the app (not just here)
+## What Month 5 changed in the app (not just here)
 
 The embed route (`app/embed/b/[id].tsx`) now reads the **scope the token
 exchange itself returned** (previously discarded) and, through a small pure
@@ -42,8 +42,8 @@ them, since `BoardHeader` is always hidden in embed mode.
 `useBoardElements`'s Cmd/Ctrl+V image paste (a DOM `paste` listener on web,
 `shortcutPaste` on native) has no role gate at all today, for anyone — a real
 read-only viewer can already trigger it and hit the same
-upload-then-denied-write outcome. This predates Task 20 and is not
-embed-specific; fixing it means touching that hook's core write paths for
+upload-then-denied-write outcome. This is a pre-existing gap, not specific to
+embeds; fixing it means touching that hook's core write paths for
 every role, which is out of scope here. Naming it so the button fix above is
 not read as "images can't reach an embed session" — they can, through this
 pre-existing path, for exactly the same reason a real viewer can today.
@@ -111,9 +111,9 @@ None of the above blocks committing this shell. It blocks *submitting* it.
 
 ## BLOCKER — do not enable an editable embed for a real host yet
 
-Task 19 recorded, and this task repeats verbatim because it is easy to lose
-in a later diff: an exchanged embed session outlives every control that
-appears to bound it.
+Recorded when Month 5's editable embed landed, and repeated here verbatim
+because it is easy to lose in a later diff: an exchanged embed session
+outlives every control that appears to bound it.
 
 `exchangeEmbedToken` mints a Firebase custom token; `signInWithCustomToken`
 then establishes a durable Auth session whose refresh token **outlives the
@@ -130,7 +130,7 @@ exists**: `auth.revokeRefreshTokens(uid)` reachable from somewhere, an
 `auth_time` bound in `firestore.rules`' `isEmbedEditor`, and a host client
 (this panel, eventually) that re-exchanges on expiry instead of holding one
 Auth session indefinitely. This shell builds none of that — it was out of
-scope for Task 20 and remains open.
+scope here and remains open.
 
 ## The framing question — who may iframe the embed page today
 
