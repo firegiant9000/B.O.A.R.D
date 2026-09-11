@@ -28,6 +28,7 @@ import { useBoardTools } from "../../src/hooks/useBoardTools";
 import { useBoardCollab } from "../../src/hooks/useBoardCollab";
 import { useBoardAI } from "../../src/hooks/useBoardAI";
 import { useBoardComments } from "../../src/hooks/useBoardComments";
+import { useBoardReactions } from "../../src/hooks/useBoardReactions";
 import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
@@ -291,6 +292,12 @@ export default function BoardScreen(
     onError: showError,
   });
 
+  // Month 6 — reactions.
+  const reactions = useBoardReactions(id!, {
+    user,
+    onError: showError,
+  });
+
   // Adopt newly created elements: switch to select, select them, schedule a save.
   const adoptElements = (
     ids: string[],
@@ -439,9 +446,14 @@ export default function BoardScreen(
 
   const handleClear = async () => {
     try {
-      await Promise.all([elements.clearBoardElements(), comments.clearBoardComments()]);
+      await Promise.all([
+        elements.clearBoardElements(),
+        comments.clearBoardComments(),
+        reactions.clearBoardReactions(),
+      ]);
       elements.resetLocalElements();
       comments.resetLocal();
+      reactions.resetLocal();
       setEditingTextId(null);
       elements.selection.clear();
       doc.scheduleSave();
@@ -574,6 +586,7 @@ export default function BoardScreen(
         blockedIds={blockedIds}
         plan={doc.boardWorkspace?.plan ?? "free"}
         canEdit={doc.canEdit}
+        canComment={doc.canComment}
         enablePanZoom={ENABLE_PAN_ZOOM}
         viewport={viewport}
         canvasSize={canvasSize}
@@ -585,6 +598,7 @@ export default function BoardScreen(
         ai={ai}
         comments={comments}
         commentPins={commentPins}
+        reactions={reactions}
         editingTextId={editingTextId}
         onEditText={setEditingTextId}
         isShiftHeld={isShiftHeld}

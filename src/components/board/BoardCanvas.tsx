@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import DrawingCanvas from "../DrawingCanvas";
 import ZoomControls from "../ZoomControls";
 import CursorLayer from "../CursorLayer";
-import BoardOverlayLayer from "./BoardOverlayLayer";
+import BoardOverlayLayer, { PositionedReactionBadge } from "./BoardOverlayLayer";
 import AiSelectionActions from "./AiSelectionActions";
 import PerfectShapePrompt from "./PerfectShapePrompt";
 import PresentingBanner from "./PresentingBanner";
@@ -16,6 +16,7 @@ import type { BoardTools } from "../../hooks/useBoardTools";
 import type { BoardCollab } from "../../hooks/useBoardCollab";
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardComments } from "../../hooks/useBoardComments";
+import type { BoardReactions } from "../../hooks/useBoardReactions";
 import { BackgroundTemplate, CommentAnchorKind, Plan } from "../../types";
 
 /**
@@ -59,6 +60,11 @@ interface BoardCanvasProps {
    *  the doc — `saveVoiceNote` cleans that specific case up, but the fix on
    *  this end is to not offer the affordance to a role that can't use it. */
   canEdit: boolean;
+  /** Commenter+ (doc.canComment, app/board/[id].tsx). Month 6's reaction
+   *  entry-point on the current selection (like voice notes' `canEdit`
+   *  gate above) uses this weaker permission — reacting needs only
+   *  comment-level access, never edit rights. */
+  canComment: boolean;
 
   /** Phase 2 pan/zoom transform; false renders at identity (the rollback path). */
   enablePanZoom: boolean;
@@ -75,6 +81,11 @@ interface BoardCanvasProps {
   comments: BoardComments;
   /** Pins resolved by the screen (the comments × elements join). */
   commentPins: CommentPin[];
+  /** Month 6 — reactions. Unlike `commentPins`, the elements × reactions join
+   *  (`positionedReactionBadges` below) happens IN this component, not the
+   *  screen — it needs the live selection to offer a react entry-point on an
+   *  element with zero reactions, which this hook has no business knowing. */
+  reactions: BoardReactions;
 
   editingTextId: string | null;
   onEditText: (id: string | null) => void;
@@ -105,6 +116,7 @@ export default function BoardCanvas({
   blockedIds,
   plan,
   canEdit,
+  canComment,
   enablePanZoom,
   viewport,
   canvasSize,
@@ -116,6 +128,7 @@ export default function BoardCanvas({
   ai,
   comments,
   commentPins,
+  reactions,
   editingTextId,
   onEditText,
   isShiftHeld,
@@ -174,7 +187,16 @@ export default function BoardCanvas({
   //     usable while presenting. Rolled into the `singleSelectedId` gate
   //     itself (not passed through separately at the JSX call site) so a
   //     locked audience never even sees it computed as non-null.
-  // For all six, the lock is applied by passing `undefined`/`null` instead of
+  //   - the reaction entry-point on a lone, reaction-less selection (below,
+  //     Month 6, `singleSelectedIdForReaction`): same shape as
+  //     `newVoiceNoteAnchor` one line up, gated on `canComment` instead of
+  //     `canEdit` (reacting needs only comment-level access). Toggling a
+  //     reaction that ALREADY has a badge showing is deliberately NOT gated
+  //     by this lock at all (unlike everything else on this list): reacting
+  //     to what a presenter is showing is the point of the feature during a
+  //     presentation, not a loophole in it — closer to AudioAffordance's
+  //     always-available playback than to any of the writes above.
+  // For all seven, the lock is applied by passing `undefined`/`null` instead of
   // the real handler or value rather than wiring a no-op: each of the
   // underlying components renders no button at all for an undefined handler
   // (matches `SelectionOverlay`'s existing `btn()` pattern), so the audience
@@ -470,6 +492,51 @@ export default function BoardCanvas({
     return box ? [{ note, x: box.maxX + 8, y: box.minY }] : [];
   });
 
+  // Month 6 — reactions. The entry-point for starting a FIRST reaction on an
+  // element: live only while exactly one element is selected with the select
+  // tool, not mid-transform, not presenter-locked (see the giant comment
+  // above), and the viewer can at least comment (`canComment` — weaker than
+  // voice notes' `canEdit`, since reacting needs no write access to the
+  // canvas content itself). Mirrors `singleSelectedId` above exactly except
+  // for that one permission swap.
+  const singleSelectedIdForReaction =
+    tools.activeTool === "select" &&
+    !inGroupGesture &&
+    !presenterLocksContentCreation &&
+    canComment &&
+    elements.selection.count === 1
+      ? elements.selection.selectedId
+      : null;
+
+  // Every element that gets a reaction badge this render: everything with an
+  // existing reaction (any user, any emoji — shown to every board member
+  // regardless of selection or the presenter lock, see the giant comment
+  // above), UNIONED with the reaction-less selection entry-point just
+  // computed. A `Set` so an already-reacted, currently-selected element
+  // isn't double-counted.
+  const reactionBadgeElementIds = Array.from(
+    new Set([
+      ...reactions.elementIdsWithReactions,
+      ...(singleSelectedIdForReaction ? [singleSelectedIdForReaction] : []),
+    ])
+  );
+  // Positioned at the anchor's live bottom-left corner + a small margin —
+  // deliberately a different corner from the voice-note badge's top-right
+  // (`positionedAudioNotes` above) so the two never overlap on an element
+  // that carries both. `anchorKindOf` only ever returns a kind actually read
+  // back from an EXISTING reaction doc (never a guess — see Reaction's type
+  // comment for why a wrong hint is worse than none); it's `undefined` for
+  // the brand-new selection-only case, which is exactly when `boxOfElement`
+  // should scan every kind instead of trusting a hint.
+  const positionedReactionBadges: PositionedReactionBadge[] = reactionBadgeElementIds.flatMap(
+    (elementId) => {
+      const box = elements.boxOfElement(elementId, reactions.anchorKindOf(elementId));
+      return box
+        ? [{ elementId, x: box.minX, y: box.maxY + 4, counts: reactions.countsFor(elementId) }]
+        : [];
+    }
+  );
+
   return (
     <View
       style={styles.canvasContainer}
@@ -557,6 +624,11 @@ export default function BoardCanvas({
         plan={plan}
         audioNotes={positionedAudioNotes}
         newVoiceNoteAnchor={newVoiceNoteAnchor}
+        reactionBadges={positionedReactionBadges}
+        canReact={canComment}
+        onToggleReaction={(elementId, emoji) =>
+          reactions.toggle(elementId, emoji, reactions.anchorKindOf(elementId))
+        }
       />
       {/* Phase 6 — live cursors. A separate, self-subscribing top layer so
           remote cursor updates repaint only this overlay, never the element

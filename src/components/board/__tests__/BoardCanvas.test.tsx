@@ -60,6 +60,7 @@ import type { BoardTools, Tool } from "../../../hooks/useBoardTools";
 import type { BoardCollab } from "../../../hooks/useBoardCollab";
 import type { BoardAI } from "../../../hooks/useBoardAI";
 import type { BoardComments } from "../../../hooks/useBoardComments";
+import type { BoardReactions } from "../../../hooks/useBoardReactions";
 import type { Plan } from "../../../types";
 
 /**
@@ -296,14 +297,30 @@ function makeComments(overrides: Partial<BoardComments> = {}): BoardComments {
   };
 }
 
+function makeReactions(overrides: Partial<BoardReactions> = {}): BoardReactions {
+  return {
+    reactions: [],
+    elementIdsWithReactions: [],
+    countsFor: jest.fn(() => []),
+    anchorKindOf: jest.fn(() => undefined),
+    toggle: jest.fn().mockResolvedValue(undefined),
+    clearBoardReactions: jest.fn().mockResolvedValue(undefined),
+    resetLocal: jest.fn(),
+
+    ...overrides,
+  };
+}
+
 interface RenderOpts {
   elements?: Partial<BoardElements>;
   tools?: Partial<BoardTools> & { activeTool: Tool };
   collab?: Partial<BoardCollab>;
   ai?: Partial<BoardAI>;
   comments?: Partial<BoardComments>;
+  reactions?: Partial<BoardReactions>;
   plan?: Plan;
   canEdit?: boolean;
+  canComment?: boolean;
 }
 
 function renderCanvas(opts: RenderOpts) {
@@ -312,6 +329,7 @@ function renderCanvas(opts: RenderOpts) {
   const collab = makeCollab(opts.collab);
   const ai = makeAi(opts.ai);
   const comments = makeComments(opts.comments);
+  const reactions = makeReactions(opts.reactions);
 
   const withCollab = (c: BoardCollab) => (
     <BoardCanvas
@@ -322,6 +340,7 @@ function renderCanvas(opts: RenderOpts) {
       blockedIds={[]}
       plan={opts.plan ?? "free"}
       canEdit={opts.canEdit ?? true}
+      canComment={opts.canComment ?? true}
       enablePanZoom={true}
       viewport={{ x: 0, y: 0, scale: 1 }}
       canvasSize={{ width: 800, height: 600 }}
@@ -333,6 +352,7 @@ function renderCanvas(opts: RenderOpts) {
       ai={ai}
       comments={comments}
       commentPins={[]}
+      reactions={reactions}
       editingTextId={null}
       onEditText={jest.fn()}
       isShiftHeld={() => false}
@@ -357,6 +377,7 @@ function renderCanvas(opts: RenderOpts) {
     collab,
     ai,
     comments,
+    reactions,
     /** Re-render with the same elements/tools/ai/comments doubles but a new
      *  `collab` — used to simulate a presentation starting/pausing mid-gesture. */
     rerenderWithCollab: (overrides: Partial<BoardCollab>) => {
@@ -1015,5 +1036,182 @@ describe("BoardCanvas — voice notes: the record-entry-point (newVoiceNoteAncho
       elements: { selection: selectionOf("el1", 1) as any, overlayBounds: OVERLAY_BOUNDS },
     });
     expect(mockOverlayProps.newVoiceNoteAnchor).toBeNull();
+  });
+});
+
+// Month 6 — reactions. BoardOverlayLayer is mocked out (see the top of this
+// file), so these assert what BoardCanvas computes and hands it — same
+// recipe as the voice-note describes above, whose ANCHOR_BOX/OVERLAY_BOUNDS
+// shape this section reuses (`OVERLAY_BOUNDS` is the module-scoped one
+// defined above the voice-note describes).
+describe("BoardCanvas — reactions: existing badges (any member, not gated by selection)", () => {
+  it("resolves a badge's position from its anchor's LIVE bounds via boxOfElement, at the bottom-left corner + margin", () => {
+    const counts = [{ emoji: "👍" as const, count: 2, reactedByMe: false }];
+    const { elements } = renderCanvas({
+      elements: {
+        boxOfElement: jest.fn((id: string) => (id === "el1" ? OVERLAY_BOUNDS : null)),
+      },
+      reactions: {
+        elementIdsWithReactions: ["el1"],
+        countsFor: jest.fn(() => counts),
+        anchorKindOf: jest.fn(() => "shape"),
+      },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([
+      { elementId: "el1", x: OVERLAY_BOUNDS.minX, y: OVERLAY_BOUNDS.maxY + 4, counts },
+    ]);
+    // The stored anchor kind ("shape", from `anchorKindOf`) is passed to
+    // boxOfElement as the resolution hint (never a guess — see Reaction's
+    // type comment) — asserted directly, not inferred from the result above.
+    expect(elements.boxOfElement).toHaveBeenCalledWith("el1", "shape");
+  });
+
+  it("omits a badge whose anchor can't be found (boxOfElement returns null) instead of a stale position", () => {
+    renderCanvas({
+      elements: { boxOfElement: jest.fn(() => null) },
+      reactions: { elementIdsWithReactions: ["el1"] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("shows an existing-reaction badge with no selection at all, unlike the voice-note record affordance", () => {
+    renderCanvas({
+      tools: { activeTool: "pen" },
+      elements: {
+        selection: selectionOf(null, 0) as any,
+        boxOfElement: jest.fn(() => OVERLAY_BOUNDS),
+      },
+      reactions: { elementIdsWithReactions: ["el1"] },
+    });
+    expect(mockOverlayProps.reactionBadges.map((b: any) => b.elementId)).toEqual(["el1"]);
+  });
+
+  it("shows an existing-reaction badge even while a presentation locks content creation", () => {
+    renderCanvas({
+      collab: { presenterLocksContentCreation: true },
+      elements: {
+        selection: selectionOf(null, 0) as any,
+        boxOfElement: jest.fn(() => OVERLAY_BOUNDS),
+      },
+      reactions: { elementIdsWithReactions: ["el1"] },
+    });
+    expect(mockOverlayProps.reactionBadges.map((b: any) => b.elementId)).toEqual(["el1"]);
+  });
+
+  it("renders one badge per element with reactions, no duplicates", () => {
+    renderCanvas({
+      elements: { boxOfElement: jest.fn(() => OVERLAY_BOUNDS) },
+      reactions: { elementIdsWithReactions: ["el1", "el2"] },
+    });
+    expect(mockOverlayProps.reactionBadges.map((b: any) => b.elementId).sort()).toEqual(["el1", "el2"]);
+  });
+});
+
+describe("BoardCanvas — reactions: the start-reacting entry-point (singleSelectedIdForReaction)", () => {
+  it("appears next to a lone selection with no reaction yet, at the box's bottom-left + margin", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        boxOfElement: jest.fn(() => OVERLAY_BOUNDS),
+      },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([
+      { elementId: "el1", x: OVERLAY_BOUNDS.minX, y: OVERLAY_BOUNDS.maxY + 4, counts: [] },
+    ]);
+  });
+
+  it("doesn't duplicate the badge when the selected element already has a reaction", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        boxOfElement: jest.fn(() => OVERLAY_BOUNDS),
+      },
+      reactions: { elementIdsWithReactions: ["el1"] },
+    });
+    expect(mockOverlayProps.reactionBadges).toHaveLength(1);
+  });
+
+  it("is absent when nothing is selected and nothing has a reaction", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: { selection: selectionOf(null, 0) as any },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("is absent when more than one element is selected", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: { selection: selectionOf(null, 2) as any },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("is absent when the select tool isn't active", () => {
+    renderCanvas({
+      tools: { activeTool: "pen" },
+      elements: { selection: selectionOf("el1", 1) as any, boxOfElement: jest.fn(() => OVERLAY_BOUNDS) },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("is absent mid-transform (dragOffset set)", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      elements: {
+        selection: selectionOf("el1", 1) as any,
+        boxOfElement: jest.fn(() => OVERLAY_BOUNDS),
+        dragOffset: { dx: 3, dy: 3 },
+      },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("is absent while a presentation locks content creation", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      collab: { presenterLocksContentCreation: true },
+      elements: { selection: selectionOf("el1", 1) as any, boxOfElement: jest.fn(() => OVERLAY_BOUNDS) },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+
+  it("is absent when the viewer cannot comment (canComment: false) — reacting needs comment-level access", () => {
+    renderCanvas({
+      tools: { activeTool: "select" },
+      canComment: false,
+      elements: { selection: selectionOf("el1", 1) as any, boxOfElement: jest.fn(() => OVERLAY_BOUNDS) },
+      reactions: { elementIdsWithReactions: [] },
+    });
+    expect(mockOverlayProps.reactionBadges).toEqual([]);
+  });
+});
+
+describe("BoardCanvas — reactions: canReact and onToggleReaction composition", () => {
+  it("passes canComment straight through as canReact", () => {
+    renderCanvas({ canComment: false });
+    expect(mockOverlayProps.canReact).toBe(false);
+
+    renderCanvas({ canComment: true });
+    expect(mockOverlayProps.canReact).toBe(true);
+  });
+
+  it("composes onToggleReaction to call reactions.toggle with (elementId, emoji, the stored anchor kind)", () => {
+    const { reactions } = renderCanvas({
+      elements: { boxOfElement: jest.fn(() => OVERLAY_BOUNDS) },
+      reactions: { elementIdsWithReactions: ["el1"], anchorKindOf: jest.fn(() => "text") },
+    });
+
+    mockOverlayProps.onToggleReaction("el1", "❤️");
+
+    expect(reactions.toggle).toHaveBeenCalledWith("el1", "❤️", "text");
   });
 });

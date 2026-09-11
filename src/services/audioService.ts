@@ -39,18 +39,17 @@ const ID_ALPHABET =
  *  depth alongside AudioAffordance's own recorder auto-stop) so a caller that
  *  bypasses the UI — a duplicate/paste path added later, a direct call into
  *  this module — still cannot persist an over-cap note through THIS
- *  function. Like `canRecordVoiceNotes` below, this is a client-side check
- *  only. storage.rules' matching `isValidAudioUpload` WOULD cap upload
- *  *size* (2 MB, a rough proxy for ~60s at this format's bitrate, not an
- *  actual duration check — Storage rules have no notion of audio duration)
- *  once that file is deployed — as of this writing `firebase.json` has no
- *  `storage` entry, so storage.rules (this block and the Month 2 image
- *  rules alike) has never been deployed and enforces nothing yet. Even once
- *  it is, a raw SDK call that skips `saveVoiceNote` entirely could still
- *  write a longer note under that byte ceiling (e.g. a lower-bitrate
- *  recording). Closing that fully needs a Cloud Function on this write path,
- *  same as the plan gate — not added here; see the module-level comment
- *  below. */
+ *  function. Unlike `canRecordVoiceNotes` below (which Month 6 also gave a
+ *  server-side backstop in firestore.rules), THIS cap is still a client-side
+ *  check only — rules cannot measure audio duration, only Storage object
+ *  *size* (a rough proxy, not the real thing) via storage.rules' matching
+ *  `isValidAudioUpload`, once that file is deployed — as of this writing
+ *  `firebase.json` has no `storage` entry, so storage.rules (this block and
+ *  the Month 2 image rules alike) has never been deployed and enforces
+ *  nothing yet. Even once it is, a raw SDK call that skips `saveVoiceNote`
+ *  entirely could still write a longer note under that byte ceiling (e.g. a
+ *  lower-bitrate recording). Closing that fully needs a Cloud Function on
+ *  this write path — not added here. */
 export const MAX_DURATION_MS = 60_000;
 
 function storagePathFor(boardId: string, audioId: string): string {
@@ -102,12 +101,13 @@ export interface SaveVoiceNoteInput {
  * Bytes land in Storage before the doc is written (the doc's `downloadUrl`
  * needs the object to already exist), which briefly creates the exact class
  * of stranded object this task was chartered to eliminate: storage.rules
- * lets any board member upload, but firestore.rules' `audio` match only
- * lets an editor write the doc, so a caller whose upload succeeds and whose
- * doc write is denied (a viewer/commenter — see AudioAffordance's `canEdit`
- * gate, which exists precisely to make this rare) would otherwise leave the
- * object behind with nothing ever referencing it. Any failure from here on
- * — `getDownloadURL` or `setDoc` — deletes the just-uploaded object
+ * lets any board member upload, but firestore.rules' `audio` match only lets
+ * an editor ON A PAID PLAN (Month 6) write the doc, so a caller whose upload
+ * succeeds and whose doc write is denied — a viewer/commenter (see
+ * AudioAffordance's `canEdit` gate) or a free-plan editor (see its `canRecord`
+ * gate, both of which exist precisely to make this rare) — would otherwise
+ * leave the object behind with nothing ever referencing it. Any failure from
+ * here on — `getDownloadURL` or `setDoc` — deletes the just-uploaded object
  * (best-effort) before rethrowing, so a denied/failed write never strands
  * bytes the way a *lost* one would.
  *
@@ -257,27 +257,24 @@ export function subscribeToBoardAudio(
   });
 }
 
-// ── advisory Pro entitlement check ──────────────────────────────────────────
-// ⚠️ ADVISORY ONLY — NOT AN ENFORCEMENT POINT. See quotaService.ts's module
-// header for the full rationale behind that framing; this is the same thing
-// for a boolean feature-gate instead of a countable quota.
-//
+// ── Pro entitlement check (affordance gate; also enforced server-side) ──────
 // Voice notes are billed as a Pro-tier feature (ROADMAP.md:583-587, item 9).
-// Nothing server-side enforces that today: firestore.rules' `boards/{id}/audio`
-// match and storage.rules' `boards/{id}/audio/...` match both gate on board
-// membership only (mirroring the images rule they're copied from) — neither
-// reads `plan`, and no Cloud Function sits on this write path. A determined
-// client — a patched bundle, or a raw SDK call that skips this module
-// entirely — can record and upload a voice note on the free tier right now.
-// This function exists solely so AudioAffordance can offer an upgrade instead
-// of a broken/silent recorder; it denies nothing a server would enforce.
 //
-// Closing this gap needs the same kind of change quotaService.ts's header
-// describes for boards/sessions: a rules or callable predicate on `plan`.
-// That is tracked separately (owned by a later task that already touches
-// firestore.rules) — do not add a plan predicate to firestore.rules or
-// storage.rules here, and do not treat this function as enforcement anywhere
-// it's called.
+// This function itself is still just the UI's affordance gate — it decides
+// whether AudioAffordance shows a recorder or an upgrade prompt, nothing more
+// — but as of Month 6 the tier is ALSO enforced server-side: firestore.rules'
+// `boards/{id}/audio` match denies `create` on a free-plan board via
+// `boardOnPaidPlan` (that predicate reads the workspace's real `plan`, unlike
+// this function's plain `plan` parameter, so it can't be steered by whatever
+// value a caller passes here). A patched bundle or a raw SDK call that skips
+// this module entirely still hits that rule on the actual write.
+//
+// storage.rules' `boards/{id}/audio/...` match is NOT part of that fix (still
+// membership-only, no `plan` read) — a denied Firestore doc write can still
+// leave an uploaded Storage object behind; closing that is tracked
+// separately. `saveVoiceNote` above already deletes the object on a failed
+// doc write for exactly this reason, which now includes "denied by the plan
+// gate," not just network/permission failures.
 export function canRecordVoiceNotes(plan: Plan): boolean {
   return plan !== "free";
 }

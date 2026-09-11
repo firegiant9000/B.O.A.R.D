@@ -292,6 +292,27 @@ service cloud.firestore {
       return next.get('workspaceId', null) == board.get('workspaceId', null);
     }
 
+    // ── M6 plan gates (feature tiers other than the seat cap) ──────────────────
+    // A board's plan, resolved through the SAME `planOfWorkspace` helper the M5
+    // seat cap uses above — never a second way to read `plan`. A legacy board
+    // (no workspaceId) resolves through planOfWorkspace's own null handling to
+    // 'free', same as everywhere else that helper is used.
+    function planOfBoard(boardId) {
+      return planOfWorkspace(get(/databases/$(database)/documents/boards/$(boardId)).data.get('workspaceId', null));
+    }
+
+    // Voice notes are Pro-tier (ROADMAP.md:583-587). An ALLOW-list of paid
+    // tiers, not `planOfBoard(boardId) != 'free'`: an unrecognized plan string
+    // (a future tier, corrupt data) must fail CLOSED to "not paid", mirroring
+    // `planSeatLimit`'s own fallback-to-free behavior above. This is a
+    // deliberate, narrow divergence from the advisory client check
+    // (`canRecordVoiceNotes` in src/services/audioService.ts, which tests
+    // `plan !== 'free'` instead) — the two agree on every real `Plan` value
+    // and differ only on data neither should ever see.
+    function boardOnPaidPlan(boardId) {
+      return planOfBoard(boardId) in ['pro', 'edu'];
+    }
+
     // ── users ─────────────────────────────────────────────────────────────────
     match /users/{uid} {
       allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
@@ -533,18 +554,27 @@ service cloud.firestore {
         allow write: if isBoardEditor(boardId);
       }
 
-      // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9). Same
-      // member-read / editor-write gate as every other canvas-content
-      // subcollection above — no `plan` predicate here. Voice notes are
-      // billed Pro-tier but that is enforced NOWHERE server-side today; see
-      // src/services/audioService.ts's `canRecordVoiceNotes` header. The
-      // matching storage.rules block for the audio bytes carries the same
-      // caveat.
+      // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9; Month 6 —
+      // the Pro-tier gate). Same member-read / editor-write gate as every
+      // other canvas-content subcollection above, PLUS `boardOnPaidPlan` on
+      // create: voice notes are billed Pro-tier, and this is what actually
+      // enforces it server-side now (see the updated header on
+      // src/services/audioService.ts's `canRecordVoiceNotes` — it is an
+      // affordance gate now, not the only enforcement). The matching
+      // storage.rules block for the audio bytes still carries the old
+      // caveat; closing that is tracked separately.
+      //
+      // Gated on CREATE only, not update/delete: a workspace that downgrades
+      // after notes already exist must still let its editors delete (or, if
+      // ever added, edit) those notes — bricking existing content on a
+      // downgrade is not this gate's job, only stopping NEW Pro-tier usage
+      // on a free plan is.
       // No embed write, for the same reason as images: the audio bytes are
       // member-gated in storage.rules.
       match /audio/{audioId} {
-        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow read:   if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow create: if isBoardEditor(boardId) && boardOnPaidPlan(boardId);
+        allow update, delete: if isBoardEditor(boardId);
       }
 
       match /snapshots/{snapshotId} {
@@ -575,6 +605,34 @@ service cloud.firestore {
         allow delete: if isBoardAdmin(boardId) ||
                         (isBoardCommenter(boardId) &&
                          resource.data.authorId == request.auth.uid);
+      }
+
+      // Reactions (Month 6) — 👍 ❤️ ❓ ⭐ 💡 anchored to canvas elements.
+      // Reuses isBoardCommenter directly (same commenter+ boundary as
+      // comments above, including its legacy-board tolerance and per-board
+      // override floor-capping) rather than a second write-role predicate.
+      //
+      // UNLIKE comments: no update — react/un-react is create/delete only,
+      // there is no body to edit or thread to resolve — and delete is
+      // restricted to the reacting user's OWN reaction, with no
+      // admin-moderation arm (a stray emoji isn't the moderation surface
+      // comments' delete rule exists for).
+      //
+      // The document id `{elementId}_{emoji}_{userId}` (reactionService.ts)
+      // is the UNIQUENESS constraint (one user cannot double-react with the
+      // same emoji on the same element) — it is NOT what this rule
+      // authorizes the write against. Parsing it here would mean trusting a
+      // fixed `_`-separated segment count, which breaks the moment any
+      // segment itself contains an underscore; the `userId` FIELD below is
+      // the actual authorization boundary, exactly as trustworthy as
+      // comments' own `authorId` pin above and immune to that fragility.
+      match /reactions/{reactionId} {
+        allow read:   if isBoardMember(boardId);
+        allow create: if isBoardCommenter(boardId) &&
+                        request.resource.data.userId == request.auth.uid;
+        allow update: if false;
+        allow delete: if isBoardCommenter(boardId) &&
+                        resource.data.userId == request.auth.uid;
       }
 
       // presence — each user manages only their own presence doc.

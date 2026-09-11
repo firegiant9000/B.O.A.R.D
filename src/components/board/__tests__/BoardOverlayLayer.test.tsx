@@ -17,10 +17,21 @@ jest.mock("../AudioAffordance", () => ({
   },
 }));
 
+// Month 6 — same recipe for the reaction badge.
+const mockReactionBadgeCalls: any[] = [];
+jest.mock("../ReactionBadge", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockReactionBadgeCalls.push(props);
+    return null;
+  },
+}));
+
 import React from "react";
 import { render } from "@testing-library/react-native";
-import BoardOverlayLayer, { PositionedAudioNote } from "../BoardOverlayLayer";
-import { AudioElement } from "../../../types";
+import BoardOverlayLayer, { PositionedAudioNote, PositionedReactionBadge } from "../BoardOverlayLayer";
+import { AudioElement, REACTION_EMOJIS } from "../../../types";
+import type { ReactionCount } from "../../../hooks/useBoardReactions";
 
 /**
  * BoardOverlayLayer.test.tsx — Month 5 voice notes (ROADMAP.md:583-587).
@@ -71,8 +82,15 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof BoardOverlayLa
     plan: "pro" as const,
     audioNotes: [] as PositionedAudioNote[],
     newVoiceNoteAnchor: null,
+    reactionBadges: [] as PositionedReactionBadge[],
+    canReact: true,
+    onToggleReaction: jest.fn(),
     ...overrides,
   };
+}
+
+function zeroCounts(): ReactionCount[] {
+  return REACTION_EMOJIS.map((emoji) => ({ emoji, count: 0, reactedByMe: false }));
 }
 
 const NOTE: AudioElement = {
@@ -97,6 +115,7 @@ const POSITIONED_NOTE: PositionedAudioNote = { note: NOTE, x: 30, y: 40 };
 
 beforeEach(() => {
   mockAudioAffordanceCalls.length = 0;
+  mockReactionBadgeCalls.length = 0;
 });
 
 describe("existing voice notes", () => {
@@ -204,5 +223,56 @@ describe("counter-scale (item 11)", () => {
   it("defaults to scale 1 at viewport.scale 1", () => {
     render(<BoardOverlayLayer {...baseProps({ audioNotes: [POSITIONED_NOTE] })} />);
     expect(mockAudioAffordanceCalls[0].scale).toBe(1);
+  });
+});
+
+// Month 6 — reactions. Mirrors the voice-note describes above exactly: this
+// layer is dumb, so these assert what it's handed reaches ReactionBadge
+// unchanged, at the caller-resolved position.
+describe("reaction badges", () => {
+  const BADGE: PositionedReactionBadge = { elementId: "el1", x: 12, y: 34, counts: zeroCounts() };
+
+  it("renders one ReactionBadge per entry, at the given position, with counts/canReact threaded through", () => {
+    render(
+      <BoardOverlayLayer
+        {...baseProps({ reactionBadges: [BADGE], canReact: true })}
+      />
+    );
+    expect(mockReactionBadgeCalls).toHaveLength(1);
+    expect(mockReactionBadgeCalls[0]).toMatchObject({ counts: BADGE.counts, canReact: true });
+  });
+
+  it("renders nothing when there are no reaction badges", () => {
+    render(<BoardOverlayLayer {...baseProps()} />);
+    expect(mockReactionBadgeCalls).toHaveLength(0);
+  });
+
+  it("renders one ReactionBadge per element for multiple badges", () => {
+    const badge2: PositionedReactionBadge = { elementId: "el2", x: 1, y: 1, counts: zeroCounts() };
+    render(<BoardOverlayLayer {...baseProps({ reactionBadges: [BADGE, badge2] })} />);
+    expect(mockReactionBadgeCalls).toHaveLength(2);
+  });
+
+  it("threads canReact: false through to a viewer who can't react", () => {
+    render(<BoardOverlayLayer {...baseProps({ reactionBadges: [BADGE], canReact: false })} />);
+    expect(mockReactionBadgeCalls[0].canReact).toBe(false);
+  });
+
+  it("composes onToggle so pressing an emoji calls the layer's onToggleReaction with (elementId, emoji)", () => {
+    const onToggleReaction = jest.fn();
+    render(
+      <BoardOverlayLayer {...baseProps({ reactionBadges: [BADGE], onToggleReaction })} />
+    );
+    mockReactionBadgeCalls[0].onToggle("👍");
+    expect(onToggleReaction).toHaveBeenCalledWith("el1", "👍");
+  });
+
+  it("passes 1 / viewport.scale as ReactionBadge's scale prop, same as the voice-note badges", () => {
+    render(
+      <BoardOverlayLayer
+        {...baseProps({ viewport: { x: 0, y: 0, scale: 2 }, reactionBadges: [BADGE] })}
+      />
+    );
+    expect(mockReactionBadgeCalls[0].scale).toBeCloseTo(0.5);
   });
 });

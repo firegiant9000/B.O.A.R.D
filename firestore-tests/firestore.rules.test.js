@@ -249,6 +249,19 @@ beforeEach(async () => {
     await setDoc(doc(db, "boards/boardPrivate/comments/cmtP"), seedComment);
     await setDoc(doc(db, "boards/boardLegacy/comments/cmtL"), seedComment);
 
+    // Month 6 — reaction fixtures (one per board), reacted by alice. Doc ids
+    // follow the real `{elementId}_{emoji}_{userId}` shape so the read/delete
+    // tests below exercise the actual production path, not a stand-in id.
+    const seedReaction = (userId) => ({
+      schemaVersion: 1,
+      anchorElementId: "seed",
+      anchorKind: "shape",
+      emoji: "👍",
+      userId,
+    });
+    await setDoc(doc(db, "boards/boardWrite/reactions/seed_👍_alice"), seedReaction(ALICE));
+    await setDoc(doc(db, "boards/boardPrivate/reactions/seed_👍_alice"), seedReaction(ALICE));
+
     // Phase 4 — sessions inherit a workspaceId from their board.
     await setDoc(doc(db, "sessions/sessWsA"), {
       workspaceId: "wsA",
@@ -843,6 +856,37 @@ describe("per-board roles", () => {
   });
 });
 
+// ── Month 6: voice notes are Pro-tier — enforced in rules, not just the
+// advisory client check (src/services/audioService.ts's `canRecordVoiceNotes`
+// header). boardWrite is wsA (free); boardProFull is wsPro (pro), same shape
+// of membership — only the workspace's plan differs between the two.
+describe("voice notes: Pro-tier plan gate (Month 6)", () => {
+  it("denies creating a voice note on a free-plan board, even for an editor", async () => {
+    // dave is boardWrite's default effective editor (see "per-board roles"
+    // above, which already proves he can write `paths` there) — the ONLY
+    // thing wrong with this write is the workspace's plan. If the plan
+    // predicate were missing (pre-Month-6 behavior), this would succeed.
+    await assertFails(
+      setDoc(doc(db(DAVE), "boards/boardWrite/audio/byDave"), { userId: DAVE })
+    );
+  });
+
+  it("lets an editor create a voice note on a pro-plan board (positive control)", async () => {
+    // Same actor, same role, same board shape as the denied case above —
+    // only the workspace's plan differs. Proves the predicate isn't `false`
+    // for everyone, which the denial test alone couldn't rule out.
+    await assertSucceeds(
+      setDoc(doc(db(DAVE), "boards/boardProFull/audio/byDave"), { userId: DAVE })
+    );
+  });
+
+  it("an unrecognized plan string fails closed to the free gate (reuses planOfWorkspace's own fallback, not a second plan reader)", async () => {
+    await assertFails(
+      setDoc(doc(db(DAVE), "boards/boardWeirdFull/audio/byDave"), { userId: DAVE })
+    );
+  });
+});
+
 // ── Phase 7: comments (read = board member, write = commenter+) ───────────────
 describe("comments", () => {
   const newComment = (uid, authorId) => ({
@@ -915,6 +959,92 @@ describe("comments", () => {
   it("a legacy board (no workspaceId) lets any member comment", async () => {
     await assertSucceeds(
       setDoc(doc(db(EVIL), "boards/boardLegacy/comments/byEvil"), newComment(EVIL, EVIL))
+    );
+  });
+});
+
+// ── Month 6: reactions (👍 ❤️ ❓ ⭐ 💡) — read = board member, write =
+// commenter+, same boundary as comments. Reuses isBoardCommenter directly
+// (never a second commenter check), so its legacy-board tolerance and
+// per-board-override floor-capping apply here unchanged.
+describe("reactions", () => {
+  const reactionId = (elementId, emoji, userId) => `${elementId}_${emoji}_${userId}`;
+  const react = (actorUid, elementId, emoji, userId) =>
+    setDoc(doc(db(actorUid), `boards/boardWrite/reactions/${reactionId(elementId, emoji, userId)}`), {
+      schemaVersion: 1,
+      anchorElementId: elementId,
+      anchorKind: "shape",
+      emoji,
+      userId,
+    });
+
+  it("a board member can read reactions (read follows board access)", async () => {
+    await assertSucceeds(getDoc(doc(db(CAROL), "boards/boardWrite/reactions/seed_👍_alice")));
+    await assertSucceeds(getDoc(doc(db(FRANK), "boards/boardWrite/reactions/seed_👍_alice")));
+  });
+
+  it("a cross-workspace member cannot read reactions", async () => {
+    // evil is in boardPrivate.members but not in wsA — denied through the
+    // same workspace gate the "comments" and canvas-content describes above
+    // already prove; this is reactions' own instance of that boundary.
+    await assertFails(getDoc(doc(db(EVIL), "boards/boardPrivate/reactions/seed_👍_alice")));
+  });
+
+  // Positive control for "denies a viewer reacting" below: same board,
+  // element and emoji shape, only the actor's ROLE differs (commenter vs.
+  // viewer). If isBoardCommenter were replaced with `if false`, THIS test —
+  // not just the denial below — would fail, proving the denial denies for
+  // the right reason rather than because nothing here can ever succeed.
+  it("lets a board commenter react", async () => {
+    // carol is a wsA viewer with an 'editor' override, floor-capped to
+    // commenter (see "comments" above) — still allowed to react.
+    await assertSucceeds(react(CAROL, "seed", "👍", CAROL));
+  });
+
+  it("a workspace member (effective editor, a fortiori a commenter) can react", async () => {
+    await assertSucceeds(react(DAVE, "seed", "❤️", DAVE));
+  });
+
+  it("denies a viewer reacting", async () => {
+    // frank's per-board override is 'viewer' (see "comments" above) — the
+    // only difference from the successful carol case is the role.
+    await assertFails(react(FRANK, "seed", "👍", FRANK));
+  });
+
+  it("denies reacting as another user (the userId FIELD must match auth, not merely be present)", async () => {
+    // dave is a genuine commenter here (proven by the case above) — the only
+    // thing wrong with this write is that the userId field (and doc id) name
+    // carol instead of the caller. If the userId-pin check were dropped and
+    // only isBoardCommenter(boardId) remained, this would succeed.
+    await assertFails(react(DAVE, "seed", "👍", CAROL));
+  });
+
+  it("a legacy board (no workspaceId) lets any member react", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(EVIL), "boards/boardLegacy/reactions/p1_⭐_" + EVIL), {
+        schemaVersion: 1,
+        anchorElementId: "p1",
+        anchorKind: "path",
+        emoji: "⭐",
+        userId: EVIL,
+      })
+    );
+  });
+
+  it("the reacting user can remove their own reaction", async () => {
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "boards/boardWrite/reactions/seed_👍_alice")));
+  });
+
+  it("a commenter cannot remove someone else's reaction", async () => {
+    // dave is a real commenter (and effective editor) on boardWrite, but the
+    // seeded reaction belongs to alice — no admin-moderation arm for
+    // reactions (unlike comments' delete rule).
+    await assertFails(deleteDoc(doc(db(DAVE), "boards/boardWrite/reactions/seed_👍_alice")));
+  });
+
+  it("updates are never allowed — react/un-react is create/delete only", async () => {
+    await assertFails(
+      updateDoc(doc(db(ALICE), "boards/boardWrite/reactions/seed_👍_alice"), { emoji: "❤️" })
     );
   });
 });

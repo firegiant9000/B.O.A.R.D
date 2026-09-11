@@ -5,8 +5,10 @@ import TextElementView from "../TextElementView";
 import SelectionOverlay, { HandleId } from "../SelectionOverlay";
 import CommentPinLayer, { CommentPin } from "../CommentPinLayer";
 import AudioAffordance from "./AudioAffordance";
+import ReactionBadge from "./ReactionBadge";
 import { Bounds, Point, Viewport } from "../../lib/viewport";
-import { AudioElement, Plan, TextElement, TextNote } from "../../types";
+import { AudioElement, Plan, ReactionEmoji, TextElement, TextNote } from "../../types";
+import type { ReactionCount } from "../../hooks/useBoardReactions";
 
 // Month 5 — an existing voice note, paired with the LIVE board-space
 // position its badge should render at. The caller (BoardCanvas) resolves
@@ -18,6 +20,16 @@ export interface PositionedAudioNote {
   note: AudioElement;
   x: number;
   y: number;
+}
+
+// Month 6 — an element with a resolved reaction badge position. Like
+// `PositionedAudioNote`, the caller (BoardCanvas) does the join against live
+// element geometry; this layer just places what it's given.
+export interface PositionedReactionBadge {
+  elementId: string;
+  x: number;
+  y: number;
+  counts: ReactionCount[];
 }
 
 /**
@@ -102,6 +114,16 @@ interface BoardOverlayLayerProps {
    * layer has no selection logic of its own). `null` renders nothing extra.
    */
   newVoiceNoteAnchor: { elementId: string; x: number; y: number } | null;
+
+  // Reactions (Month 6)
+  /** Every element that gets a reaction badge this render — either it already
+   *  has a reaction from any member, or it's the lone current selection
+   *  (BoardCanvas decides which; see its own `positionedReactionBadges`). */
+  reactionBadges: PositionedReactionBadge[];
+  /** Commenter+ (mirrors firestore.rules' `reactions` match) — a viewer sees
+   *  existing counts but can't toggle one. */
+  canReact: boolean;
+  onToggleReaction: (elementId: string, emoji: ReactionEmoji) => void;
 }
 
 export default function BoardOverlayLayer({
@@ -143,6 +165,9 @@ export default function BoardOverlayLayer({
   plan,
   audioNotes,
   newVoiceNoteAnchor,
+  reactionBadges,
+  canReact,
+  onToggleReaction,
 }: BoardOverlayLayerProps) {
   // Overlay transform — mirrors the SVG <G transform>. transformOrigin "0 0"
   // makes RN's transform anchor at the top-left so it matches SVG semantics
@@ -270,6 +295,21 @@ export default function BoardOverlayLayer({
             />
           </View>
         )}
+        {/* Month 6 — reactions. One badge per element that either already has
+            a reaction or is the lone current selection (BoardCanvas decides
+            which). Same counter-scale (`audioInv`) and plain `left`/`top`
+            positioning as the voice-note badges above — no wrapping
+            `transform: scale`. */}
+        {reactionBadges.map(({ elementId, x, y, counts }) => (
+          <View key={elementId} pointerEvents="box-none" style={{ position: "absolute", left: x, top: y }}>
+            <ReactionBadge
+              counts={counts}
+              canReact={canReact}
+              onToggle={(emoji) => onToggleReaction(elementId, emoji)}
+              scale={audioInv}
+            />
+          </View>
+        ))}
       </View>
     </View>
   );

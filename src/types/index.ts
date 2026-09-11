@@ -406,6 +406,41 @@ export interface Comment {
   updatedAt: Date;
 }
 
+// Month 6 — reactions. Reuses Comment's anchoring exactly (`anchorElementId` +
+// `anchorKind` above) rather than inventing a second anchoring scheme: a
+// reaction pins to any canvas element the same way a comment does.
+//
+// Unlike Comment, `anchorKind` here is OPTIONAL, and readers/writers must NOT
+// coerce a missing/invalid value to some default kind the way this file's
+// comment-reading code does (`readAnchorKind` in commentService.ts defaults to
+// "shape"). `boxOfElement` (useBoardElements.ts) only scans the ONE collection
+// a hint names — passing a hint that happens to be wrong hides the element's
+// box forever, which is worse than passing no hint at all (which scans every
+// kind). A reaction started from a tap always knows its kind, same as a
+// comment; one started from the current canvas *selection* does not (the
+// selection model tracks ids only), so it is written with no kind rather than
+// a guessed one.
+//
+// Storage: `boards/{id}/reactions/{elementId}_{emoji}_{userId}` — the document
+// id is the uniqueness constraint (one user cannot double-react with the same
+// emoji on the same element: a second toggle addresses the same doc rather
+// than adding a row). See reactionService.ts's header and firestore.rules'
+// `reactions` match for why the id is NOT what authorizes the write — that is
+// the `userId` FIELD below.
+export const REACTION_EMOJIS = ["👍", "❤️", "❓", "⭐", "💡"] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export interface Reaction {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  anchorElementId: string;
+  anchorKind?: CommentAnchorKind;
+  emoji: ReactionEmoji;
+  userId: string;
+  createdAt: Date;
+}
+
 // Phase 8 (Month 3, roadmap item 8). Append-only activity log. An event records a
 // single mutation ("actor did verb to target") and lives in a workspace-scoped
 // collection `workspaces/{wsId}/activity/{eventId}`. `boardId` is denormalized so
