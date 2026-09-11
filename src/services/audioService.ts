@@ -101,15 +101,16 @@ export interface SaveVoiceNoteInput {
  * Bytes land in Storage before the doc is written (the doc's `downloadUrl`
  * needs the object to already exist), which briefly creates the exact class
  * of stranded object this task was chartered to eliminate: storage.rules
- * lets any board member upload, but firestore.rules' `audio` match only lets
- * an editor ON A PAID PLAN (Month 6) write the doc, so a caller whose upload
- * succeeds and whose doc write is denied — a viewer/commenter (see
- * AudioAffordance's `canEdit` gate) or a free-plan editor (see its `canRecord`
- * gate, both of which exist precisely to make this rare) — would otherwise
- * leave the object behind with nothing ever referencing it. Any failure from
- * here on — `getDownloadURL` or `setDoc` — deletes the just-uploaded object
- * (best-effort) before rethrowing, so a denied/failed write never strands
- * bytes the way a *lost* one would.
+ * isn't referenced by `firebase.json` and so enforces nothing today (see
+ * `canRecordVoiceNotes`'s header below), leaving firestore.rules' `audio`
+ * match (editor, ON A PAID PLAN as of Month 6) as the only real gate, so a
+ * caller whose upload succeeds and whose doc write is denied — a
+ * viewer/commenter (see AudioAffordance's `canEdit` gate) or a free-plan
+ * editor (see its `canRecord` gate, both of which exist precisely to make
+ * this rare) — would otherwise leave the object behind with nothing ever
+ * referencing it. Any failure from here on — `getDownloadURL` or `setDoc` —
+ * deletes the just-uploaded object (best-effort) before rethrowing, so a
+ * denied/failed write never strands bytes the way a *lost* one would.
  *
  * Returns the new audio doc's id.
  */
