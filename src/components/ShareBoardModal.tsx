@@ -19,6 +19,7 @@ import * as boardService from "../services/boardService";
 import * as friendService from "../services/friendService";
 import { createEmbedLink } from "../services/embedService";
 import { getWorkspace } from "../services/workspaceService";
+import AttachToClassButton from "./classroom/AttachToClassButton";
 import { BoardRole, WorkspaceRole } from "../types";
 import { captureException } from "../lib/errorReporting";
 import { Bounds } from "../lib/viewport";
@@ -435,6 +436,11 @@ export default function ShareBoardModal({
           <Text style={styles.hint}>
             Anyone with this code can join the board.
           </Text>
+
+          {/* Month 6 — education pilot (Appendix E.2 "Cohort views"). Renders
+              nothing for a non-admin (see the component's own isAdmin gate)
+              and needs nothing beyond props this modal already receives. */}
+          <AttachToClassButton boardId={boardId} isAdmin={isAdmin} />
 
           {/* Month 6 (ROADMAP A3 — Print + export polish). PNG rasterizes the
               live canvas; PDF tiles the board across A4 pages; SVG downloads

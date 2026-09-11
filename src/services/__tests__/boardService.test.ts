@@ -173,6 +173,19 @@ describe("getBoard", () => {
     );
     expect((await boardService.getBoard("board-1"))?.backgroundTemplate).toBe("coordinate");
   });
+
+  // Month 6, fix round 1 (I1) — classId was added to the Board type but
+  // never wired into mapBoard, so AttachToClassButton's "is this board
+  // already submitted" check would have silently seen `undefined` forever.
+  it("maps classId through when the board is attached to a class", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { ownerId: "o1", classId: "class1" }));
+    expect((await boardService.getBoard("board-1"))?.classId).toBe("class1");
+  });
+
+  it("leaves classId undefined for a board that isn't attached to any class", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { ownerId: "o1" }));
+    expect((await boardService.getBoard("board-1"))?.classId).toBeUndefined();
+  });
 });
 
 describe("updateBoard", () => {

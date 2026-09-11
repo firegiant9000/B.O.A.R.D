@@ -1,5 +1,5 @@
 import { HttpsError } from "firebase-functions/v2/https";
-import { handleCreateClass } from "../callable/createClass";
+import { handleCreateClass, makeWriteClass } from "../callable/createClass";
 
 function reqFor(uid: string | undefined, data: unknown) {
   return { auth: uid ? { uid } : undefined, data } as never;
@@ -7,7 +7,7 @@ function reqFor(uid: string | undefined, data: unknown) {
 
 function deps() {
   return {
-    writeClass: jest.fn(async (_doc: Record<string, unknown>) => "class123"),
+    writeClass: jest.fn(async (_doc: Record<string, unknown>, _joinCode: string) => "class123"),
   };
 }
 
@@ -89,5 +89,41 @@ describe("handleCreateClass", () => {
     await handleCreateClass(reqFor("instructor1", { name: `  ${longName}  ` }), d, 0);
     const written = d.writeClass.mock.calls[0][0];
     expect((written.name as string).length).toBe(200);
+  });
+
+  it("passes the same join code as the second argument, for the joinCodes lookup write", async () => {
+    const d = deps();
+    const res = await handleCreateClass(reqFor("instructor1", { name: "CS 101" }), d, 0);
+    expect(d.writeClass.mock.calls[0][1]).toBe(res.joinCode);
+  });
+});
+
+describe("makeWriteClass", () => {
+  // Fix round 1, I4 — the class doc and its joinCodes lookup entry must be
+  // written atomically (one batch), never as two independent writes that
+  // could diverge if the second failed.
+  it("writes the class doc and a matching joinCodes/{code} doc in ONE batch", async () => {
+    const classRef = { id: "class123" };
+    const joinCodeRef = { id: "ABC123" };
+    const batchSet = jest.fn();
+    const batchCommit = jest.fn(async () => undefined);
+    const classesDoc = jest.fn(() => classRef);
+    const joinCodesDoc = jest.fn(() => joinCodeRef);
+    const fakeDb = {
+      collection: jest.fn((name: string) => ({
+        doc: name === "classes" ? classesDoc : joinCodesDoc,
+      })),
+      batch: jest.fn(() => ({ set: batchSet, commit: batchCommit })),
+    } as never;
+
+    const writeClass = makeWriteClass(fakeDb);
+    const classDoc = { name: "CS 101", instructorId: "instructor1" };
+    const classId = await writeClass(classDoc, "ABC123");
+
+    expect(classId).toBe("class123");
+    expect(joinCodesDoc).toHaveBeenCalledWith("ABC123");
+    expect(batchSet).toHaveBeenCalledWith(classRef, classDoc);
+    expect(batchSet).toHaveBeenCalledWith(joinCodeRef, { classId: "class123" });
+    expect(batchCommit).toHaveBeenCalledTimes(1);
   });
 });

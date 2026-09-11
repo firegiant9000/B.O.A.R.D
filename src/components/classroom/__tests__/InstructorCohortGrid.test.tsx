@@ -95,18 +95,21 @@ describe("InstructorCohortGrid", () => {
   });
 
   // Advisory-only affordance (see the component's own header): the real gate
-  // is firestore.rules. This proves the UI doesn't show a half-empty/wrong
-  // grid to a viewer who isn't this class's instructor, even if getClass
-  // somehow still resolved a doc (e.g. the viewer is an enrolled student,
-  // who CAN read the class doc per firestore.rules but is not its instructor).
-  it("shows a forbidden state for a signed-in viewer who is not this class's instructor", async () => {
+  // is firestore.rules. Fix round 1, I2 — confirmed empirically on the
+  // emulator that a non-instructor's `getClassBoards` call is REJECTED
+  // outright by firestore.rules (not silently filtered), so this test now
+  // mocks it to REJECT (matching reality) rather than resolve, and asserts
+  // the component never even calls it for a non-instructor — `load()`
+  // gates that call on a confirmed instructor match from `getClass` first.
+  it("shows a forbidden state for a signed-in viewer who is not this class's instructor, without ever calling getClassBoards", async () => {
     mockUseAuth.mockReturnValue({ user: { uid: "student1" } });
     mockGetClass.mockResolvedValue(INSTRUCTOR);
-    mockGetClassBoards.mockResolvedValue([makeBoard("boardA", "student1")]);
+    mockGetClassBoards.mockRejectedValue(new Error("permission-denied"));
 
     render(<InstructorCohortGrid classId="class1" />);
     await waitFor(() => expect(screen.getByTestId("cohort-grid-forbidden")).toBeTruthy());
     expect(screen.queryByTestId("cohort-board-boardA")).toBeNull();
+    expect(mockGetClassBoards).not.toHaveBeenCalled();
   });
 
   it("shows a forbidden state when the class doc can't be read at all (getClass -> null)", async () => {
@@ -116,12 +119,30 @@ describe("InstructorCohortGrid", () => {
 
     render(<InstructorCohortGrid classId="class1" />);
     await waitFor(() => expect(screen.getByTestId("cohort-grid-forbidden")).toBeTruthy());
+    expect(mockGetClassBoards).not.toHaveBeenCalled();
   });
 
-  it("shows an error state when loading fails", async () => {
-    mockUseAuth.mockReturnValue({ user: { uid: "instructor1" } });
-    mockGetClass.mockRejectedValue(new Error("network down"));
+  // Fix round 1, I2 — a getClass REJECTION (denied read: not this class's
+  // instructor or an enrolled student) is treated as "not accessible", the
+  // same as a null result, never as a hard error — see the component's own
+  // header for why.
+  it("treats a getClass rejection as 'not accessible' (forbidden), not a hard error", async () => {
+    mockUseAuth.mockReturnValue({ user: { uid: "stranger1" } });
+    mockGetClass.mockRejectedValue(new Error("permission-denied"));
     mockGetClassBoards.mockResolvedValue([]);
+
+    render(<InstructorCohortGrid classId="class1" />);
+    await waitFor(() => expect(screen.getByTestId("cohort-grid-forbidden")).toBeTruthy());
+    expect(mockGetClassBoards).not.toHaveBeenCalled();
+  });
+
+  // "error" is reserved for a genuine failure hitting the CONFIRMED
+  // instructor's own request — e.g. a network blip on getClassBoards after
+  // getClass has already proven this caller is the instructor.
+  it("shows an error state when the confirmed instructor's own getClassBoards call fails", async () => {
+    mockUseAuth.mockReturnValue({ user: { uid: "instructor1" } });
+    mockGetClass.mockResolvedValue(INSTRUCTOR);
+    mockGetClassBoards.mockRejectedValue(new Error("network down"));
 
     render(<InstructorCohortGrid classId="class1" />);
     await waitFor(() => expect(screen.getByTestId("cohort-grid-error")).toBeTruthy());

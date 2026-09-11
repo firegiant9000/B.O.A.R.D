@@ -295,11 +295,11 @@ service cloud.firestore {
     // ── M6 education pilot (invite-based class enrollment + instructor grid) ──
     // A class is its own top-level `classes/{classId}` collection (see that
     // match block below for why), and a board links to one via `classId`.
-    // Task 27's controller ruling R79: the instructor's cross-board read must
-    // be a rules predicate resolvable in a BOUNDED number of get()s, because
-    // rules cannot query — so the linkage lives on the board doc itself
-    // (`classId`), never only inside `classes/{id}/...`, and this resolves it
-    // with exactly one get() on the named class.
+    // The instructor's cross-board read must be a rules predicate resolvable
+    // in a BOUNDED number of get()s, because rules cannot query — so the
+    // linkage lives on the board doc itself (`classId`), never only inside
+    // `classes/{id}/...`, and this resolves it with exactly one get() on the
+    // named class.
 
     // Whether `uid` is an enrolled student of `classId` — the enrollment
     // proof `classIdTransitionValid` requires before a board may ever be
@@ -336,14 +336,27 @@ service cloud.firestore {
     // class at this instant. Without that check, any board admin could
     // attach a board to an arbitrary/guessed classId and hand its content to
     // a class's instructor without ever having joined that class — exactly
-    // the kind of forged-membership hole R79's bounded-get() design exists
-    // to keep out of a rules predicate that cannot itself verify enrollment
-    // any other way.
+    // the kind of forged-membership hole a bounded-get() rules predicate
+    // must keep out, since it cannot verify enrollment any other way.
+    //
+    // Fix round 1, I3 — the pin above left a polluted roster with NO cleanup
+    // lever: an instructor can't unpin a wrongly-attached board, and there
+    // was no way to ever clear `classId` again once set. The one additional
+    // legitimate transition added here is real classId -> null, and ONLY
+    // when that class no longer EXISTS (the instructor deleted it) — checked
+    // with `!exists(...)`, never a client-supplied "trust me" flag. Safe
+    // because nothing anywhere derives readability or roster membership from
+    // a class that isn't there: `isInstructorOfClass`/`isEnrolledInClass`
+    // both start with `exists(...)` themselves and fail closed the moment
+    // the class doc is gone. A board can freely re-attach to a DIFFERENT,
+    // still-existing class afterward under the same null -> real rule above.
     function classIdTransitionValid(board, next) {
       let prevClassId = board.get('classId', null);
       let nextClassId = next.get('classId', null);
       return nextClassId == prevClassId ||
-        (prevClassId == null && nextClassId != null && isEnrolledInClass(nextClassId, request.auth.uid));
+        (prevClassId == null && nextClassId != null && isEnrolledInClass(nextClassId, request.auth.uid)) ||
+        (prevClassId != null && nextClassId == null &&
+         !exists(/databases/$(database)/documents/classes/$(prevClassId)));
     }
 
     // ── M6 plan gates (feature tiers other than the seat cap) ──────────────────
@@ -573,8 +586,7 @@ service cloud.firestore {
     // A class is its own top-level collection, deliberately NOT an overloaded
     // workspace: a workspace carries plan/billing/seat-cap semantics a class
     // does not want, and the edu tier is sold manually with no self-serve
-    // (ROADMAP.md's Education-pilot section) — see this task's controller
-    // ruling R78 for the full argument.
+    // (ROADMAP.md's Education-pilot section).
     //
     // University-level only; K-12 is explicitly out of scope (COPPA's
     // verifiable-parental-consent requirement for under-13 users, which this
@@ -585,19 +597,18 @@ service cloud.firestore {
     // that is exactly the bulk-PII path the education pilot was reshaped
     // away from (ROADMAP.md A5).
     match /classes/{classId} {
-      // Read is the instructor + enrolled students, PLUS a public
-      // "does a class with this join code exist" lookup — mirrors the board
-      // `inviteCode != null` disjunct just below (classroomService.
-      // enrollInClass needs to resolve a code to a classId before the
-      // caller is enrolled, exactly like joinBoardByCode). Same tradeoff
-      // already accepted for boards: obscurity of the code/classId, not a
-      // hard access boundary — a class's full document (including its
-      // roster) is exposed to any signed-in user who has or guesses the
-      // classId, same as an invite-coded board's `members` list already is.
+      // Fix round 1, I4 — read is instructor + enrolled students ONLY. This
+      // used to also allow any signed-in user holding/guessing the classId
+      // to read the WHOLE document (mirroring the board `inviteCode`
+      // lookup), which was rejected on review: a class roster is precisely
+      // the bulk-PII artifact A5 was reshaped to avoid, unlike a board's
+      // `members` list (the roster of a thing you were already invited to).
+      // The self-enrollment lookup now goes through the narrower
+      // `joinCodes/{code}` collection below instead, which holds nothing but
+      // a classId.
       allow read: if isSignedIn() && (
                     request.auth.uid == resource.data.instructorId ||
-                    request.auth.uid in resource.data.get('studentIds', []) ||
-                    resource.data.joinCode != null
+                    request.auth.uid in resource.data.get('studentIds', [])
                   );
 
       // Creating a class is Cloud-Function-only
@@ -607,31 +618,73 @@ service cloud.firestore {
       // functions/src/callable/createBoard.ts). A client that could pick its
       // own join code could plant a class document whose code collides with
       // (or is more memorable than) a real instructor's, silently diverting
-      // that instructor's students' self-enrollment query into an
+      // that instructor's students' self-enrollment lookup into an
       // attacker-controlled class instead — the same query-collision hazard
       // a guessable board invite code would create.
       allow create: if false;
 
-      // The instructor may rename their class; nothing else about it
-      // (roster, join code, instructorId) is client-writable outside the
-      // self-enroll arm below. Self-enrollment mirrors the board
-      // invite-code self-join rule exactly: append EXACTLY the caller's own
-      // uid to `studentIds`, nothing else — proves enrollment without
-      // letting a caller enroll a third party or edit anyone else's
-      // membership.
+      // The instructor may rename their class, or remove ONE student from
+      // the roster (fix round 1, I3 — without a removal lever, a roster
+      // polluted via a bad write had no cleanup path at all: `joinCode` is
+      // immutable and the only other lever, deleting the whole class, is
+      // destructive). The removal arm is kept exactly as narrow as
+      // self-enroll below — it may ONLY shrink the roster by exactly one
+      // entry that was already present, never touch any other field, and
+      // never add anyone — so it cannot become a general roster-write arm.
+      //
+      // Self-enrollment mirrors the board invite-code self-join rule:
+      // append EXACTLY the caller's own uid to `studentIds`. Fix round 1,
+      // C1 (CRITICAL) — the ORIGINAL form of this arm only checked
+      // `hasAll(prev)` + `size == prev+1` + `hasAny([caller])`, which an
+      // ALREADY-ENROLLED caller trivially satisfies while adding an
+      // ARBITRARY third uid: the caller is already in `prev`, so they're
+      // also (trivially) in `next`, and nothing pinned the ADDED element
+      // specifically. `!(caller in prev)` below closes that: it forces the
+      // "grow by one" branch to apply only to a genuinely NEW enrollment, so
+      // the single new entry can only be attributed to the caller. The
+      // separate `next == prev` branch exists so a student who is ALREADY
+      // enrolled can harmlessly re-submit the same join flow (`arrayUnion`
+      // is a client-side no-op for them) without that idempotent retry being
+      // rejected outright.
       allow update: if isSignedIn() && (
                       (request.auth.uid == resource.data.instructorId &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt'])) ||
+                      (request.auth.uid == resource.data.instructorId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
+                       resource.data.get('studentIds', []).hasAll(request.resource.data.studentIds) &&
+                       request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() - 1) ||
                       (
                         resource.data.joinCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
-                        request.resource.data.studentIds.hasAll(resource.data.get('studentIds', [])) &&
-                        request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() + 1 &&
-                        request.resource.data.studentIds.hasAny([request.auth.uid])
+                        (
+                          request.resource.data.studentIds == resource.data.get('studentIds', []) ||
+                          (
+                            request.resource.data.studentIds.hasAll(resource.data.get('studentIds', [])) &&
+                            !(request.auth.uid in resource.data.get('studentIds', [])) &&
+                            request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() + 1 &&
+                            request.resource.data.studentIds.hasAny([request.auth.uid])
+                          )
+                        )
                       )
                     );
 
       allow delete: if isSignedIn() && request.auth.uid == resource.data.instructorId;
+    }
+
+    // Fix round 1, I4 — the self-enrollment lookup credential, narrowed away
+    // from the class document itself. Holds ONLY `{classId}` per code: any
+    // signed-in user may read one (needed to resolve a code before the
+    // caller is enrolled anywhere), but that discloses nothing but "this
+    // code maps to this classId" — never a roster, never who teaches it.
+    // Written ONLY by `createClass` (functions/src/callable/createClass.ts)
+    // via the Admin SDK in the SAME batch as the class document itself, so
+    // the two can never diverge. The document ID IS the join code, so a
+    // lookup is a plain `get()` by ID — never a `where()` query — which
+    // sidesteps the query-collision hazard a client-chosen code would
+    // otherwise create entirely, rather than merely relying on obscurity.
+    match /joinCodes/{code} {
+      allow read: if isSignedIn();
+      allow write: if false;
     }
 
     // ── boards ────────────────────────────────────────────────────────────────

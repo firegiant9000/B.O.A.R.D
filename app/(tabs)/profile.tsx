@@ -422,6 +422,14 @@ export default function ProfileScreen() {
           <Text style={styles.linkRowText}>View AI usage & cost</Text>
           <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
         </TouchableOpacity>
+
+        {/* Month 6 — education pilot entry point (Appendix E.2). Create/teach
+            or join a class; ClassroomHome owns all of the actual logic. */}
+        <TouchableOpacity style={styles.linkRow} onPress={() => router.push("/classes")}>
+          <Ionicons name="school-outline" size={18} color="#2563eb" />
+          <Text style={styles.linkRowText}>Classes</Text>
+          <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+        </TouchableOpacity>
       </View>
 
       {/* ── Blocked Users section ── */}

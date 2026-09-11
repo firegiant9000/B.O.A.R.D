@@ -176,6 +176,11 @@ function RootNavigator() {
           Metro's real platform module resolution, rather than being split
           into two ROUTE files itself. */}
       <Stack.Screen name="pricing" options={{ presentation: "modal" }} />
+      {/* Month 6 — education pilot (Appendix E.2). "classes" is the
+          create/join entry point (ClassroomHome); "class/[id]" is the
+          instructor cohort grid for one class. */}
+      <Stack.Screen name="classes" options={{ presentation: "modal" }} />
+      <Stack.Screen name="class/[id]" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

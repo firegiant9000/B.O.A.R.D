@@ -37,6 +37,11 @@ function mapBoard(id: string, data: Record<string, any>): Board {
     backgroundTemplate: isBackgroundTemplate(data.backgroundTemplate)
       ? data.backgroundTemplate
       : "blank",
+    // Month 6 — education pilot. Optional/migration-tolerant: absent on
+    // every pre-existing board. See Board.classId's own doc comment for the
+    // pin semantics; this is a plain passthrough read, not an enforcement
+    // point.
+    classId: data.classId ?? undefined,
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   };

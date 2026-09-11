@@ -37,6 +37,20 @@ jest.mock("../../utils/recapExport", () => ({
   exportBoardPng: jest.fn(),
   exportBoardSvg: jest.fn(),
 }));
+// Month 6 — AttachToClassButton transitively imports useAuth -> AuthContext
+// -> real `firebase/auth`, which pulls in `@firebase/util`'s ESM postinstall
+// script this repo's Jest transform can't parse (same constraint noted on
+// the boardService mock above). Mocked out as an opaque child — its own
+// behavior is covered by AttachToClassButton.test.tsx; this file only needs
+// to know ShareBoardModal renders it with the right props.
+let mockAttachToClassProps: any = null;
+jest.mock("../classroom/AttachToClassButton", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockAttachToClassProps = props;
+    return null;
+  },
+}));
 
 import React from "react";
 import { Platform } from "react-native";
@@ -214,5 +228,19 @@ describe("ShareBoardModal — SVG export (Month 6, ROADMAP A3, web only)", () =>
     await waitFor(() =>
       expect(screen.getByText("SVG export isn't available on this platform yet")).toBeTruthy()
     );
+  });
+});
+
+describe("class assignment (Month 6, fix round 1 I1)", () => {
+  it("renders AttachToClassButton with this board's id and admin flag", () => {
+    mockAttachToClassProps = null;
+    renderModal({ boardId: "b1", isAdmin: true });
+    expect(mockAttachToClassProps).toEqual({ boardId: "b1", isAdmin: true });
+  });
+
+  it("forwards isAdmin: false through to AttachToClassButton for a non-admin viewer", () => {
+    mockAttachToClassProps = null;
+    renderModal({ isAdmin: false });
+    expect(mockAttachToClassProps).toMatchObject({ isAdmin: false });
   });
 });

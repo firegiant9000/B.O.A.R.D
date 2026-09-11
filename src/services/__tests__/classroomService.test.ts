@@ -23,9 +23,11 @@ const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
 const arrayUnion = fs.arrayUnion as jest.Mock;
+const arrayRemove = fs.arrayRemove as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCurrentUser = { uid: "student1" };
 });
 
 describe("createClass", () => {
@@ -59,49 +61,57 @@ describe("createClass", () => {
 });
 
 describe("enrollInClass", () => {
-  afterEach(() => {
-    mockCurrentUser = { uid: "student1" };
-  });
-
   it("throws when no user is signed in", async () => {
     mockCurrentUser = null;
     await expect(classroomService.enrollInClass("ABC123")).rejects.toThrow(/signed in/i);
-    expect(getDocs).not.toHaveBeenCalled();
+    expect(getDoc).not.toHaveBeenCalled();
   });
 
-  it("throws when the code matches no class", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+  it("throws when the join code matches nothing in the joinCodes lookup", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ZZZZZZ", null));
     await expect(classroomService.enrollInClass("ZZZZZZ")).rejects.toThrow(/no class found/i);
     expect(updateDoc).not.toHaveBeenCalled();
   });
 
-  it("reports alreadyEnrolled for an already-enrolled student without writing", async () => {
-    getDocs.mockResolvedValueOnce(
-      makeQuerySnap([["class1", { joinCode: "ABC123", studentIds: ["student1"] }]])
-    );
-    const res = await classroomService.enrollInClass("abc123");
-    expect(res).toEqual({ classId: "class1", alreadyEnrolled: true });
-    expect(updateDoc).not.toHaveBeenCalled();
-  });
+  it("resolves the code via the joinCodes/{code} doc, then self-enrolls by uid only", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ABC123", { classId: "class1" }));
 
-  it("enrolls a new student via arrayUnion of their own uid only", async () => {
-    getDocs.mockResolvedValueOnce(
-      makeQuerySnap([["class1", { joinCode: "ABC123", studentIds: [] }]])
-    );
     const res = await classroomService.enrollInClass("abc123");
-    expect(res).toEqual({ classId: "class1", alreadyEnrolled: false });
+
+    expect(res).toEqual({ classId: "class1" });
+    // Resolved via a plain getDoc by ID — never a `where('joinCode',...)`
+    // query against the classes collection (fix round 1, I4: the class
+    // roster is no longer exposed by the lookup path at all).
+    expect(getDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: ["joinCodes", "ABC123"] })
+    );
     expect(updateDoc).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "class1" }),
-      { studentIds: expect.objectContaining({ __type: "arrayUnion" }) }
+      expect.objectContaining({ path: ["classes", "class1"] }),
+      expect.objectContaining({ studentIds: expect.objectContaining({ __type: "arrayUnion" }) })
     );
     expect(arrayUnion).toHaveBeenCalledWith("student1");
   });
 
-  it("normalizes the input code (trim + uppercase) before querying", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
-    await expect(classroomService.enrollInClass("  abc123  ")).rejects.toThrow();
-    const whereCall = (fs.where as jest.Mock).mock.calls.find((c) => c[0] === "joinCode");
-    expect(whereCall[2]).toBe("ABC123");
+  it("bumps updatedAt on the self-enroll write", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ABC123", { classId: "class1" }));
+    await classroomService.enrollInClass("ABC123");
+    const [, payload] = updateDoc.mock.calls[0];
+    expect(payload.updatedAt).toBe("__serverTimestamp__");
+  });
+
+  it("normalizes the input code (trim + uppercase) before the lookup", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ABC123", { classId: "class1" }));
+    await classroomService.enrollInClass("  abc123  ");
+    expect(getDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: ["joinCodes", "ABC123"] })
+    );
+  });
+
+  it("performs no prior read of the class doc itself — only the joinCodes lookup then the write", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ABC123", { classId: "class1" }));
+    await classroomService.enrollInClass("ABC123");
+    expect(getDoc).toHaveBeenCalledTimes(1);
+    expect(getDocs).not.toHaveBeenCalled();
   });
 });
 
@@ -131,6 +141,24 @@ describe("getClass", () => {
       schemaVersion: 1,
     });
   });
+
+  // Fix round 1, M2 — schemaVersion reads the STORED value rather than
+  // hardcoding 1, so a future v2 document isn't silently mislabelled.
+  it("preserves a stored schemaVersion instead of hardcoding 1", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("class1", { name: "CS 101", instructorId: "instructor1", schemaVersion: 2 })
+    );
+    const klass = await classroomService.getClass("class1");
+    expect(klass?.schemaVersion).toBe(2);
+  });
+
+  it("defaults schemaVersion to 1 when absent (legacy/migration-tolerant)", async () => {
+    getDoc.mockResolvedValueOnce(
+      makeDocSnap("class1", { name: "CS 101", instructorId: "instructor1" })
+    );
+    const klass = await classroomService.getClass("class1");
+    expect(klass?.schemaVersion).toBe(1);
+  });
 });
 
 describe("getInstructorClasses", () => {
@@ -141,26 +169,60 @@ describe("getInstructorClasses", () => {
     const classes = await classroomService.getInstructorClasses("instructor1");
     expect(classes).toHaveLength(1);
     expect(classes[0].id).toBe("class1");
-    expect((fs.where as jest.Mock)).toHaveBeenCalledWith("instructorId", "==", "instructor1");
+    expect(fs.where as jest.Mock).toHaveBeenCalledWith("instructorId", "==", "instructor1");
   });
 });
 
-describe("isEnrolledStudent", () => {
-  it("is true when the uid is in studentIds", () => {
-    expect(classroomService.isEnrolledStudent({ studentIds: ["a", "b"] }, "b")).toBe(true);
+describe("getEnrolledClasses", () => {
+  it("queries classes by a studentIds array-contains filter", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([["class1", { name: "CS 101", instructorId: "instructor1" }]])
+    );
+    const classes = await classroomService.getEnrolledClasses("student1");
+    expect(classes).toHaveLength(1);
+    expect(classes[0].id).toBe("class1");
+    expect(fs.where as jest.Mock).toHaveBeenCalledWith("studentIds", "array-contains", "student1");
   });
 
-  it("is false when the uid is absent", () => {
-    expect(classroomService.isEnrolledStudent({ studentIds: ["a", "b"] }, "c")).toBe(false);
+  it("returns an empty list when enrolled in nothing", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    expect(await classroomService.getEnrolledClasses("student1")).toEqual([]);
+  });
+});
+
+describe("removeStudentFromClass", () => {
+  // Fix round 1, I3 — the instructor's roster-cleanup lever.
+  it("removes exactly the named uid via arrayRemove, and bumps updatedAt", async () => {
+    await classroomService.removeStudentFromClass("class1", "student2");
+    expect(updateDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: ["classes", "class1"] }),
+      expect.objectContaining({
+        studentIds: expect.objectContaining({ __type: "arrayRemove" }),
+        updatedAt: "__serverTimestamp__",
+      })
+    );
+    expect(arrayRemove).toHaveBeenCalledWith("student2");
   });
 });
 
 describe("attachBoardToClass", () => {
-  it("updates only the board's classId", async () => {
+  it("updates the board's classId and bumps updatedAt in the same write", async () => {
     await classroomService.attachBoardToClass("board1", "class1");
     expect(updateDoc).toHaveBeenCalledWith(
       expect.objectContaining({ path: ["boards", "board1"] }),
-      { classId: "class1" }
+      { classId: "class1", updatedAt: "__serverTimestamp__" }
+    );
+  });
+});
+
+describe("clearBoardClass", () => {
+  // Fix round 1, I3 — the ONE way classId may move off a real value once
+  // set (guarded server-side by classIdTransitionValid's exists() check).
+  it("sets the board's classId to null and bumps updatedAt", async () => {
+    await classroomService.clearBoardClass("board1");
+    expect(updateDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ path: ["boards", "board1"] }),
+      { classId: null, updatedAt: "__serverTimestamp__" }
     );
   });
 });
@@ -177,7 +239,7 @@ describe("getClassBoards", () => {
     expect(boards).toHaveLength(2);
     expect(boards.map((b) => b.id)).toEqual(["boardA", "boardB"]);
     expect(boards[0]).toMatchObject({ title: "Alice's board", ownerId: "student1" });
-    expect((fs.where as jest.Mock)).toHaveBeenCalledWith("classId", "==", "class1");
+    expect(fs.where as jest.Mock).toHaveBeenCalledWith("classId", "==", "class1");
   });
 
   it("returns an empty list when no board is submitted yet", async () => {
@@ -186,9 +248,7 @@ describe("getClassBoards", () => {
   });
 
   it("defaults a missing title rather than surfacing undefined", async () => {
-    getDocs.mockResolvedValueOnce(
-      makeQuerySnap([["boardA", { ownerId: "student1" }]])
-    );
+    getDocs.mockResolvedValueOnce(makeQuerySnap([["boardA", { ownerId: "student1" }]]));
     const boards = await classroomService.getClassBoards("class1");
     expect(boards[0].title).toBe("Untitled");
   });

@@ -8,17 +8,26 @@ import type { ClassRoom } from "../../types";
 // Month 6 — instructor cohort grid (ROADMAP.md Appendix E.2 "Cohort
 // views... see all student boards for an assignment in one grid"). All
 // data-fetching and every access gate live HERE (or in classroomService),
-// never in the bare `app/class/[id].tsx` route that renders this component
-// — this task's R80 ruling: screens under app/ can't be render/import-
-// tested in this Jest setup (expo-font is unresolvable via
-// @expo/vector-icons, and @firebase/util ships ESM the transform doesn't
-// handle), so logic belongs in this testable component layer instead.
+// never in the bare `app/class/[id].tsx` route that renders this component:
+// screens under app/ can't be render/import-tested in this Jest setup
+// (expo-font is unresolvable via @expo/vector-icons, and @firebase/util
+// ships ESM the transform doesn't handle), so logic belongs in this
+// testable component layer instead.
 //
 // The REAL access gate is firestore.rules' `isInstructorOfClass` predicate
-// on the board `read` rule (see that file) — a non-instructor calling
-// `getClassBoards` simply gets back only the boards they already have
-// access to (never the whole cohort), so the `isInstructor` check below is
-// an advisory "not your class" affordance, not enforcement.
+// on the board `read` rule (see that file). Fix round 1, I2 — an earlier
+// version of this comment (and of `classroomService.getClassBoards`'s own
+// header) claimed a non-instructor's `getClassBoards` query "gets back only
+// the boards they already have access to." Verified on the emulator: that's
+// wrong. A `classId==` list query is a get()-gated predicate, not a bare
+// field comparison Firestore can prove safe from the query's own filter, so
+// firestore.rules REJECTS the entire query outright (permission-denied) for
+// anyone who isn't that class's instructor — it does not silently filter to
+// a subset. So `getClassBoards` below is called ONLY after `getClass` has
+// already established (via a read firestore.rules DID allow) that the
+// signed-in caller is this class's instructor; a non-instructor never
+// reaches that call at all, and `error` is reserved for a genuine failure
+// (e.g. a network blip) hitting the instructor's own request.
 
 export interface InstructorCohortGridProps {
   classId: string;
@@ -35,16 +44,33 @@ export default function InstructorCohortGrid({ classId }: InstructorCohortGridPr
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+
+    let c: ClassRoom | null;
     try {
-      const [c, b] = await Promise.all([getClass(classId), getClassBoards(classId)]);
-      setKlass(c);
-      setBoards(b);
+      c = await getClass(classId);
+    } catch {
+      // Denied by firestore.rules (not this class's instructor or an
+      // enrolled student) — treated as "not accessible", the same as a
+      // class that doesn't exist, never as a hard error.
+      c = null;
+    }
+    setKlass(c);
+
+    const isInstructor = !!user && !!c && c.instructorId === user.uid;
+    if (!isInstructor) {
+      setBoards([]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setBoards(await getClassBoards(classId));
     } catch {
       setError("Couldn't load this class's boards.");
     } finally {
       setLoading(false);
     }
-  }, [classId]);
+  }, [classId, user]);
 
   useEffect(() => {
     load();
@@ -66,11 +92,11 @@ export default function InstructorCohortGrid({ classId }: InstructorCohortGridPr
     );
   }
 
-  // Advisory-only affordance — see the module header above for why
-  // firestore.rules, not this check, is the real gate. A non-instructor
-  // viewing this component either gets `klass === null` (no read access to
-  // the class doc at all) or a mismatched instructorId; either way, show
-  // an explicit "not yours" state instead of a half-empty grid.
+  // Recomputed from the same rules-confirmed read `load()` used to decide
+  // whether to call `getClassBoards` at all (see the module header) — a
+  // non-instructor viewing this component gets `klass === null` (the read
+  // was denied) or a mismatched instructorId; either way, an explicit "not
+  // yours" state instead of a half-empty grid.
   const isInstructor = !!user && !!klass && klass.instructorId === user.uid;
   if (!klass || !isInstructor) {
     return (

@@ -45,7 +45,7 @@ const CAROL = "carol"; // workspace viewer
 const DAVE = "dave";   // workspace member
 const FRANK = "frank"; // workspace member (demoted to viewer on boardWrite)
 
-// Month 6 — education pilot actors (Task 27). instructorA/instructorB each
+// Month 6 — education pilot actors. instructorA/instructorB each
 // teach one class; studentA1/studentA2 are both enrolled in classA (proves
 // student<->student isolation WITHIN one class, not just across classes);
 // studentB1 is enrolled in classB; studentC is enrolled nowhere (the
@@ -416,7 +416,7 @@ beforeEach(async () => {
       read: false,
     });
 
-    // ── Month 6 — education pilot fixtures (Task 27) ───────────────────────
+    // ── Month 6 — education pilot fixtures ──────────────────────────────────
     // classC exists only to isolate the classId PIN from the enrollment
     // gate below: studentA1 is deliberately enrolled in BOTH classA and
     // classC, so "denies re-parenting" tests can prove the PIN fires even
@@ -439,6 +439,13 @@ beforeEach(async () => {
       joinCode: "CLASSC1",
       studentIds: [STUDENT_A1],
     });
+
+    // Fix round 1, I4 — the narrow self-enrollment lookup collection, one
+    // doc per seeded class, matching what `createClass` would have written
+    // in the same batch as the class doc itself.
+    await setDoc(doc(db, "joinCodes/CLASSA1"), { classId: "classA" });
+    await setDoc(doc(db, "joinCodes/CLASSB1"), { classId: "classB" });
+    await setDoc(doc(db, "joinCodes/CLASSC1"), { classId: "classC" });
 
     // Assignment boards — no workspaceId. The education-pilot linkage
     // (classId) is independent of workspace membership entirely; the
@@ -485,6 +492,17 @@ beforeEach(async () => {
       adminId: STUDENT_A1,
       members: [STUDENT_A1, STUDENT_A2],
       inviteCode: null,
+    });
+    // Fix round 1, I3 — attached to classC (which the test below deletes
+    // mid-test) so the classId-clears-after-delete transition has a real
+    // board to exercise.
+    await setDoc(doc(db, "boards/boardInClassC"), {
+      title: "Board in class C",
+      ownerId: STUDENT_A1,
+      adminId: STUDENT_A1,
+      members: [STUDENT_A1],
+      inviteCode: null,
+      classId: "classC",
     });
   });
 });
@@ -2365,7 +2383,7 @@ describe("usage-dashboard board count excludes a migrated board with no invite c
   });
 });
 
-// ── M6 education pilot: assignment board isolation (Task 27) ────────────────
+// ── M6 education pilot: assignment board isolation ──────────────────────────
 // The hard property this task's brief calls out by name: a board's `classId`
 // linkage must let ONLY that class's instructor read across students, and
 // must isolate cleanly between two different classes. Every denial below is
@@ -2484,8 +2502,14 @@ describe("M6 classes collection", () => {
     );
   });
 
-  it("lets any signed-in user look up a class by its join code (self-enrollment needs this)", async () => {
-    await assertSucceeds(getDoc(doc(db(STUDENT_C), "classes/classA")));
+  // Fix round 1, I4 — a class's full document (roster included) is no
+  // longer readable merely by knowing/guessing its classId; that lookup
+  // moved to the narrow `joinCodes/{code}` collection tested below. This is
+  // the explicit "stranger holding a classId can no longer read the class"
+  // proof the fix round asked for, replacing the old (now-wrong) version of
+  // this test that asserted the opposite.
+  it("denies a signed-in stranger reading a class doc merely by knowing its classId", async () => {
+    await assertFails(getDoc(doc(db(STUDENT_C), "classes/classA")));
   });
 
   it("lets a signed-in user self-enroll by appending only their own uid", async () => {
@@ -2496,10 +2520,38 @@ describe("M6 classes collection", () => {
     );
   });
 
+  // Fix round 1, C1 (CRITICAL) — idempotent resend: an ALREADY-enrolled
+  // caller resubmitting the exact same roster (what `arrayUnion` computes
+  // for them) must not be rejected outright, since classroomService.
+  // enrollInClass no longer pre-checks membership before writing.
+  it("lets an already-enrolled caller's redundant self-enroll resubmit succeed as a no-op", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_A1), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2],
+      })
+    );
+  });
+
   it("the self-enroll path cannot be used to add a third party", async () => {
     await assertFails(
       updateDoc(doc(db(STUDENT_C), "classes/classA"), {
         studentIds: [STUDENT_A1, STUDENT_A2, "someoneElse"],
+      })
+    );
+  });
+
+  // Fix round 1, C1 (CRITICAL) — confirmed empirically on the emulator: the
+  // ORIGINAL rule only checked `hasAll(prev)` + `size==prev+1` +
+  // `hasAny([caller])`, which an ALREADY-ENROLLED caller trivially
+  // satisfies while adding an ARBITRARY third uid (they're already in
+  // `prev`, so trivially in `next` too) — nothing pinned the ADDED element
+  // to the caller specifically. `!(caller in prev)` on the "grow by one"
+  // branch closes this: an already-enrolled caller can only ever produce
+  // the idempotent no-op above, never a genuine roster growth.
+  it("CRITICAL: denies an ALREADY-ENROLLED caller from adding an arbitrary third party", async () => {
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A1), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2, "evilThirdParty"],
       })
     );
   });
@@ -2527,5 +2579,152 @@ describe("M6 classes collection", () => {
 
   it("denies a student deleting their instructor's class", async () => {
     await assertFails(deleteDoc(doc(db(STUDENT_A1), "classes/classA")));
+  });
+});
+
+// ── Fix round 1, I2: list-query provability ──────────────────────────────────
+// Every rules test written for Task 27 up to this point was a single-document
+// getDoc/updateDoc — nothing proved a `where()` LIST query behaves the same
+// way, and per-document gating breaking silently under a list query is
+// exactly what cost this branch a round on poll votes previously. Confirmed
+// empirically on the emulator (per the fix-round review): a `classId==`
+// query against `boards` is a get()-gated predicate, not a bare field
+// comparison Firestore can prove safe from the query's own filter alone, so
+// the ENTIRE query is denied outright for anyone but that class's own
+// instructor — it does NOT silently filter down to a subset.
+describe("education pilot: list-query provability (fix round 1, I2)", () => {
+  it("lets the instructor list every board in their class via a classId== query", async () => {
+    const snap = await assertSucceeds(
+      getDocs(query(collection(db(INSTRUCTOR_A), "boards"), where("classId", "==", "classA")))
+    );
+    const ids = snap.docs.map((d) => d.id);
+    expect(ids).toEqual(expect.arrayContaining(["boardA1", "boardA2"]));
+  });
+
+  // Denial control 1/2: an enrolled STUDENT of the class running the exact
+  // same query shape.
+  it("denies an enrolled student the same classId== query (whole-query denial, not silent filtering)", async () => {
+    await assertFails(
+      getDocs(query(collection(db(STUDENT_A1), "boards"), where("classId", "==", "classA")))
+    );
+  });
+
+  // Denial control 2/2: a DIFFERENT class's instructor running the same
+  // query shape against a class they don't teach.
+  it("denies a different class's instructor the same classId== query", async () => {
+    await assertFails(
+      getDocs(query(collection(db(INSTRUCTOR_B), "boards"), where("classId", "==", "classA")))
+    );
+  });
+
+  it("lets an instructor list the classes they teach via an instructorId== query", async () => {
+    const snap = await assertSucceeds(
+      getDocs(query(collection(db(INSTRUCTOR_A), "classes"), where("instructorId", "==", INSTRUCTOR_A)))
+    );
+    expect(snap.docs.map((d) => d.id)).toContain("classA");
+  });
+
+  // Denial control: a signed-in stranger running the exact same query shape
+  // about someone ELSE's classes (`instructorId == "instructorA"` while
+  // authenticated as studentC, not instructorA). Confirmed empirically on
+  // the emulator: Firestore denies the WHOLE list operation here too (same
+  // "prove it for every possible match, or reject the entire query" model
+  // as the classId== case above) — it does not silently return zero rows.
+  it("denies a stranger's instructorId== query about another instructor's classes", async () => {
+    await assertFails(
+      getDocs(query(collection(db(STUDENT_C), "classes"), where("instructorId", "==", INSTRUCTOR_A)))
+    );
+  });
+
+  // classroomService.getEnrolledClasses — the same list-provability question
+  // for the OTHER new query this fix round's UI wiring introduces.
+  it("lets a student list the classes they're enrolled in via a studentIds array-contains query", async () => {
+    const snap = await assertSucceeds(
+      getDocs(query(collection(db(STUDENT_A1), "classes"), where("studentIds", "array-contains", STUDENT_A1)))
+    );
+    expect(snap.docs.map((d) => d.id)).toEqual(expect.arrayContaining(["classA", "classC"]));
+  });
+
+  it("denies a stranger's array-contains query about another student's enrollment", async () => {
+    await assertFails(
+      getDocs(query(collection(db(STUDENT_C), "classes"), where("studentIds", "array-contains", STUDENT_A1)))
+    );
+  });
+});
+
+// ── Fix round 1, I3: roster removal + classId cleanup ────────────────────────
+// Without a removal lever, a roster polluted via a bad write (or C1, before
+// its fix) had NO cleanup path at all: `joinCode` is immutable and deleting
+// the whole class is destructive. These two levers are the fix.
+describe("fix round 1, I3: instructor roster removal", () => {
+  it("lets the instructor remove exactly one student from the roster", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), { studentIds: [STUDENT_A1] })
+    );
+  });
+
+  it("denies a non-instructor removing a student from the roster", async () => {
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A1), "classes/classA"), { studentIds: [STUDENT_A1] })
+    );
+  });
+
+  // Proves the removal arm is narrow (shrink by exactly one), not a general
+  // roster-write arm the instructor could use to wipe the roster in one go.
+  it("denies the instructor removing more than one student in a single write", async () => {
+    await assertFails(updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), { studentIds: [] }));
+  });
+
+  // Proves the removal arm can't be repurposed to ADD someone under cover
+  // of "shrinking" — hasAll(prev) requires next ⊆ prev.
+  it("denies the instructor using the removal arm to add a student instead", async () => {
+    await assertFails(
+      updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2, "newStudent"],
+      })
+    );
+  });
+});
+
+describe("fix round 1, I3: classId clears once its class is deleted", () => {
+  it("denies clearing classId while the class still exists", async () => {
+    // boardA1's classId is classA, which still exists in this test — same
+    // property "denies unsetting classId once set" above already covers,
+    // restated here as the explicit negative control for the test below.
+    await assertFails(updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { classId: null }));
+  });
+
+  it("lets the board admin clear classId once its class has been deleted", async () => {
+    await assertSucceeds(deleteDoc(doc(db(INSTRUCTOR_C), "classes/classC")));
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardInClassC"), { classId: null })
+    );
+  });
+});
+
+// ── Fix round 1, I4: joinCodes lookup collection ─────────────────────────────
+// The narrow self-enrollment credential: holds ONLY `{classId}` per code, so
+// resolving a code never requires (or grants) reading the class document's
+// roster.
+describe("fix round 1, I4: joinCodes collection", () => {
+  it("lets any signed-in user read a joinCodes lookup doc", async () => {
+    const snap = await assertSucceeds(getDoc(doc(db(STUDENT_C), "joinCodes/CLASSA1")));
+    expect(snap.data()).toEqual({ classId: "classA" });
+  });
+
+  it("denies a client creating a joinCodes doc", async () => {
+    await assertFails(
+      setDoc(doc(db(INSTRUCTOR_A), "joinCodes/HACKED1"), { classId: "classA" })
+    );
+  });
+
+  it("denies a client overwriting an existing joinCodes doc", async () => {
+    await assertFails(
+      setDoc(doc(db(INSTRUCTOR_A), "joinCodes/CLASSA1"), { classId: "classB" })
+    );
+  });
+
+  it("denies a client deleting a joinCodes doc", async () => {
+    await assertFails(deleteDoc(doc(db(INSTRUCTOR_A), "joinCodes/CLASSA1")));
   });
 });
