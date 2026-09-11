@@ -1255,6 +1255,18 @@ describe("polls", () => {
     await assertFails(setDoc(doc(db(DAVE), "boards/boardWrite/polls/spoofed"), newPoll({ createdById: ALICE })));
   });
 
+  // Fix round 1, item 9 — mapPollDoc (pollService.ts) and isAnonymousPoll
+  // (this file) used to default a MISSING `anonymous` field oppositely
+  // (false vs. true), so a poll written without it would render forever as
+  // "no votes yet" with a silent permission error. Requiring the field to
+  // exist as a real boolean on create means that divergence can never be
+  // reached by any doc this rule allowed to be written.
+  it("denies creating a poll whose anonymous field is missing or not a boolean", async () => {
+    const { anonymous: _omit, ...withoutAnonymous } = newPoll();
+    await assertFails(setDoc(pollRef(ALICE, "noAnonymousField"), withoutAnonymous));
+    await assertFails(setDoc(pollRef(ALICE, "stringAnonymous"), newPoll({ anonymous: "no" })));
+  });
+
   it("a legacy board (no workspaceId) lets any member create a poll", async () => {
     await assertSucceeds(
       setDoc(doc(db(EVIL), "boards/boardLegacy/polls/byEvil"), {
@@ -1310,6 +1322,22 @@ describe("polls", () => {
   it("denies a vote whose optionIndices isn't a list at all", async () => {
     await assertFails(
       setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: "zero" })
+    );
+  });
+
+  // Fix round 1, item 5 — [0,0,0] passes a bare size<=3 bound (dots mode)
+  // even though `toggleDotVote` (pollService.ts) can never produce a
+  // doc like this itself; without a uniqueness check one voter could
+  // inflate a single option's count 3x via a raw write.
+  it("denies a dots-mode vote with duplicate option indices, even though the size bound alone would allow it", async () => {
+    await assertFails(vote(DAVE, "pollDots", DAVE, [0, 0, 0]));
+  });
+
+  // Fix round 1, item 6 — a genuine commenter voting as themselves, with an
+  // otherwise perfectly valid payload, but one extra field smuggled in.
+  it("denies a vote payload carrying a field outside {userId, optionIndices, createdAt}", async () => {
+    await assertFails(
+      setDoc(voteRef(DAVE, "pollSingle", DAVE), { userId: DAVE, optionIndices: [0], secret: "nope" })
     );
   });
 
@@ -1384,6 +1412,30 @@ describe("polls", () => {
 
   it("denies a viewer updating a poll", async () => {
     await assertFails(updateDoc(pollRef(FRANK, "pollSingle"), { active: true }));
+  });
+
+  // Fix round 1, item 1 (CRITICAL) — an earlier version of this rule was
+  // `allow update, delete: if isBoardEditor(boardId)` with no field
+  // constraint at all, which let ANY editor retroactively de-anonymize
+  // every vote already cast on `pollAnon` by flipping this one field:
+  // `isAnonymousPoll` reads the CURRENT (post-update) value, so
+  // `updateDoc({anonymous: false})` followed by a votes read would then
+  // succeed where "hides voter identity from members in anonymous mode"
+  // above proved it must fail. This MUST fail against the buggy rule — that
+  // is what proves the fix, not merely that some update somewhere succeeds.
+  it("denies an effective editor flipping a poll's anonymous flag — this is the fix for a real de-anonymization hole", async () => {
+    await assertFails(updateDoc(pollRef(DAVE, "pollAnon"), { anonymous: false }));
+  });
+
+  it("denies an effective editor reassigning a poll's createdById", async () => {
+    await assertFails(updateDoc(pollRef(DAVE, "pollSingle"), { createdById: DAVE }));
+  });
+
+  it("denies an effective editor rewriting a poll's options to fall outside [2, 6] via update", async () => {
+    await assertFails(updateDoc(pollRef(DAVE, "pollSingle"), { options: ["only one"] }));
+    await assertFails(
+      updateDoc(pollRef(DAVE, "pollSingle"), { options: ["A", "B", "C", "D", "E", "F", "G"] })
+    );
   });
 
   // ── deleting the poll: editor-only, like create ─────────────────────────────

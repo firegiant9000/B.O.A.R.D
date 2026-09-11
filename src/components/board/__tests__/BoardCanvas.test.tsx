@@ -1264,7 +1264,7 @@ describe("BoardCanvas — polls: which polls show this render", () => {
     const standalone = makePoll({ id: "p1" });
     renderCanvas({ polls: { polls: [standalone] } });
     expect(mockOverlayProps.positionedPolls).toEqual([
-      { poll: standalone, results: null, myVote: [] },
+      { poll: standalone, results: null, myVote: [], hasNextQuestion: false },
     ]);
   });
 
@@ -1292,7 +1292,29 @@ describe("BoardCanvas — polls: which polls show this render", () => {
         myVoteFor: jest.fn(() => [1]),
       },
     });
-    expect(mockOverlayProps.positionedPolls).toEqual([{ poll: p1, results, myVote: [1] }]);
+    expect(mockOverlayProps.positionedPolls).toEqual([
+      { poll: p1, results, myVote: [1], hasNextQuestion: false },
+    ]);
+  });
+
+  // Fix round 1, item 8 — `hasNextQuestion` is what BoardOverlayLayer uses
+  // to decide whether PollCard gets a live "Next question" callback at all;
+  // it must be TRUE for a quiz's current question when a later one exists,
+  // and FALSE once there is nothing left to advance to, even though
+  // `quizId` is truthy in both cases.
+  it("sets hasNextQuestion true for a quiz's current question when a later question exists", () => {
+    const q0 = makePoll({ id: "q0", quizId: "quiz1", quizIndex: 0, active: true });
+    const q1 = makePoll({ id: "q1", quizId: "quiz1", quizIndex: 1, active: false });
+    renderCanvas({ polls: { polls: [q0, q1] } });
+    expect(mockOverlayProps.positionedPolls[0].hasNextQuestion).toBe(true);
+  });
+
+  it("sets hasNextQuestion FALSE for a quiz's LAST question, even though quizId is still set", () => {
+    const q0 = makePoll({ id: "q0", quizId: "quiz1", quizIndex: 0, active: false });
+    const q1 = makePoll({ id: "q1", quizId: "quiz1", quizIndex: 1, active: true });
+    renderCanvas({ polls: { polls: [q0, q1] } });
+    expect(mockOverlayProps.positionedPolls[0].poll.id).toBe("q1");
+    expect(mockOverlayProps.positionedPolls[0].hasNextQuestion).toBe(false);
   });
 });
 

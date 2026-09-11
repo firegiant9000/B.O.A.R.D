@@ -558,6 +558,16 @@ export default function BoardCanvas({
       poll,
       results: polls.resultsFor(poll.id),
       myVote: polls.myVoteFor(poll.id),
+      // Fix round 1, item 8 — true only when a LATER question (by
+      // quizIndex) exists in this same quiz; false for a standalone poll
+      // and for a quiz's last question, both of which would make
+      // pollService.advanceQuiz a silent no-op if offered. Mirrors
+      // advanceQuiz's own "next-by-quizIndex, not array position" ordering.
+      hasNextQuestion:
+        !!poll.quizId &&
+        polls.polls.some(
+          (p) => p.quizId === poll.quizId && (p.quizIndex ?? 0) > (poll.quizIndex ?? 0)
+        ),
     }));
 
   return (

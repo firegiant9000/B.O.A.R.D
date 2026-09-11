@@ -36,7 +36,10 @@ export { MIN_POLL_OPTIONS, MAX_POLL_OPTIONS };
 /** Dot-voting cap — a member may spread their vote across at most this many
  *  options at once (PollElement's "mode" comment). Not specified by the
  *  brief; a deliberately small, fixed default. Mirrored in firestore.rules'
- *  `isValidVotePayload` — keep the two numbers in sync if this ever changes. */
+ *  `isValidVotePayload` — kept in sync by this file's own test suite's
+ *  "firestore.rules dot-vote cap mirror" (fix round 1, item 3), so changing
+ *  this number without also changing the rules literal fails a test instead
+ *  of quietly turning the 4th dot into a permission-denied in production. */
 export const MAX_DOT_VOTES = 3;
 
 function mapPollDoc(id: string, data: any): PollElement | null {
@@ -47,7 +50,17 @@ function mapPollDoc(id: string, data: any): PollElement | null {
     boardId: data.boardId ?? "",
     question: data.question,
     options: data.options,
-    anonymous: !!data.anonymous,
+    // Fix round 1, item 9 — defaults to TRUE (anonymous) on a
+    // missing/malformed field, matching firestore.rules' isAnonymousPoll
+    // fail-closed default exactly, rather than the opposite `!!data.anonymous`
+    // (defaults to false) this used to read. The two used to disagree: a
+    // poll written without the field would subscribe to the (member-
+    // readable) votes collection here while the rule denied that same read
+    // — a permanent "no votes yet" with a silent console permission error
+    // and no visible cause. firestore.rules' create rule now also requires
+    // `anonymous is bool`, so no NEW poll can ever be missing it; this
+    // default only matters for data that predates that rule.
+    anonymous: typeof data.anonymous === "boolean" ? data.anonymous : true,
     mode: data.mode === "dots" ? "dots" : "single",
     x: data.x ?? 0,
     y: data.y ?? 0,
@@ -83,7 +96,6 @@ function mapTallyDoc(data: any): PollTally {
   return {
     counts: data && typeof data.counts === "object" && data.counts !== null ? data.counts : {},
     totalVotes: typeof data?.totalVotes === "number" ? data.totalVotes : 0,
-    updatedAt: data?.updatedAt?.toDate?.() ?? new Date(),
   };
 }
 

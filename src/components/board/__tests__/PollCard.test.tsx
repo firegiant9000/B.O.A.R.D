@@ -50,14 +50,24 @@ describe("rendering", () => {
     expect(screen.getByTestId("poll-option-p1-2")).toBeTruthy();
   });
 
-  it("shows the anonymous note, worded as hidden from OTHER MEMBERS (never implying the system doesn't know)", () => {
+  it("names WHO the poll is anonymous to (other members) — never implying the system doesn't know", () => {
     render(<PollCard poll={makePoll({ anonymous: true })} {...baseProps} />);
-    const note = screen.getByText(/hidden from other members/i);
-    expect(note).toBeTruthy();
+    expect(screen.getByText(/anonymous to other members/i)).toBeTruthy();
     // Never overstates the guarantee — must not claim anonymity from the
     // system/admins/host, only from other members (see the standing
     // constraint on this exact wording).
     expect(screen.queryByText(/hidden from (the )?(system|admin|host)/i)).toBeNull();
+    expect(screen.queryByText(/anonymous to (the )?(system|admin|host)/i)).toBeNull();
+  });
+
+  // Fix round 1, item 4 — the brief requires BOTH halves of the disclosure:
+  // who it's hidden from, AND that the system still records identity. The
+  // previous copy only ever satisfied the first half; this asserts the
+  // second half is actually PRESENT (not merely that an overclaim is
+  // absent, which a copy saying nothing about the system would also pass).
+  it("discloses that identity IS still stored/recorded server-side, not just who it's hidden from", () => {
+    render(<PollCard poll={makePoll({ anonymous: true })} {...baseProps} />);
+    expect(screen.getByText(/identity is still stored|still recorded/i)).toBeTruthy();
   });
 
   it("does not show a delete button when the viewer cannot manage the poll", () => {

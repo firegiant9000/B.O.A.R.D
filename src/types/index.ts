@@ -555,11 +555,16 @@ export interface PollVote {
  *  imply otherwise in UI copy (e.g. no "results update instantly" claim for
  *  an anonymous poll). Non-anonymous polls never read this at all: their
  *  `votes` subcollection is member-readable directly, and the client counts
- *  it live (pollService.subscribeToVotes) instead. */
+ *  it live (pollService.subscribeToVotes) instead.
+ *
+ *  Deliberately carries NO timestamp field (fix round 1, item 10 — an
+ *  earlier version had `updatedAt`, written via `serverTimestamp()`).
+ *  Nothing ever read it, and on an anonymity feature a timing signal a
+ *  member could correlate against presence ("the count moved while only
+ *  Alice was here") is a needless side channel, not a useful one. */
 export interface PollTally {
   counts: Record<string, number>;
   totalVotes: number;
-  updatedAt: Date;
 }
 
 // Phase 8 (Month 3, roadmap item 8). Append-only activity log. An event records a

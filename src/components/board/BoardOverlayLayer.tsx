@@ -45,6 +45,12 @@ export interface PositionedPoll {
   poll: PollElement;
   results: PollResults | null;
   myVote: number[];
+  /** Fix round 1, item 8 — whether advancing THIS quiz would actually move
+   *  to a later question. False for a standalone (non-quiz) poll AND for a
+   *  quiz's LAST question — in both cases `onAdvanceQuiz` would be a silent
+   *  no-op (pollService.advanceQuiz), so this layer must not hand PollCard a
+   *  live "Next question" callback for either; see the render loop below. */
+  hasNextQuestion: boolean;
 }
 
 /**
@@ -351,7 +357,7 @@ export default function BoardOverlayLayer({
             poll's OWN persisted (x, y) — no live-element-geometry join, see
             PositionedPoll's comment — with the same counter-scale technique
             as every other overlay badge above. */}
-        {positionedPolls.map(({ poll, results, myVote }) => (
+        {positionedPolls.map(({ poll, results, myVote, hasNextQuestion }) => (
           <View key={poll.id} pointerEvents="box-none" style={{ position: "absolute", left: poll.x, top: poll.y }}>
             <PollCard
               poll={poll}
@@ -362,7 +368,12 @@ export default function BoardOverlayLayer({
               onVote={(optionIndex) => onVotePoll(poll.id, optionIndex)}
               onToggleDot={(optionIndex) => onToggleDotPoll(poll.id, optionIndex)}
               onDelete={() => onDeletePoll(poll.id)}
-              onAdvanceQuiz={poll.quizId ? () => onAdvanceQuiz(poll.quizId as string) : undefined}
+              // Fix round 1, item 8 — omitted (not just disabled) for a
+              // standalone poll AND for a quiz's LAST question, matching
+              // PollCard's own doc comment ("present only ... with more
+              // questions after it") — a poll with `quizId` set alone is
+              // NOT sufficient; see `hasNextQuestion`'s comment above.
+              onAdvanceQuiz={hasNextQuestion ? () => onAdvanceQuiz(poll.quizId as string) : undefined}
               scale={audioInv}
             />
           </View>

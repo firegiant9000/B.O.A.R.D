@@ -317,7 +317,12 @@ describe("reaction badges", () => {
 // persisted (x, y) — there is no live-element-geometry join for polls (see
 // PositionedPoll's comment), unlike reactions/audio.
 describe("polls", () => {
-  const POLL: PositionedPoll = { poll: makePoll({ id: "p1", x: 12, y: 34 }), results: null, myVote: [] };
+  const POLL: PositionedPoll = {
+    poll: makePoll({ id: "p1", x: 12, y: 34 }),
+    results: null,
+    myVote: [],
+    hasNextQuestion: false,
+  };
 
   it("renders one PollCard per entry, with results/myVote/canVote/canManage threaded through", () => {
     render(
@@ -341,7 +346,12 @@ describe("polls", () => {
   });
 
   it("renders one PollCard per poll for multiple polls", () => {
-    const poll2: PositionedPoll = { poll: makePoll({ id: "p2" }), results: null, myVote: [] };
+    const poll2: PositionedPoll = {
+      poll: makePoll({ id: "p2" }),
+      results: null,
+      myVote: [],
+      hasNextQuestion: false,
+    };
     render(<BoardOverlayLayer {...baseProps({ positionedPolls: [POLL, poll2] })} />);
     expect(mockPollCardCalls).toHaveLength(2);
   });
@@ -372,9 +382,30 @@ describe("polls", () => {
     expect(mockPollCardCalls[0].onAdvanceQuiz).toBeUndefined();
   });
 
-  it("composes onAdvanceQuiz for a quiz question, calling the layer's onAdvanceQuiz with its quizId", () => {
+  // Fix round 1, item 8 — `quizId` truthy alone used to be enough to get a
+  // live callback, so a quiz's LAST question rendered a "Next" button whose
+  // tap was a silent no-op (pollService.advanceQuiz). `hasNextQuestion` is
+  // what BoardCanvas computes to distinguish the two; this layer must
+  // actually respect it, not just `poll.quizId`.
+  it("omits onAdvanceQuiz for a quiz's LAST question (quizId set, hasNextQuestion false)", () => {
+    const lastQuestion: PositionedPoll = {
+      poll: makePoll({ id: "q1", quizId: "quiz1", active: true }),
+      results: null,
+      myVote: [],
+      hasNextQuestion: false,
+    };
+    render(<BoardOverlayLayer {...baseProps({ positionedPolls: [lastQuestion] })} />);
+    expect(mockPollCardCalls[0].onAdvanceQuiz).toBeUndefined();
+  });
+
+  it("composes onAdvanceQuiz for a quiz question that HAS a next one, calling the layer's onAdvanceQuiz with its quizId", () => {
     const onAdvanceQuiz = jest.fn();
-    const quizPoll: PositionedPoll = { poll: makePoll({ id: "q1", quizId: "quiz1", active: true }), results: null, myVote: [] };
+    const quizPoll: PositionedPoll = {
+      poll: makePoll({ id: "q1", quizId: "quiz1", active: true }),
+      results: null,
+      myVote: [],
+      hasNextQuestion: true,
+    };
     render(<BoardOverlayLayer {...baseProps({ positionedPolls: [quizPoll], onAdvanceQuiz })} />);
     expect(mockPollCardCalls[0].onAdvanceQuiz).toBeInstanceOf(Function);
     mockPollCardCalls[0].onAdvanceQuiz();

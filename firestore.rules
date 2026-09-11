@@ -344,18 +344,26 @@ service cloud.firestore {
 
     // Bounds `optionIndices`' SIZE against the poll's mode (single = exactly
     // one; dots = 1..MAX_DOT_VOTES, mirrored from pollService.MAX_DOT_VOTES —
-    // keep the two in sync) and its TYPE (a list). Deliberately does NOT
-    // validate that every element actually falls within [0, options.size()) —
-    // the rules language has no per-element loop/bounds construct for a
-    // dynamic-length list, and an out-of-range index is a correctness gap a
-    // tolerant reader absorbs (PollVote's type comment in src/types/index.ts),
-    // never a security one: the doc id / `userId` field pinning below is what
-    // actually enforces "one vote per user," independent of this list's
-    // contents.
+    // keep the two in sync — src/services/__tests__/pollService.test.ts's
+    // "firestore.rules dot-vote cap mirror" is the drift test that enforces
+    // it, parsing this function's own source as text, mirroring
+    // src/lib/__tests__/planLimits.test.ts's cross-package technique) and its
+    // TYPE (a list of DISTINCT entries — `idx.toSet().size() == idx.size()`
+    // rejects e.g. `[0,0,0]`, which would otherwise pass the size bound and
+    // let one voter inflate a single option's count by repeating an index;
+    // `toggleDotVote` can never produce such a doc itself, so this is a
+    // client/rules boundary check, not a UX affordance anyone loses).
+    // Deliberately does NOT validate that every element actually falls
+    // within [0, options.size()) — the rules language has no per-element
+    // loop/bounds construct for a dynamic-length list, and an out-of-range
+    // index is a correctness gap a tolerant reader absorbs (PollVote's type
+    // comment in src/types/index.ts), never a security one: the doc id /
+    // `userId` field pinning below is what actually enforces "one vote per
+    // user," independent of this list's contents.
     function isValidVotePayload(boardId, pollId) {
       let idx = request.resource.data.optionIndices;
       return pollExists(boardId, pollId) &&
-        idx is list && idx.size() >= 1 &&
+        idx is list && idx.size() >= 1 && idx.toSet().size() == idx.size() &&
         (pollData(boardId, pollId).get('mode', 'single') == 'dots' ? idx.size() <= 3 : idx.size() == 1);
     }
 
@@ -728,10 +736,33 @@ service cloud.firestore {
         allow read:   if isBoardMember(boardId);
         allow create: if isBoardEditor(boardId) &&
                         request.resource.data.createdById == request.auth.uid &&
+                        request.resource.data.anonymous is bool &&
                         request.resource.data.options is list &&
                         request.resource.data.options.size() >= 2 &&
                         request.resource.data.options.size() <= 6;
-        allow update, delete: if isBoardEditor(boardId);
+        // Fix round 1, item 1 — an EARLIER version of this rule was
+        // `allow update, delete: if isBoardEditor(boardId)`, with no field
+        // constraint at all. That let any editor flip `anonymous` to false
+        // post hoc: `isAnonymousPoll` (above) reads the CURRENT value of the
+        // very field the caller had just changed, so
+        // `updateDoc(poll, {anonymous: false})` followed by a votes read
+        // retroactively de-anonymized every vote already cast under the
+        // anonymity promise — defeating the one guarantee the whole trigger
+        // design (functions/src/triggers/pollTally.ts) exists to protect,
+        // and on a LEGACY (no-workspaceId) board `isBoardEditor` grants
+        // editor to every member, so the unmasker could be anyone. The same
+        // unconstrained rule also let `options` be rewritten to any length
+        // (the [2,6] bound was create-only) and `createdById` reassigned to
+        // another user. `active` (quiz sequencing's own field —
+        // pollService.advanceQuiz) is the only field this update path is
+        // FOR, so everything else that was true before the write must stay
+        // true after it.
+        allow update: if isBoardEditor(boardId) &&
+                        request.resource.data.anonymous == resource.data.anonymous &&
+                        request.resource.data.createdById == resource.data.createdById &&
+                        request.resource.data.options.size() >= 2 &&
+                        request.resource.data.options.size() <= 6;
+        allow delete: if isBoardEditor(boardId);
 
         // The document id `{voterId}` IS the uid, in EVERY mode including
         // "dots" — this is what enforces one vote DOC per user (see
@@ -741,6 +772,10 @@ service cloud.firestore {
         // this is the one place this file must diverge from the reactions
         // shape it otherwise mirrors: denying update here would make
         // "change your vote" impossible, not just idempotent.
+        //
+        // Fix round 1, item 6 — `hasOnly` pins the vote doc's field set so a
+        // commenter can't smuggle arbitrary extra fields into their own vote
+        // doc (member-readable on a non-anonymous poll).
         match /votes/{voterId} {
           // Anonymous-mode read denial applies to EVERY member, including the
           // board admin and the voter reading their own doc back — "anonymous
@@ -753,11 +788,13 @@ service cloud.firestore {
           allow create: if isBoardCommenter(boardId) &&
                           voterId == request.auth.uid &&
                           request.resource.data.userId == request.auth.uid &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'createdAt']) &&
                           isValidVotePayload(boardId, pollId);
           allow update: if isBoardCommenter(boardId) &&
                           voterId == request.auth.uid &&
                           resource.data.userId == request.auth.uid &&
                           request.resource.data.userId == request.auth.uid &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'createdAt']) &&
                           isValidVotePayload(boardId, pollId);
           allow delete: if isBoardAdmin(boardId) ||
                           (isBoardCommenter(boardId) &&

@@ -78,7 +78,8 @@ export default function PollCard({
 
       {poll.anonymous && (
         <Text style={styles.anonymousNote}>
-          Anonymous — hidden from other members, still one vote per person
+          Anonymous to other members — your identity is still stored so you
+          can only vote once
         </Text>
       )}
 

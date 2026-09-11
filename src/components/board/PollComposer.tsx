@@ -129,7 +129,10 @@ export default function PollComposer({ visible, onCancel, onSubmit }: PollCompos
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
               <Text style={styles.switchLabel}>Anonymous</Text>
-              <Text style={styles.switchHint}>Hides who voted from other members — still one vote per person</Text>
+              <Text style={styles.switchHint}>
+                Hides who voted from other members — your identity is still
+                stored to enforce one vote per person
+              </Text>
             </View>
             <Switch testID="poll-composer-anonymous" value={anonymous} onValueChange={setAnonymous} />
           </View>

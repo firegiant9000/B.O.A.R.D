@@ -2,6 +2,8 @@ jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"))
 jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
 
 import * as fs from "firebase/firestore";
+import * as nodeFs from "fs";
+import * as nodePath from "path";
 import { makeQuerySnap, makeDocSnap } from "../../test-utils/firestoreMock";
 import * as pollService from "../pollService";
 import { PollElement } from "../../types";
@@ -123,7 +125,7 @@ describe("subscribeToBoardPolls", () => {
     expect(typeof unsub).toBe("function");
   });
 
-  it("defaults mode to 'single' and anonymous to false when missing, never throwing", () => {
+  it("defaults mode to 'single' and anonymous to TRUE (fail closed, matching isAnonymousPoll's rules default) when missing, never throwing", () => {
     let captured: any;
     onSnapshot.mockImplementationOnce((_q, cb) => {
       captured = cb;
@@ -134,7 +136,35 @@ describe("subscribeToBoardPolls", () => {
     pollService.subscribeToBoardPolls("b1", onChange);
     captured(makeQuerySnap([["p1", { question: "Q", options: ["A", "B"] }]]));
 
-    expect(onChange.mock.calls[0][0][0]).toMatchObject({ mode: "single", anonymous: false, x: 0, y: 0 });
+    expect(onChange.mock.calls[0][0][0]).toMatchObject({ mode: "single", anonymous: true, x: 0, y: 0 });
+  });
+
+  it("also defaults anonymous to true for a non-boolean value, not just a missing field", () => {
+    let captured: any;
+    onSnapshot.mockImplementationOnce((_q, cb) => {
+      captured = cb;
+      return () => {};
+    });
+    const onChange = jest.fn();
+
+    pollService.subscribeToBoardPolls("b1", onChange);
+    captured(makeQuerySnap([["p1", { question: "Q", options: ["A", "B"], anonymous: "no" }]]));
+
+    expect(onChange.mock.calls[0][0][0].anonymous).toBe(true);
+  });
+
+  it("respects an explicit anonymous: false, never overriding a real value with the fail-closed default", () => {
+    let captured: any;
+    onSnapshot.mockImplementationOnce((_q, cb) => {
+      captured = cb;
+      return () => {};
+    });
+    const onChange = jest.fn();
+
+    pollService.subscribeToBoardPolls("b1", onChange);
+    captured(makeQuerySnap([["p1", { question: "Q", options: ["A", "B"], anonymous: false }]]));
+
+    expect(onChange.mock.calls[0][0][0].anonymous).toBe(false);
   });
 });
 
@@ -425,5 +455,33 @@ describe("advanceQuiz", () => {
     // q2 appeared first in the input array.
     expect(batch.update.mock.calls[1][0]).toMatchObject({ path: ["boards", "b1", "polls", "q1"] });
     expect(batch.update.mock.calls[1][1]).toEqual({ active: true });
+  });
+});
+
+// Fix round 1, item 3 — MAX_DOT_VOTES is duplicated between this module (the
+// TS source of truth) and firestore.rules' `isValidVotePayload`
+// (`idx.size() <= 3`, a plain literal — rules cannot import TypeScript).
+// Mirrors src/lib/__tests__/planLimits.test.ts's own cross-package mirror
+// (which reads functions/src/billing/limits.ts as TEXT rather than
+// importing it, for the identical reason: the two files are physically
+// separate, and Jest can't type-check across the app/functions package
+// boundary either) and functions/src/__tests__/limits.test.ts's "firestore
+// .rules seat-cap mirror" — same technique, this repo's third instance of
+// it. A guard fails the test if the parse matches nothing, so a drift test
+// that silently stops matching doesn't pass forever.
+describe("firestore.rules dot-vote cap mirror", () => {
+  it("keeps isValidVotePayload's dots-mode bound in firestore.rules in sync with MAX_DOT_VOTES", () => {
+    const rulesPath = nodePath.join(__dirname, "../../../firestore.rules");
+    const rules = nodeFs.readFileSync(rulesPath, "utf8");
+
+    const fnStart = rules.indexOf("function isValidVotePayload(");
+    expect(fnStart).toBeGreaterThanOrEqual(0); // guard: the helper must still exist
+    const fnEnd = rules.indexOf("\n    }", fnStart);
+    expect(fnEnd).toBeGreaterThan(fnStart); // guard: we actually captured a body
+    const body = rules.slice(fnStart, fnEnd);
+
+    const match = body.match(/idx\.size\(\)\s*<=\s*(\d+)/);
+    expect(match).not.toBeNull(); // guard: an empty/failed parse must not pass vacuously
+    expect(Number(match![1])).toBe(pollService.MAX_DOT_VOTES);
   });
 });

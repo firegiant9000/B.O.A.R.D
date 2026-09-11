@@ -8,6 +8,16 @@ describe("PollComposer", () => {
     expect(screen.queryByTestId("poll-composer")).toBeNull();
   });
 
+  // Fix round 1, item 4 — the anonymous toggle's hint must disclose BOTH
+  // halves: who it's hidden from (other members) AND that the system still
+  // records identity (never implying the system doesn't know either).
+  it("discloses both halves of the anonymity guarantee on the toggle's hint text", () => {
+    render(<PollComposer visible={true} onCancel={jest.fn()} onSubmit={jest.fn()} />);
+    expect(screen.getByText(/other members/i)).toBeTruthy();
+    expect(screen.getByText(/identity is still stored|still recorded/i)).toBeTruthy();
+    expect(screen.queryByText(/hidden from (the )?(system|admin|host)/i)).toBeNull();
+  });
+
   it("starts with 2 empty option fields and Create disabled", () => {
     render(<PollComposer visible={true} onCancel={jest.fn()} onSubmit={jest.fn()} />);
     expect(screen.getByTestId("poll-composer-option-0")).toBeTruthy();
