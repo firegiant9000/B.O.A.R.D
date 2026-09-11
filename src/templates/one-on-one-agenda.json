@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "id": "one-on-one-agenda",
+  "title": "1:1 Agenda",
+  "category": "meeting",
+  "description": "A recurring manager/report agenda: wins, challenges, goals, and follow-ups.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "1:1 Agenda",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 56,
+      "width": 640,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "WINS",
+      "x": 12,
+      "y": 74,
+      "width": 616,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 128,
+      "width": 640,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "CHALLENGES",
+      "x": 12,
+      "y": 146,
+      "width": 616,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 200,
+      "width": 640,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "GOALS",
+      "x": 12,
+      "y": 218,
+      "width": 616,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 272,
+      "width": 640,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "ACTION ITEMS",
+      "x": 12,
+      "y": 290,
+      "width": 616,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 344,
+      "width": 640,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "CAREER & GROWTH",
+      "x": 12,
+      "y": 362,
+      "width": 616,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add talking points before the meeting starts.",
+      "x": 0,
+      "y": 424
+    }
+  ]
+}

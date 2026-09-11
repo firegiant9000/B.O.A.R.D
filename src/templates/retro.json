@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "retro",
+  "title": "Sprint Retro",
+  "category": "meeting",
+  "description": "Went well / didn't go well / action items — the classic retro board.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Sprint Retro",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 60,
+      "width": 240,
+      "height": 400,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "WHAT WENT WELL",
+      "x": 10,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Deploys were smooth",
+      "x": 10,
+      "y": 104
+    },
+    {
+      "type": "note",
+      "content": "Good pairing on the tricky bug",
+      "x": 10,
+      "y": 184
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 260,
+      "y": 60,
+      "width": 240,
+      "height": 400,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "WHAT DIDN'T",
+      "x": 270,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Standup ran long",
+      "x": 270,
+      "y": 104
+    },
+    {
+      "type": "note",
+      "content": "Scope crept mid-sprint",
+      "x": 270,
+      "y": 184
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 520,
+      "y": 60,
+      "width": 240,
+      "height": 400,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "ACTION ITEMS",
+      "x": 530,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Timebox standup to 10 min",
+      "x": 530,
+      "y": 104
+    },
+    {
+      "type": "note",
+      "content": "Write acceptance criteria up front",
+      "x": 530,
+      "y": 184
+    }
+  ]
+}

@@ -39,6 +39,7 @@ import { isQuotaDenial } from "../../src/services/quotaService";
 import BoardCard from "../../src/components/BoardCard";
 import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
+import TemplateGalleryModal from "../../src/components/TemplateGalleryModal";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
 import UpsellModal from "../../src/components/UpsellModal";
 import OnboardingTutorial from "../../src/components/onboarding/OnboardingTutorial";
@@ -95,6 +96,12 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
+  // Month 6 — the template gallery, opened from the New Board modal below.
+  // All the create-from-template work (calling templateService, logging
+  // the activity event) lives in TemplateGalleryModal itself; this screen
+  // only opens it and reacts to onCreated/onQuotaDenied, the same split
+  // JoinBoardModal already uses.
+  const [templateGalleryVisible, setTemplateGalleryVisible] = useState(false);
   const [newBoardTitle, setNewBoardTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Board | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -302,6 +309,19 @@ export default function DashboardScreen() {
     }
   };
 
+  // Month 6 — the template gallery reports its own result; this screen just
+  // closes it and navigates, mirroring handleJoined above.
+  const handleTemplateCreated = (boardId: string) => {
+    setTemplateGalleryVisible(false);
+    fetchBoards();
+    router.push(`/board/${boardId}`);
+  };
+
+  const handleTemplateQuotaDenied = () => {
+    setTemplateGalleryVisible(false);
+    setUpsellVisible(true);
+  };
+
   const handleDeleteBoard = (board: Board) => {
     setDeleteTarget(board);
   };
@@ -362,6 +382,18 @@ export default function DashboardScreen() {
         plan={activeWorkspace?.plan}
         workspaceId={activeWorkspaceId ?? undefined}
         onDismiss={() => setUpsellVisible(false)}
+      />
+
+      <TemplateGalleryModal
+        visible={templateGalleryVisible}
+        onClose={() => setTemplateGalleryVisible(false)}
+        onCreated={handleTemplateCreated}
+        onQuotaDenied={handleTemplateQuotaDenied}
+        ownerId={user?.uid ?? ""}
+        ownerName={user?.displayName ?? user?.email ?? "Someone"}
+        workspaceId={activeWorkspaceId ?? ""}
+        plan={activeWorkspace?.plan}
+        currentBoardCount={boards.length}
       />
 
       <OnboardingTutorial visible={onboardingVisible} onDismiss={dismissOnboarding} />
@@ -615,6 +647,18 @@ export default function DashboardScreen() {
                 <Text style={styles.modalCreateText}>Create</Text>
               </TouchableOpacity>
             </View>
+            {/* Month 6 — the template gallery entry point. */}
+            <TouchableOpacity
+              style={styles.modalTemplateLink}
+              onPress={() => {
+                setCreateModalVisible(false);
+                setTemplateGalleryVisible(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="grid-outline" size={15} color="#2563eb" />
+              <Text style={styles.modalTemplateLinkText}>Or start from a template</Text>
+            </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -889,6 +933,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#fff",
+  },
+  modalTemplateLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 16,
+    paddingVertical: 4,
+  },
+  modalTemplateLinkText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2563eb",
   },
   // ── Delete / Leave confirmation modal ──
   deleteModalWrapper: {
