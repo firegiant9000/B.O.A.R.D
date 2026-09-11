@@ -135,9 +135,17 @@ export default function CursorLayer({
     blockedIds,
     Date.now()
   );
-  if (visible.length === 0) return null;
 
   const now = Date.now();
+  // Fix round 1 (Month 5) — the laser trail is the tool's *output*, not a
+  // redundant pointer duplicate like the arrow below, so unlike `visible` it
+  // keeps the viewer's own entry: press-and-hold vs. quick-tap otherwise
+  // produce two results the pointing user can't tell apart, the fade gives
+  // no feedback about what the audience currently sees, and on touch their
+  // own finger already occludes the point. Never un-hide the self *cursor*
+  // arrow, though — `visible` above stays exactly as it was.
+  const trailEligible = cursorService.trailEligibleCursors(cursors, blockedIds, now);
+  if (visible.length === 0 && trailEligible.length === 0) return null;
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -147,7 +155,7 @@ export default function CursorLayer({
           claim to be laser-pointing, the same as it could fake a cursor
           position today. */}
       <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
-        {visible.flatMap((c) => {
+        {trailEligible.flatMap((c) => {
           const pings = trailsRef.current.get(c.userId);
           if (!pings || pings.length === 0) return [];
           const color = userColor(c.userId);

@@ -1,11 +1,16 @@
 // The cursor side channel is CursorLayer's own subscription — stub it so
-// mounting never reaches real Firestore. `visibleCursors` is passed through
-// as-is: every fixture below is already self-excluded and fresh, so the
-// filtering logic itself (already covered in cursorService.test.ts) doesn't
-// need re-testing here.
+// mounting never reaches real Firestore. `visibleCursors` reimplements just
+// the self-exclusion its real counterpart does (blocked/stale filtering is
+// already covered in cursorService.test.ts and every fixture below is fresh
+// and unblocked) — real enough to exercise fix round 1's self-vs-others
+// distinction below. `trailEligibleCursors` passes everything through,
+// mirroring the real one's "keeps self" contract.
 jest.mock("../../services/cursorService", () => ({
   subscribeToCursors: jest.fn(),
-  visibleCursors: jest.fn((cursors: any[]) => cursors),
+  visibleCursors: jest.fn((cursors: any[], selfId: string | undefined) =>
+    cursors.filter((c: any) => c.userId !== selfId)
+  ),
+  trailEligibleCursors: jest.fn((cursors: any[]) => cursors),
   CURSOR_STALE_MS: 10000,
 }));
 
@@ -153,5 +158,21 @@ describe("CursorLayer — laser trail accumulation and rendering (Month 5)", () 
     // The ordinary cursor arrow still renders — the laser addition doesn't
     // suppress it.
     expect(screen.getByText("U1")).toBeTruthy();
+  });
+
+  // Fix round 1: the trail is the tool's output, not a redundant pointer
+  // duplicate — the pointing user has to see it, even though (unlike remote
+  // users) they never see their own cursor arrow.
+  it("renders the pointing user's own laser trail, without un-hiding their own cursor arrow", () => {
+    const { deliver } = renderLayer(); // renderLayer() uses selfId="self"
+    const t0 = Date.now();
+
+    act(() => {
+      deliver([laserCursor("self", 1, 1, t0)]);
+    });
+    flushRenderThrottle();
+
+    expect(screen.UNSAFE_getAllByType(Circle)).toHaveLength(1);
+    expect(screen.queryByText("self")).toBeNull();
   });
 });

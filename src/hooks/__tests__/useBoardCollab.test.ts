@@ -341,20 +341,34 @@ describe("useBoardCollab — presenter actions", () => {
 });
 
 describe("useBoardCollab — laser ping (Month 5)", () => {
-  it("publishPointer attaches a ping while the laser tool is active", () => {
+  it("publishPointer attaches a ping when pressed and the laser tool is active", () => {
     const { result } = renderCollab(jest.fn(), "laser");
     act(() => {
-      result.current.publishPointer({ x: 3, y: 4 });
+      result.current.publishPointer({ x: 3, y: 4 }, true);
     });
     const lastCall = publishCursor.mock.calls[publishCursor.mock.calls.length - 1];
     expect(lastCall[2]).toMatchObject({ ping: { x: 3, y: 4 } });
     expect(typeof lastCall[2].ping.t).toBe("number");
   });
 
-  it("publishPointer sends no ping for every other tool", () => {
+  // Fix round 1: a plain web hover (nothing pressed) reached `publishPointer`
+  // the same as a real drag, so the laser painted a continuous trail with no
+  // press at all and an isolated tap was unreachable (hover before/after it
+  // had already seeded one). `pressed: false` is exactly that hover case —
+  // it must never seed a ping regardless of the active tool.
+  it("publishPointer sends no ping for a hover (pressed: false), even with the laser tool active", () => {
+    const { result } = renderCollab(jest.fn(), "laser");
+    act(() => {
+      result.current.publishPointer({ x: 3, y: 4 }, false);
+    });
+    const lastCall = publishCursor.mock.calls[publishCursor.mock.calls.length - 1];
+    expect(lastCall[2].ping).toBeUndefined();
+  });
+
+  it("publishPointer sends no ping for every other tool, even when pressed", () => {
     const { result } = renderCollab(jest.fn(), "pen");
     act(() => {
-      result.current.publishPointer({ x: 1, y: 1 });
+      result.current.publishPointer({ x: 1, y: 1 }, true);
     });
     const lastCall = publishCursor.mock.calls[publishCursor.mock.calls.length - 1];
     // `undefined`, not omitted — same convention this payload already uses for

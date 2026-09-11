@@ -9,9 +9,8 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-// Month 5 adds "laser" (no toolbar button of its own yet — keyboard-only,
-// Shift+L — but this type has to admit the value since `activeTool` flows
-// straight through from `useBoardTools`'s wider `Tool`).
+// Month 5 adds "laser" — this type has to admit the value since `activeTool`
+// flows straight through from `useBoardTools`'s wider `Tool`.
 type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment" | "laser";
 
 interface ToolbarProps {
@@ -103,6 +102,16 @@ export default function Toolbar({
               active={activeTool === "hand"}
               onPress={() => onToolChange("hand")}
             />
+            {/* Month 5 (laser pointer) — never persists, so it's available to a
+                read-only viewer the same as select/hand/comment already are;
+                fix round 1: this is the tool's one touch entry point, since a
+                Bluetooth-keyboard-only Shift+L hotkey is unreachable on the
+                phone/tablet a presenter is actually likely to be holding. */}
+            <ToolButton
+              icon="locate-outline"
+              active={activeTool === "laser"}
+              onPress={() => onToolChange("laser")}
+            />
             {canComment && (
               <ToolButton
                 icon="chatbubble-outline"
@@ -159,6 +168,13 @@ export default function Toolbar({
             icon="hand-left-outline"
             active={activeTool === "hand"}
             onPress={() => onToolChange("hand")}
+          />
+          {/* Month 5 (laser pointer) — fix round 1: the tool's one touch entry
+              point. The web hotkey (Shift+L) still works alongside this. */}
+          <ToolButton
+            icon="locate-outline"
+            active={activeTool === "laser"}
+            onPress={() => onToolChange("laser")}
           />
           {canComment && (
             <ToolButton

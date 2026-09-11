@@ -309,3 +309,25 @@ export function visibleCursors(
       now - c.updatedAt < CURSOR_STALE_MS
   );
 }
+
+/**
+ * Fix round 1 (Month 5): like `visibleCursors` but keeps the viewer's own
+ * entry — used only for laser-trail rendering. Excluding self from the
+ * ordinary cursor arrow is right (the OS already draws your own pointer, so
+ * a duplicate arrow is redundant); it doesn't transfer to the laser trail,
+ * which is the tool's *output*, not a pointer — with no self trail, a
+ * presenter pressing-and-holding vs. quick-tapping produces two different
+ * results they can't tell apart, the fade gives them no feedback about what
+ * the audience currently sees, and on touch their own finger already
+ * occludes the point. Still drops blocked users and anything stale, same as
+ * `visibleCursors`.
+ */
+export function trailEligibleCursors(
+  cursors: CursorPresence[],
+  blockedIds: string[],
+  now: number
+): CursorPresence[] {
+  return cursors.filter(
+    (c) => !blockedIds.includes(c.userId) && now - c.updatedAt < CURSOR_STALE_MS
+  );
+}

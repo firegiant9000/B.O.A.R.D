@@ -106,9 +106,12 @@ export function resolveShortcut(
     // that's already the Line shape key in the reserved P E T R O L A S H N
     // set above — so this is the one deliberate exception to "no tool
     // switches with Shift held" (the bare single-key block below explicitly
-    // excludes Shift). Press-and-hold vs. quick-tap for a continuous trail
-    // vs. a single ping is a pointer-gesture distinction made once this tool
-    // is selected, not a keyboard-hold distinction here.
+    // excludes Shift). This chord only selects the tool; whether a given
+    // pointer/touch report becomes a continuous trail or a single ping is
+    // decided by actual press state once the laser is active, not by
+    // anything keyboard-related here — see `useBoardCollab.ts#publishPointer`
+    // (its `pressed` parameter) and the laser branch in
+    // `BoardCanvas.tsx#handleCanvasTap`.
     if (chord.shift && k === "l") {
       return { type: "tool", tool: "laser" };
     }

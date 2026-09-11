@@ -85,8 +85,13 @@ export interface BoardCollab {
   presence: BoardPresence[];
   /** The presence user whose camera we're mirroring, or null. */
   followingId: string | null;
-  /** Publish the local pointer to the cursor side channel (throttled in the service). */
-  publishPointer: (p: Point) => void;
+  /**
+   * Publish the local pointer to the cursor side channel (throttled in the
+   * service). `pressed` must be true only while a button/finger is actually
+   * down — a hover call with `pressed: false` (web only; native has no
+   * hover) must not seed a laser trail while the laser tool is active.
+   */
+  publishPointer: (p: Point, pressed: boolean) => void;
   /** Stop following (own gesture, leader left, etc.). */
   exitFollow: () => void;
   /** Avatar tap → toggle follow on that user. No-op while presenting. */
@@ -213,7 +218,7 @@ export function useBoardCollab(
   // inside cursorService (~20Hz) and side-effect-only — it never sets state, so
   // a pointer move never re-renders the element tree (Appendix A.4 hard rule).
   const publishPointer = useCallback(
-    (p: Point) => {
+    (p: Point, pressed: boolean) => {
       if (!boardId || !user || embedMode) return;
       lastPointerRef.current = p;
       hasPointerRef.current = true;
@@ -231,13 +236,18 @@ export function useBoardCollab(
         following: followingId,
         presenting: isPresenting,
         presenterPaused: isPresenterPaused,
-        // Month 5 (laser pointer): every reported pointer position doubles as
-        // a laser sample while that tool is active — a plain hover on web (no
-        // click needed) or a touch-drag on native (`DrawingCanvas`'s Pan
-        // gesture `.onUpdate`, the only pointer-move signal native has). A
-        // stationary tap sends its own single ping from `BoardCanvas`'s tap
-        // handler instead, since a tap this short may never reach here.
-        ping: activeTool === "laser" ? { x: p.x, y: p.y, t: Date.now() } : undefined,
+        // Month 5 (laser pointer): only an actual press/drag doubles as a
+        // laser sample — a plain hover (`pressed: false`, web only; native
+        // has no hover, so it's always `true` there — see
+        // `DrawingCanvas.tsx`'s `onPointerMove`) must not seed a trail, or
+        // moving the mouse across the canvas with the laser tool selected
+        // would paint a continuous trail with no press at all, and a
+        // genuinely isolated quick-tap would be unreachable (hover right
+        // before and after the tap would already have seeded one). A
+        // stationary tap sends its own single, always-pressed ping from
+        // `BoardCanvas`'s tap handler instead — a tap this short may never
+        // reach here.
+        ping: activeTool === "laser" && pressed ? { x: p.x, y: p.y, t: Date.now() } : undefined,
       });
     },
     [

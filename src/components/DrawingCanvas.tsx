@@ -62,8 +62,14 @@ interface DrawingCanvasProps {
   /** A stationary tap, in board-space (text placement / dot). */
   onTap: (point: Point) => void;
   /** Phase 6: pointer moved (hover on web, drag on native), in board-space.
-   *  Side-channel only — must not trigger an element-tree re-render. */
-  onPointerMove?: (point: Point) => void;
+   *  Side-channel only — must not trigger an element-tree re-render.
+   *  Month 5: `pressed` is true only while a button/finger is actually down.
+   *  Native's only source for this callback is mid-drag (no hover on touch),
+   *  so it's always `true` there; web's hover listener reports the real
+   *  `PointerEvent.buttons` state, so a plain mouse-move with nothing held
+   *  reports `false`. The laser tool is the one consumer that cares — see
+   *  `useBoardCollab.ts#publishPointer`. */
+  onPointerMove?: (point: Point, pressed: boolean) => void;
   onPanBy: (dx: number, dy: number) => void;
   onZoomAtPoint: (factor: number, focal: Point) => void;
   onFling: (vx: number, vy: number) => void;
@@ -372,8 +378,10 @@ function DrawingCanvas(
       .onUpdate((e) => {
         // Broadcast the pointer regardless of mode (native has no hover, so a
         // drag is the only cursor signal). Side-channel only — publishing is
-        // throttled downstream and never sets state here.
-        cbRef.current.onPointerMove?.(toBoard(e.x, e.y));
+        // throttled downstream and never sets state here. `pressed: true` —
+        // `.onUpdate` only ever fires mid-drag, so a finger/button is
+        // definitionally down for every call here.
+        cbRef.current.onPointerMove?.(toBoard(e.x, e.y), true);
         if (panModeRef.current) {
           cbRef.current.onPanBy(e.x - panLast.x, e.y - panLast.y);
           panLast = { x: e.x, y: e.y };
@@ -455,6 +463,14 @@ function DrawingCanvas(
   // (Phase 6). Side-channel only — onPointerMove is throttled downstream and
   // never re-renders the element tree. Native gets the signal from the gesture
   // above (no hover events on touch).
+  //
+  // Month 5: `e.buttons` (a bitmask; 0 means nothing pressed) is reported
+  // through as `pressed` — a plain hover has nothing held, so it must read as
+  // `false`. Without this, moving the mouse across the canvas with the laser
+  // tool selected paints a continuous trail with no press at all, and a
+  // genuinely isolated quick-tap becomes unreachable (hover right before and
+  // after the tap already seeded one) — this listener runs regardless of
+  // tool, so it's the one place that has to get the distinction right.
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const node: HTMLElement | null = containerRef.current;
@@ -463,7 +479,8 @@ function DrawingCanvas(
       if (disabledRef.current) return;
       const rect = node.getBoundingClientRect();
       cbRef.current.onPointerMove?.(
-        toBoard(e.clientX - rect.left, e.clientY - rect.top)
+        toBoard(e.clientX - rect.left, e.clientY - rect.top),
+        e.buttons > 0
       );
     };
     node.addEventListener("pointermove", onMove);

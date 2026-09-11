@@ -8,6 +8,7 @@ import {
   subscribeToCursors,
   removeCursor,
   visibleCursors,
+  trailEligibleCursors,
   CURSOR_STALE_MS,
   CURSOR_WRITE_INTERVAL_MS,
 } from "../cursorService";
@@ -432,6 +433,34 @@ describe("visibleCursors", () => {
   it("drops stale cursors", () => {
     const stale = { ...fresh("old"), updatedAt: now - CURSOR_STALE_MS - 1 };
     const out = visibleCursors([stale, fresh("live")], "me", [], now);
+    expect(out.map((c) => c.userId)).toEqual(["live"]);
+  });
+});
+
+describe("trailEligibleCursors (Month 5, fix round 1 — laser self-visibility)", () => {
+  const now = 1_000_000;
+  const fresh = (id: string) => ({
+    userId: id,
+    displayName: id,
+    x: 0,
+    y: 0,
+    tool: "laser",
+    updatedAt: now,
+  });
+
+  it("keeps the viewer's own cursor, unlike visibleCursors", () => {
+    const out = trailEligibleCursors([fresh("me"), fresh("them")], [], now);
+    expect(out.map((c) => c.userId).sort()).toEqual(["me", "them"]);
+  });
+
+  it("still drops blocked users", () => {
+    const out = trailEligibleCursors([fresh("me"), fresh("blocked")], ["blocked"], now);
+    expect(out.map((c) => c.userId)).toEqual(["me"]);
+  });
+
+  it("still drops stale cursors", () => {
+    const stale = { ...fresh("old"), updatedAt: now - CURSOR_STALE_MS - 1 };
+    const out = trailEligibleCursors([stale, fresh("live")], [], now);
     expect(out.map((c) => c.userId)).toEqual(["live"]);
   });
 });

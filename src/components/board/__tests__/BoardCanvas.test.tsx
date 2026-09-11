@@ -5,6 +5,7 @@ jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("../../../services/cursorService", () => ({
   subscribeToCursors: jest.fn(() => jest.fn()),
   visibleCursors: jest.fn(() => []),
+  trailEligibleCursors: jest.fn(() => []),
   CURSOR_STALE_MS: 10000,
 }));
 
@@ -559,14 +560,17 @@ describe("BoardCanvas — laser pointer never creates persisted content (Month 5
     expect(elements.drawDot).not.toHaveBeenCalled();
   });
 
-  it("a stationary tap with the laser tool publishes a single pointer ping instead", () => {
+  it("a stationary tap with the laser tool publishes exactly one pressed pointer ping", () => {
     const { collab } = renderCanvas({ tools: { activeTool: "laser" } });
 
     act(() => {
       mockDrawingCanvasProps.onTap(POINT);
     });
 
-    expect(collab.publishPointer).toHaveBeenCalledWith(POINT);
+    // Call count matters here, not just the args: a double-publish on a
+    // single tap would still match `toHaveBeenCalledWith` alone.
+    expect(collab.publishPointer).toHaveBeenCalledTimes(1);
+    expect(collab.publishPointer).toHaveBeenCalledWith(POINT, true);
   });
 
   it("keeps working while an unpaused presenter locks out content creation — the laser isn't content", () => {
@@ -580,19 +584,31 @@ describe("BoardCanvas — laser pointer never creates persisted content (Month 5
     });
 
     expect(elements.drawDot).not.toHaveBeenCalled();
-    expect(collab.publishPointer).toHaveBeenCalledWith(POINT);
+    expect(collab.publishPointer).toHaveBeenCalledWith(POINT, true);
   });
 
-  it("a laser stroke gesture (drag) never commits or erases anything either", () => {
+  // Fix round 1: this used to invoke only onStrokeStart/onStrokeMove and
+  // assert on the eraser's call sites — it never reached onStrokeEnd, the
+  // actual persistence call (`elements.commitStroke`, BoardCanvas.tsx:265),
+  // so it gave `isDrawingTool` excluding "laser" zero protection: widening
+  // that union to include laser would have started persisting real paths on
+  // a laser drag with this suite still green.
+  it("a laser stroke gesture (drag through end) never commits, erases, or begins an erase batch", async () => {
     const { elements } = renderCanvas({ tools: { activeTool: "laser" } });
 
     act(() => {
       mockDrawingCanvasProps.onStrokeStart();
+    });
+    act(() => {
       mockDrawingCanvasProps.onStrokeMove(POINT);
+    });
+    await act(async () => {
+      await mockDrawingCanvasProps.onStrokeEnd();
     });
 
     expect(elements.eraseAtPoint).not.toHaveBeenCalled();
     expect(elements.beginEraseStroke).not.toHaveBeenCalled();
+    expect(elements.commitStroke).not.toHaveBeenCalled();
   });
 });
 

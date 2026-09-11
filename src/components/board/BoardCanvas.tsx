@@ -319,8 +319,9 @@ export default function BoardCanvas({
     // never do (see `cursorService.ts`'s "never writes a laser ping to the
     // path collection" test). A tap is short enough that it may never reach
     // `publishPointer` via `onPointerMove`, so it sends its own single ping
-    // here instead.
-    if (tools.activeTool === "laser") { collab.publishPointer(point); return; }
+    // here instead — `pressed: true` unconditionally, since a completed tap
+    // is by definition a real point, not a hover.
+    if (tools.activeTool === "laser") { collab.publishPointer(point, true); return; }
     if (tools.activeTool === "comment") { anchorCommentAt(point); return; }
     if (tools.activeTool === "select") {
       elements.selectAtPoint(point, isShiftHeld());
