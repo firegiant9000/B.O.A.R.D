@@ -164,6 +164,14 @@ service cloud.firestore {
     // NOTE: this predicate is scope-agnostic on purpose — it is the "is an embed
     // identity for this board" test, and both scopes read. Writes are gated by
     // isEmbedEditor below, never by this one.
+    //
+    // isEmbedIdentity is the board-agnostic form: "this caller arrived through the
+    // embed exchange at all". Used to keep embed identities out of paths that gate
+    // only on being signed in — the board invite-code self-join arm below.
+    function isEmbedIdentity() {
+      return isSignedIn() && request.auth.token.get('embed', false) == true;
+    }
+
     function isEmbedViewer(boardId) {
       return isSignedIn() &&
         request.auth.token.get('embed', false) == true &&
@@ -176,11 +184,25 @@ service cloud.firestore {
     // stable person rather than to a shared anonymous per-board uid. A v1 token can
     // never produce this: verifyEmbedToken rejects v1 + edit outright.
     //
-    // What it grants: canvas WRITE (and presence/cursor) on exactly the one board
-    // the claim names. What it does NOT grant, deliberately — this identity is not
-    // a board member and must never become one:
-    //   - the board document (title, members, roles, invite code) stays read-only;
-    //   - comments stay member-only (commenting needs a real account today);
+    // EXACTLY what it grants, on exactly the one board the claim names:
+    //   - write to paths, notes, textElements, shapes and snapshots;
+    //   - read presence/cursors, and write its OWN presence/cursor doc.
+    //
+    // What it does NOT grant, deliberately. This identity is not a board member and
+    // must never become one:
+    //   - the board document (title, members, roles, invite code) stays read-only,
+    //     and the invite-code self-join arm explicitly excludes it (isEmbedIdentity);
+    //   - COMMENTS stay member-only. The roadmap's motivation for host-asserted
+    //     identity names comments and the activity feed, but neither ships here:
+    //     commenting writes an authorId and can fan out notifications, and the
+    //     activity feed is workspace-scoped and so unreachable to a board-scoped
+    //     claim. Read this list, not the roadmap, for what is wired.
+    //   - IMAGES and AUDIO are excluded even though they are canvas content: their
+    //     bytes live in Cloud Storage, gated on isBoardMember (storage.rules), which
+    //     an embed identity is not. Granting the Firestore document alone would let
+    //     an embed editor create an element pointing at an object it can neither
+    //     upload nor read back — a broken element, not a feature. Re-add here only
+    //     together with a matching storage.rules predicate.
     //   - every other board is unreachable, same as a view embed.
     //
     // The subject behind this uid is asserted by the host, not proved. See the
@@ -452,6 +474,17 @@ service cloud.firestore {
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt'])) ||
                       (
                         resource.data.inviteCode != null &&
+                        // Month 5 — an embed identity may NEVER self-join. Its entry
+                        // point is the exchange, which scopes it to exactly one
+                        // board; an invite code is a different, broader credential
+                        // and this arm gates on nothing but "is signed in". Without
+                        // this guard an embed identity (either scope) could join any
+                        // invite-coded board whose id it knows — and on a LEGACY
+                        // board (no workspaceId) isBoardEditor's null-workspace
+                        // disjunct would then make it a full editor of a board it was
+                        // never scoped to. Open since Phase 8; closed here because
+                        // Month 5 gives an embed identity write powers.
+                        !isEmbedIdentity() &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']) &&
                         request.resource.data.members.hasAll(resource.data.members) &&
                         request.resource.data.members.size() == resource.data.members.size() + 1 &&
@@ -470,7 +503,8 @@ service cloud.firestore {
       // Month 5 — an edit-scoped embed identity writes here too. It is the ONLY
       // non-member write path on the canvas, it is board-scoped by its claim, and
       // a read-only ('view') embed is unaffected: isEmbedEditor requires
-      // embedScope == 'edit'.
+      // embedScope == 'edit'. NOT extended to images/audio below — see the
+      // storage.rules note on isEmbedEditor.
       match /paths/{pathId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
@@ -491,9 +525,12 @@ service cloud.firestore {
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
+      // No embed write: the image BYTES are member-gated in storage.rules, so an
+      // embed editor could only ever create a document pointing at an object it
+      // cannot upload or read. Editor-only until storage.rules matches.
       match /images/{imageId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
       // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9). Same
@@ -503,9 +540,11 @@ service cloud.firestore {
       // src/services/audioService.ts's `canRecordVoiceNotes` header. The
       // matching storage.rules block for the audio bytes carries the same
       // caveat.
+      // No embed write, for the same reason as images: the audio bytes are
+      // member-gated in storage.rules.
       match /audio/{audioId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
+        allow write: if isBoardEditor(boardId);
       }
 
       match /snapshots/{snapshotId} {

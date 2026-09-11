@@ -208,6 +208,24 @@ beforeEach(async () => {
       inviteCode: "BORD-LEGFUL",
     });
 
+    // Month 5 — the worst case for the invite-code self-join arm, all three
+    // properties at once: LEGACY (no workspaceId, so inBoardWorkspace waves
+    // everything through and isBoardEditor's null-workspace disjunct fires),
+    // INVITE-CODED (so the self-join arm is live) and UNDER the free cap of 4 (so
+    // withinSeatCap cannot be what denies a join). Without all three, an "embed
+    // identity cannot self-join" test passes on fixture accidents rather than on
+    // the rule. A non-embed signed-in user CAN join this board — asserted below,
+    // which is what proves the board is genuinely joinable.
+    await setDoc(doc(db, "boards/boardLegacyOpen"), {
+      // no workspaceId — a board created before the Phase 2 migration
+      title: "Legacy, invite-coded, under cap",
+      ownerId: ALICE,
+      adminId: ALICE,
+      members: [ALICE],
+      inviteCode: "BORD-LEGOPN",
+    });
+    await setDoc(doc(db, "boards/boardLegacyOpen/paths/pLO"), { userId: ALICE });
+
     // Usage-dashboard regression fixture — the shape scripts/migrate-workspaces.js
     // (the M3 backfill) produces for a legacy board: workspaceId stamped in,
     // inviteCode untouched and still null. src/services/usageService.ts's
@@ -1232,9 +1250,10 @@ describe("editable embed identity", () => {
   });
 
   it("denies a view-scoped embed identity writing at all", async () => {
-    // Byte-for-byte the write that succeeds in the first case, on the same board;
-    // only embedScope differs ('view' vs 'edit'). If isEmbedEditor stopped checking
-    // the scope, this would start passing.
+    // The same write, on the same board and the same document path, by an identity
+    // whose claims differ only in `embedScope` ('view' vs 'edit') — the uid and the
+    // `userId` payload differ too, but neither is read by the paths rule. If
+    // isEmbedEditor stopped checking the scope, this would start passing.
     await assertFails(
       setDoc(doc(embedDb("boardWrite"), "boards/boardWrite/paths/fromEmbed"), {
         userId: "embed:boardWrite",
@@ -1242,22 +1261,32 @@ describe("editable embed identity", () => {
     );
   });
 
-  it("an edit-scoped embed identity writes every canvas collection on its board", async () => {
+  it("an edit-scoped embed identity writes the vector canvas collections", async () => {
     const edb = embedEditDb("boardWrite");
     await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/notes/fromEmbed"), { content: "hi" }));
     await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/shapes/fromEmbed"), { kind: "rect" }));
     await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/textElements/fromEmbed"), { text: "hi" }));
+    await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/snapshots/fromEmbed"), { userId: EMBED_EDIT_UID }));
+  });
+
+  it("an edit-scoped embed identity cannot write images or audio (bytes are member-gated)", async () => {
+    // storage.rules gates the image/audio BYTES on isBoardMember, which this
+    // identity is not — so the Firestore grant deliberately stops short of these
+    // two, rather than letting it create an element pointing at an object it can
+    // neither upload nor read back. The same identity writes notes/shapes above,
+    // so the denial is these collections and not the identity.
+    const edb = embedEditDb("boardWrite");
+    await assertFails(setDoc(doc(edb, "boards/boardWrite/images/fromEmbed"), { uri: "x" }));
+    await assertFails(setDoc(doc(edb, "boards/boardWrite/audio/fromEmbed"), { uri: "x" }));
   });
 
   it("an edit-scoped embed identity still cannot touch the board document", async () => {
-    // The write grant is canvas-only: it must never become a member, an admin, or
-    // able to rename/reshare the board.
-    const edb = embedEditDb("boardWrite");
-    await assertFails(updateDoc(doc(edb, "boards/boardWrite"), { title: "hijacked" }));
+    // boardWrite has no inviteCode, so the self-join arm is structurally
+    // inapplicable here; this pins the admin/editor/member arms only. The
+    // "cannot become a member" claim is pinned separately, on boardLegacyOpen
+    // below, where the self-join arm IS live.
     await assertFails(
-      updateDoc(doc(edb, "boards/boardWrite"), {
-        members: [ALICE, CAROL, DAVE, FRANK, EMBED_EDIT_UID],
-      })
+      updateDoc(doc(embedEditDb("boardWrite"), "boards/boardWrite"), { title: "hijacked" })
     );
   });
 
@@ -1274,6 +1303,46 @@ describe("editable embed identity", () => {
         resolved: false,
       })
     );
+  });
+
+  // ── the invite-code self-join arm ───────────────────────────────────────────
+  // boardLegacyOpen is legacy + invite-coded + under cap, so the self-join arm is
+  // genuinely live on it and nothing else can be what denies a join. The first
+  // test establishes exactly that; the rest would all pass vacuously without it.
+  it("a signed-in non-member CAN self-join boardLegacyOpen (the fixture has teeth)", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(BOB), "boards/boardLegacyOpen"), { members: [ALICE, BOB] })
+    );
+  });
+
+  it("an edit-scoped embed identity cannot self-join an invite-coded legacy board", async () => {
+    // Identical write to BOB's above, by an embed identity scoped to a DIFFERENT
+    // board. Before the isEmbedIdentity guard this succeeded — and on a legacy
+    // board, membership means isBoardEditor's null-workspace disjunct fires, so it
+    // was a full editor of a board it was never scoped to.
+    await assertFails(
+      updateDoc(doc(embedEditDb("boardWrite"), "boards/boardLegacyOpen"), {
+        members: [ALICE, EMBED_EDIT_UID],
+      })
+    );
+  });
+
+  it("a VIEW-scoped embed identity cannot self-join either", async () => {
+    // The read-only embed has produced a signed-in identity since Phase 8, so it
+    // reached this arm too. Scope is irrelevant here: no embed identity self-joins.
+    await assertFails(
+      updateDoc(doc(embedDb("boardPrivate"), "boards/boardLegacyOpen"), {
+        members: [ALICE, "embed:boardPrivate"],
+      })
+    );
+  });
+
+  it("an embed identity that cannot self-join also cannot reach the board's canvas", async () => {
+    // The consequence the self-join was worth having: with membership denied, the
+    // legacy board's canvas stays closed to it for both read and write.
+    const edb = embedEditDb("boardWrite");
+    await assertFails(getDoc(doc(edb, "boards/boardLegacyOpen/paths/pLO")));
+    await assertFails(setDoc(doc(edb, "boards/boardLegacyOpen/paths/forged"), { userId: EMBED_EDIT_UID }));
   });
 
   it("an edit-scoped embed identity writes its own presence but not a member's", async () => {

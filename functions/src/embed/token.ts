@@ -38,10 +38,33 @@ export const EMBED_TOKEN_VERSION = 2;
  *  a v1 token asking for `edit` is rejected as `bad-version`. */
 const EMBED_TOKEN_LEGACY_VERSION = 1;
 
-/** Default lifetime: short-lived per the roadmap's named embed risk. One hour is
- *  long enough for a page to load + exchange, short enough that a leaked link
- *  expires fast. The host app re-mints on each render. */
+/** Default lifetime, for read-only links: long enough for a page to load and
+ *  exchange, short enough that a leaked link is not a durable credential. The host
+ *  app re-mints on each render.
+ *
+ *  ⚠️ WHAT THIS TTL DOES AND DOES NOT BOUND. It bounds the window in which a
+ *  leaked LINK can still be redeemed. It does NOT bound the SESSION that redeeming
+ *  it produces: `exchangeEmbedToken` mints a Firebase custom token, and
+ *  `signInWithCustomToken` establishes an Auth session with a refresh token that
+ *  outlives this expiry entirely. Nothing in the codebase revokes that session —
+ *  not token expiry, not re-minting, not rotating EMBED_JWT_SECRET (which
+ *  invalidates outstanding links, not sessions already exchanged from them).
+ *
+ *  For a read-only embed that is the accepted Month 4 trade. For a WRITE-capable
+ *  one it means a leaked editable link, redeemed once, is board write access with
+ *  no expiry and no revocation path. EMBED_EDIT_TOKEN_TTL_SECONDS shrinks the
+ *  redemption window; it does not close that gap. Closing it needs either
+ *  `auth.revokeRefreshTokens(uid)` plus an `auth_time` bound in the rules'
+ *  isEmbedEditor, or a re-exchange loop in the host client — neither of which
+ *  exists yet. Do not describe an embed session as short-lived. */
 export const EMBED_TOKEN_TTL_SECONDS = 60 * 60;
+
+/** Lifetime for an editable link. Deliberately much shorter than the read-only
+ *  one: the session it exchanges to is unbounded (see above), so the redemption
+ *  window is the only part of a leaked editable link's value we can actually
+ *  shrink. Five minutes is ample for a host panel that mints immediately before
+ *  it loads the embed. */
+export const EMBED_EDIT_TOKEN_TTL_SECONDS = 5 * 60;
 
 /** Caps on the host-asserted pair. Both feed `embed:<iss>:<sub>`, which becomes a
  *  Firebase Auth uid — hard-limited to 128 characters — so an unbounded subject
@@ -52,9 +75,22 @@ export const MAX_EMBED_ISSUER_LENGTH = 32;
 
 /** Issuer ids are restricted to this shape so `embed:<iss>:<sub>` has an
  *  unambiguous prefix — a colon inside `iss` would let one issuer's namespace
- *  masquerade as another's. Enforced when the allowlist is parsed, so an
- *  unparseable entry is dropped rather than silently trusted. */
+ *  masquerade as another's. Applied in two places: when the allowlist is parsed
+ *  (so a malformed entry is dropped rather than trusted) AND at verify time
+ *  against the issuer's canonical form. The second is what makes this module
+ *  self-defending: without it `iss` would be safe only transitively, because a
+ *  passing value had to equal some allowlist entry — an assumption about the
+ *  caller's configuration rather than a property this module enforces. */
 const ISSUER_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+
+/** Subjects are opaque host identifiers, but they land in two places with their
+ *  own rules: a Firebase Auth uid, and a Firestore document id under
+ *  `presence/{userId}` / `cursors/{userId}`. A `sub` containing '/' produces a uid
+ *  that can never satisfy the rules' `isOwner(userId)` check, silently killing
+ *  presence for that host's user. Constraining the character set removes the class
+ *  rather than leaving it to be discovered in production. Case IS preserved —
+ *  unlike `iss`, subjects are opaque and two casings may be two people. */
+const SUBJECT_PATTERN = /^[A-Za-z0-9_.:@+~-]+$/;
 
 export interface EmbedTokenPayload {
   v: number;
@@ -108,14 +144,23 @@ export interface EmbedVerifyResult {
 }
 
 /** Whether an optional host-asserted string is absent, or present and within the
- *  shape this contract accepts. A present-but-wrong value is a hard rejection, not
- *  a silently dropped field — dropping it would downgrade an identity-bearing
- *  token to an anonymous one instead of failing. */
-function optionalIdentityFieldOk(value: unknown, maxLength: number): boolean {
-  return (
-    value === undefined ||
-    (typeof value === "string" && value !== "" && value.length <= maxLength)
-  );
+ *  shape this contract accepts: a non-empty string, within its length cap, made
+ *  only of characters `pattern` allows. A present-but-wrong value is a hard
+ *  rejection, not a silently dropped field — dropping it would downgrade an
+ *  identity-bearing token to an anonymous one instead of failing.
+ *
+ *  `normalize` exists for `iss`, whose canonical (lower-cased) form is what both
+ *  the allowlist and the uid are built from, so the canonical form is what has to
+ *  satisfy the pattern. Subjects pass through unchanged. */
+function optionalIdentityFieldOk(
+  value: unknown,
+  maxLength: number,
+  pattern: RegExp,
+  normalize: (raw: string) => string = (raw) => raw
+): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "string" || value === "" || value.length > maxLength) return false;
+  return pattern.test(normalize(value));
 }
 
 /** Verifies an embed token: signature + expiry (via verifyJwt), then version, then
@@ -164,8 +209,8 @@ export function verifyEmbedToken(
 
   // v2 identity rules.
   if (
-    !optionalIdentityFieldOk(p.sub, MAX_EMBED_SUBJECT_LENGTH) ||
-    !optionalIdentityFieldOk(p.iss, MAX_EMBED_ISSUER_LENGTH)
+    !optionalIdentityFieldOk(p.sub, MAX_EMBED_SUBJECT_LENGTH, SUBJECT_PATTERN) ||
+    !optionalIdentityFieldOk(p.iss, MAX_EMBED_ISSUER_LENGTH, ISSUER_PATTERN, normalizeIssuer)
   ) {
     return { ok: false, error: "bad-payload" };
   }

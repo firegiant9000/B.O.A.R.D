@@ -6,6 +6,7 @@ import {
   parseIssuerAllowlist,
   EMBED_TOKEN_VERSION,
   EMBED_TOKEN_TTL_SECONDS,
+  EMBED_EDIT_TOKEN_TTL_SECONDS,
   MAX_EMBED_SUBJECT_LENGTH,
 } from "../embed/token";
 import {
@@ -224,6 +225,46 @@ describe("embed token v2", () => {
     expect(verifyEmbedToken(v1WithIdentity, S, T).error).toBe("bad-payload");
   });
 
+  it("rejects a subject that could not be a presence document id", () => {
+    // The uid becomes the doc id under presence/{userId} and cursors/{userId}. A
+    // '/' there yields a uid that can never satisfy the rules' isOwner(userId),
+    // silently killing presence for that host user. The pair differs only in that
+    // one character, so the rejection is the character set.
+    const ok = signJwt(
+      { v: 2, boardId: "b1", scope: "edit", sub: "host.u9", iss: "meet", iat: NOW_S, exp: NOW_S + 100 },
+      S
+    );
+    const slash = signJwt(
+      { v: 2, boardId: "b1", scope: "edit", sub: "host/u9", iss: "meet", iat: NOW_S, exp: NOW_S + 100 },
+      S
+    );
+    expect(verifyEmbedToken(ok, S, T).ok).toBe(true);
+    expect(verifyEmbedToken(slash, S, T).error).toBe("bad-payload");
+  });
+
+  it("rejects a malformed issuer on its own terms, without consulting an allowlist", () => {
+    // verifyEmbedToken takes no allowlist by design. It must still refuse an `iss`
+    // that could break the `embed:<iss>:<sub>` namespace, so the module is
+    // self-defending rather than safe only because its caller's allowlist happens
+    // to be well formed.
+    const colon = signJwt(
+      { v: 2, boardId: "b1", scope: "edit", sub: "u9", iss: "meet:evil", iat: NOW_S, exp: NOW_S + 100 },
+      S
+    );
+    expect(verifyEmbedToken(colon, S, T).error).toBe("bad-payload");
+  });
+
+  it("accepts an issuer whose canonical form is valid, so case-stability survives", () => {
+    // The pattern is lower-case; `iss` is matched against its canonical form, not
+    // its raw one, or "MEET" would be rejected here and the exchange could never
+    // canonicalise it.
+    const upper = signJwt(
+      { v: 2, boardId: "b1", scope: "edit", sub: "u9", iss: "MEET", iat: NOW_S, exp: NOW_S + 100 },
+      S
+    );
+    expect(verifyEmbedToken(upper, S, T).ok).toBe(true);
+  });
+
   it("rejects a non-string subject", () => {
     const weird = signJwt(
       { v: 2, boardId: "b1", scope: "edit", sub: 9, iss: "meet", iat: NOW_S, exp: NOW_S + 100 },
@@ -409,15 +450,24 @@ describe("handleExchangeEmbedToken", () => {
 });
 
 describe("handleMintEmbedToken", () => {
-  const access = (over: Partial<{ isMember: boolean; isAdmin: boolean }> = {}) => ({
-    workspaceId: "ws1",
+  type MintOpts = Partial<{
+    isMember: boolean;
+    isAdmin: boolean;
+    inWorkspace: boolean;
+    found: boolean;
+    legacy: boolean;
+    allowedIssuers: string[];
+  }>;
+  const access = (over: MintOpts = {}) => ({
+    workspaceId: over.legacy ? "" : "ws1",
     isMember: over.isMember ?? true,
     isAdmin: over.isAdmin ?? true,
   });
-  const deps = (over: Partial<{ isMember: boolean; isAdmin: boolean; found: boolean; allowedIssuers: string[] }> = {}) => ({
+  const deps = (over: MintOpts = {}) => ({
     secret: SECRET,
     allowedIssuers: over.allowedIssuers ?? ["meet", "extension"],
     resolveAccess: jest.fn(async () => (over.found === false ? null : access(over))),
+    isInWorkspace: jest.fn(async () => over.inWorkspace ?? true),
   });
   const reqOf = (uid: string | undefined, data: unknown) =>
     ({ auth: uid ? { uid } : undefined, data } as never);
@@ -464,6 +514,67 @@ describe("handleMintEmbedToken", () => {
     expect(verifyEmbedToken(res.token, SECRET, NOW_MS).payload).toMatchObject({
       v: 2, boardId: "b1", scope: "edit", sub: "host:u9", iss: "meet",
     });
+  });
+
+  it("denies an edit token to an admin who has been removed from the workspace", async () => {
+    // Revocation is "remove them from the workspace": the rules' isBoardAdmin
+    // requires inBoardWorkspace, so such a caller is denied every direct write.
+    // Without this gate they could still mint an edit link and write as the embed
+    // identity, turning revocation into a write-bypass. Same request as the
+    // accepted case; only workspace membership differs.
+    const d = deps({ inWorkspace: false });
+    await expect(
+      handleMintEmbedToken(
+        reqOf("u1", { boardId: "b1", scope: "edit", sub: "host:u9", iss: "meet" }),
+        d,
+        NOW_MS
+      )
+    ).rejects.toMatchObject({ code: "permission-denied" });
+    expect(d.isInWorkspace).toHaveBeenCalledWith("ws1", "u1");
+  });
+
+  it("does not pay for a workspace read on the read-only path", async () => {
+    const d = deps();
+    await handleMintEmbedToken(reqOf("u1", { boardId: "b1" }), d, NOW_MS);
+    expect(d.isInWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("refuses an edit token on a legacy board with no workspace", async () => {
+    const d = deps({ legacy: true });
+    await expect(
+      handleMintEmbedToken(
+        reqOf("u1", { boardId: "b1", scope: "edit", sub: "host:u9", iss: "meet" }),
+        d,
+        NOW_MS
+      )
+    ).rejects.toMatchObject({ code: "failed-precondition" });
+    // Never silently falls through to an unverifiable workspace check.
+    expect(d.isInWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("still mints a read-only link on a legacy board", async () => {
+    // The legacy refusal above is scoped to 'edit'; existing embeds must not break.
+    const res = await handleMintEmbedToken(reqOf("u1", { boardId: "b1" }), deps({ legacy: true }), NOW_MS);
+    expect(res.scope).toBe("view");
+  });
+
+  it("gives an editable link a much shorter redemption window than a read-only one", async () => {
+    // The TTL bounds how long a leaked LINK stays redeemable. It does NOT bound the
+    // Auth session redeeming it produces — see EMBED_EDIT_TOKEN_TTL_SECONDS.
+    const view = await handleMintEmbedToken(reqOf("u1", { boardId: "b1" }), deps(), NOW_MS);
+    const edit = await handleMintEmbedToken(
+      reqOf("u1", { boardId: "b1", scope: "edit", sub: "host:u9", iss: "meet" }),
+      deps(),
+      NOW_MS
+    );
+    expect(view.expiresAt).toBe(NOW_S + EMBED_TOKEN_TTL_SECONDS);
+    expect(edit.expiresAt).toBe(NOW_S + EMBED_EDIT_TOKEN_TTL_SECONDS);
+    expect(EMBED_EDIT_TOKEN_TTL_SECONDS).toBeLessThan(EMBED_TOKEN_TTL_SECONDS);
+    // And it really does stop verifying that much sooner.
+    expect(verifyEmbedToken(edit.token, SECRET, NOW_MS + EMBED_EDIT_TOKEN_TTL_SECONDS * 1000 + 1).error)
+      .toBe("expired");
+    expect(verifyEmbedToken(view.token, SECRET, NOW_MS + EMBED_EDIT_TOKEN_TTL_SECONDS * 1000 + 1).ok)
+      .toBe(true);
   });
 
   it("denies an edit token to a member who is not a board admin", async () => {
