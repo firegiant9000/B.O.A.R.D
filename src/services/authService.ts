@@ -11,6 +11,7 @@ import {
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
 import { ensurePersonalWorkspace } from "./workspaceService";
+import { seedSampleWorkspace } from "./onboardingService";
 
 /**
  * Idempotently provisions everything a usable account needs beyond the Firebase
@@ -26,7 +27,8 @@ export async function ensureUserProvisioned(
 ): Promise<void> {
   const ref = doc(db, "users", user.uid);
   const snap = await getDoc(ref);
-  if (!snap.exists()) {
+  const isNewAccount = !snap.exists();
+  if (isNewAccount) {
     await setDoc(ref, {
       email: user.email,
       displayName: displayName ?? user.displayName ?? "",
@@ -36,10 +38,29 @@ export async function ensureUserProvisioned(
 
   // Resilient: a lagging or failed workspace write must not block sign-in — the
   // app reconciles the personal workspace lazily on the next load.
+  let workspaceId: string | undefined;
   try {
-    await ensurePersonalWorkspace(user.uid);
+    workspaceId = await ensurePersonalWorkspace(user.uid);
   } catch {
     // swallow — personal workspace is reconciled lazily client-side.
+  }
+
+  // Month 6 — sample workspace seeding (ROADMAP.md's "Sample workspace
+  // seeding"; see onboardingService.ts's own header for the full design
+  // rationale). Gated on `isNewAccount`, NOT on every call: this function
+  // also runs on every returning Google sign-in (authProviders.ts), and an
+  // established account's already-populated workspace must never be
+  // retroactively seeded with sample content. `seedSampleWorkspace` itself
+  // never throws (it rolls back its own partial writes internally — see its
+  // header), but this stays wrapped in its own try/catch as defense in
+  // depth: a populated sample workspace is a nice-to-have, never a
+  // sign-in blocker.
+  if (isNewAccount && workspaceId) {
+    try {
+      await seedSampleWorkspace(workspaceId, user.uid, displayName ?? user.displayName ?? "");
+    } catch {
+      // swallow — see above.
+    }
   }
 }
 

@@ -15,6 +15,9 @@ jest.mock("../../config/firebase", () => ({
 jest.mock("../workspaceService", () => ({
   ensurePersonalWorkspace: jest.fn(async () => "ws-1"),
 }));
+jest.mock("../onboardingService", () => ({
+  seedSampleWorkspace: jest.fn(async () => undefined),
+}));
 
 import * as fbAuth from "firebase/auth";
 import * as fs from "firebase/firestore";
@@ -22,6 +25,7 @@ import { makeDocSnap } from "../../test-utils/firestoreMock";
 import { auth } from "../../config/firebase";
 import * as authService from "../authService";
 import { ensurePersonalWorkspace } from "../workspaceService";
+import { seedSampleWorkspace } from "../onboardingService";
 
 const createUser = fbAuth.createUserWithEmailAndPassword as jest.Mock;
 const signInFb = fbAuth.signInWithEmailAndPassword as jest.Mock;
@@ -32,12 +36,14 @@ const reload = fbAuth.reload as jest.Mock;
 const setDoc = fs.setDoc as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const ensurePersonalWorkspaceMock = ensurePersonalWorkspace as jest.Mock;
+const seedSampleWorkspaceMock = seedSampleWorkspace as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   (auth as any).currentUser = null;
   // Default: no profile doc yet, so provisioning writes one.
   getDoc.mockResolvedValue(makeDocSnap("u1", null));
+  ensurePersonalWorkspaceMock.mockResolvedValue("ws-1");
 });
 
 describe("signUp", () => {
@@ -83,6 +89,15 @@ describe("signUp", () => {
 
     await expect(authService.signUp("a@x.z", "pw", "Arlo")).resolves.toBe(user);
   });
+
+  it("seeds the new signup's sample workspace — the real hook for ROADMAP's sample workspace seeding", async () => {
+    const user = { uid: "u1", email: "a@x.z" };
+    createUser.mockResolvedValueOnce({ user });
+
+    await authService.signUp("a@x.z", "pw", "Arlo");
+
+    expect(seedSampleWorkspaceMock).toHaveBeenCalledWith("ws-1", "u1", "Arlo");
+  });
 });
 
 describe("ensureUserProvisioned", () => {
@@ -125,6 +140,63 @@ describe("ensureUserProvisioned", () => {
     await expect(
       authService.ensureUserProvisioned(user as any)
     ).resolves.toBeUndefined();
+  });
+
+  // Month 6 — sample workspace seeding (task-28-brief.md). These tests guard
+  // the single real hook point: a genuinely new account seeds a sample
+  // workspace once; a returning sign-in for an EXISTING account never does,
+  // no matter how many times ensureUserProvisioned is called for it.
+  describe("sample workspace seeding", () => {
+    it("seeds the sample workspace for a brand-new account", async () => {
+      getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+      ensurePersonalWorkspaceMock.mockResolvedValueOnce("ws-1");
+      const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+      await authService.ensureUserProvisioned(user as any);
+
+      expect(seedSampleWorkspaceMock).toHaveBeenCalledTimes(1);
+      expect(seedSampleWorkspaceMock).toHaveBeenCalledWith("ws-1", "u1", "Gina");
+    });
+
+    it("does NOT seed for an existing account merely reconciling its workspace on a returning sign-in", async () => {
+      // Profile doc already exists -> not a new account.
+      getDoc.mockResolvedValueOnce(makeDocSnap("u1", { email: "g@x.z" }));
+      ensurePersonalWorkspaceMock.mockResolvedValueOnce("ws-1");
+      const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+      await authService.ensureUserProvisioned(user as any);
+
+      expect(seedSampleWorkspaceMock).not.toHaveBeenCalled();
+    });
+
+    it("does not seed when the personal-workspace write failed (no workspace id to seed onto)", async () => {
+      getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+      ensurePersonalWorkspaceMock.mockRejectedValueOnce(new Error("lagged"));
+      const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+      await authService.ensureUserProvisioned(user as any);
+
+      expect(seedSampleWorkspaceMock).not.toHaveBeenCalled();
+    });
+
+    it("resolves even when seedSampleWorkspace rejects, as defense in depth", async () => {
+      getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+      seedSampleWorkspaceMock.mockRejectedValueOnce(new Error("seed failed"));
+      const user = { uid: "u1", email: "g@x.z", displayName: "Gina" };
+
+      await expect(
+        authService.ensureUserProvisioned(user as any)
+      ).resolves.toBeUndefined();
+    });
+
+    it("prefers the explicit displayName override over the auth record's for the seed's createdByName", async () => {
+      getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+      const user = { uid: "u1", email: "g@x.z", displayName: "stale" };
+
+      await authService.ensureUserProvisioned(user as any, "Override");
+
+      expect(seedSampleWorkspaceMock).toHaveBeenCalledWith("ws-1", "u1", "Override");
+    });
   });
 });
 
