@@ -45,6 +45,19 @@ const CAROL = "carol"; // workspace viewer
 const DAVE = "dave";   // workspace member
 const FRANK = "frank"; // workspace member (demoted to viewer on boardWrite)
 
+// Month 6 — education pilot actors (Task 27). instructorA/instructorB each
+// teach one class; studentA1/studentA2 are both enrolled in classA (proves
+// student<->student isolation WITHIN one class, not just across classes);
+// studentB1 is enrolled in classB; studentC is enrolled nowhere (the
+// self-enrollment + "random stranger" actor).
+const INSTRUCTOR_A = "instructorA";
+const INSTRUCTOR_B = "instructorB";
+const INSTRUCTOR_C = "instructorC";
+const STUDENT_A1 = "studentA1";
+const STUDENT_A2 = "studentA2";
+const STUDENT_B1 = "studentB1";
+const STUDENT_C = "studentC";
+
 let testEnv;
 
 beforeAll(async () => {
@@ -401,6 +414,77 @@ beforeEach(async () => {
       commentId: "cmt1",
       snippet: "ping @Alice",
       read: false,
+    });
+
+    // ── Month 6 — education pilot fixtures (Task 27) ───────────────────────
+    // classC exists only to isolate the classId PIN from the enrollment
+    // gate below: studentA1 is deliberately enrolled in BOTH classA and
+    // classC, so "denies re-parenting" tests can prove the PIN fires even
+    // when the caller genuinely is enrolled in the target class.
+    await setDoc(doc(db, "classes/classA"), {
+      name: "CS 101 (A)",
+      instructorId: INSTRUCTOR_A,
+      joinCode: "CLASSA1",
+      studentIds: [STUDENT_A1, STUDENT_A2],
+    });
+    await setDoc(doc(db, "classes/classB"), {
+      name: "CS 101 (B)",
+      instructorId: INSTRUCTOR_B,
+      joinCode: "CLASSB1",
+      studentIds: [STUDENT_B1],
+    });
+    await setDoc(doc(db, "classes/classC"), {
+      name: "CS 101 (C)",
+      instructorId: INSTRUCTOR_C,
+      joinCode: "CLASSC1",
+      studentIds: [STUDENT_A1],
+    });
+
+    // Assignment boards — no workspaceId. The education-pilot linkage
+    // (classId) is independent of workspace membership entirely; the
+    // legacy (no-workspaceId) fallback keeps each board readable by its own
+    // owner/member the same way it already does for boardLegacy above.
+    await setDoc(doc(db, "boards/boardA1"), {
+      title: "Student A1's board",
+      ownerId: STUDENT_A1,
+      adminId: STUDENT_A1,
+      members: [STUDENT_A1],
+      inviteCode: null,
+      classId: "classA",
+    });
+    await setDoc(doc(db, "boards/boardA2"), {
+      title: "Student A2's board",
+      ownerId: STUDENT_A2,
+      adminId: STUDENT_A2,
+      members: [STUDENT_A2],
+      inviteCode: null,
+      classId: "classA",
+    });
+    await setDoc(doc(db, "boards/boardB1"), {
+      title: "Student B1's board",
+      ownerId: STUDENT_B1,
+      adminId: STUDENT_B1,
+      members: [STUDENT_B1],
+      inviteCode: null,
+      classId: "classB",
+    });
+    // Not yet attached to any class — the classIdTransitionValid "first
+    // transition" fixture.
+    await setDoc(doc(db, "boards/boardNoClass"), {
+      title: "Unattached board",
+      ownerId: STUDENT_A1,
+      adminId: STUDENT_A1,
+      members: [STUDENT_A1],
+      inviteCode: null,
+    });
+    // A board with a non-owner member, to prove enrollment ALONE isn't
+    // enough to attach classId — the caller must also be the board admin.
+    await setDoc(doc(db, "boards/boardSharedNoClass"), {
+      title: "Shared unattached board",
+      ownerId: STUDENT_A1,
+      adminId: STUDENT_A1,
+      members: [STUDENT_A1, STUDENT_A2],
+      inviteCode: null,
     });
   });
 });
@@ -2278,5 +2362,170 @@ describe("usage-dashboard board count excludes a migrated board with no invite c
     // boardMigratedNoCode; a client cannot run that query at all.
     const q = query(collection(db(ALICE), "boards"), where("workspaceId", "==", "wsA"));
     await assertFails(getCountFromServer(q));
+  });
+});
+
+// ── M6 education pilot: assignment board isolation (Task 27) ────────────────
+// The hard property this task's brief calls out by name: a board's `classId`
+// linkage must let ONLY that class's instructor read across students, and
+// must isolate cleanly between two different classes. Every denial below is
+// paired with a positive control proving the corresponding read genuinely
+// succeeds for someone — otherwise a rule that denies everyone would pass
+// the denial tests too.
+describe("education pilot: assignment board isolation", () => {
+  it("denies a student reading another student's assignment board", async () => {
+    await assertFails(getDoc(doc(db(STUDENT_A2), "boards/boardA1")));
+  });
+
+  // Positive control for the test above.
+  it("still lets that student read their OWN assignment board", async () => {
+    await assertSucceeds(getDoc(doc(db(STUDENT_A1), "boards/boardA1")));
+  });
+
+  it("lets the instructor read every assignment board in the class", async () => {
+    // Asserted against MORE THAN ONE student's board — a rule that only
+    // happened to cover the first board seeded would still pass a
+    // single-board check.
+    await assertSucceeds(getDoc(doc(db(INSTRUCTOR_A), "boards/boardA1")));
+    await assertSucceeds(getDoc(doc(db(INSTRUCTOR_A), "boards/boardA2")));
+  });
+
+  it("denies an instructor of class A reading class B", async () => {
+    await assertFails(getDoc(doc(db(INSTRUCTOR_A), "boards/boardB1")));
+  });
+
+  // Positive control for the test above: without this, "denies instructor A"
+  // would pass even against a rule that denies every instructor everywhere —
+  // proving boardB1 is genuinely readable BY ITS OWN instructor is what
+  // makes the cross-class denial meaningful rather than vacuous.
+  it("still lets class B's own instructor read class B's board", async () => {
+    await assertSucceeds(getDoc(doc(db(INSTRUCTOR_B), "boards/boardB1")));
+  });
+
+  it("denies a random signed-in stranger reading an assignment board via the class path", async () => {
+    await assertFails(getDoc(doc(db(STUDENT_C), "boards/boardA1")));
+  });
+});
+
+// ── M6 board classId is pinned ───────────────────────────────────────────────
+// Mirrors "M5 board workspaceId is pinned" above — same pin-the-transition
+// shape, for the same reason: without it, a board's own owner (typically
+// the exact student who submitted it) could re-parent or clear the class
+// linkage and escape the instructor's cohort view after the fact.
+describe("M6 board classId is pinned", () => {
+  it("lets an enrolled student attach their own board to a class for the first time", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardNoClass"), { classId: "classA" })
+    );
+  });
+
+  it("denies attaching a board to a class the caller is not enrolled in", async () => {
+    // studentA1 is enrolled in classA/classC, NOT classB.
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardNoClass"), { classId: "classB" })
+    );
+  });
+
+  it("denies a non-admin board member from attaching classId, even though they ARE enrolled", async () => {
+    // studentA2 is enrolled in classA and IS a member of boardSharedNoClass —
+    // but is not its admin/owner. Enrollment alone must not be enough: the
+    // caller must also hold write access to the board itself.
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A2), "boards/boardSharedNoClass"), { classId: "classA" })
+    );
+  });
+
+  it("denies re-parenting an already-attached board to a different class, even one the caller IS enrolled in", async () => {
+    // studentA1 owns boardA1 (classId: classA) and is ALSO enrolled in
+    // classC — this isolates the PIN from the enrollment gate: the write
+    // must fail because classId is already SET, not merely because of who
+    // is enrolled where.
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { classId: "classC" })
+    );
+  });
+
+  it("denies unsetting classId once set", async () => {
+    await assertFails(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { classId: deleteField() })
+    );
+  });
+
+  it("denies setting classId to null once set", async () => {
+    await assertFails(updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { classId: null }));
+  });
+
+  it("still allows re-sending the SAME classId", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { classId: "classA", title: "Renamed" })
+    );
+  });
+
+  it("still allows an ordinary admin edit that leaves classId alone", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_A1), "boards/boardA1"), { title: "Renamed again" })
+    );
+  });
+});
+
+// ── M6 classes collection ────────────────────────────────────────────────────
+describe("M6 classes collection", () => {
+  it("denies a direct client class create, even a fully legitimate-looking one", async () => {
+    // Creating a class is Cloud-Function-only (functions/src/callable/
+    // createClass.ts) so the join code can't be client-chosen — mirrors
+    // "board create is Cloud-Function-only" above.
+    await assertFails(
+      setDoc(doc(db(INSTRUCTOR_A), "classes/newClass"), {
+        name: "New Class",
+        instructorId: INSTRUCTOR_A,
+        joinCode: "AAAAAA",
+        studentIds: [],
+      })
+    );
+  });
+
+  it("lets any signed-in user look up a class by its join code (self-enrollment needs this)", async () => {
+    await assertSucceeds(getDoc(doc(db(STUDENT_C), "classes/classA")));
+  });
+
+  it("lets a signed-in user self-enroll by appending only their own uid", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(STUDENT_C), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2, STUDENT_C],
+      })
+    );
+  });
+
+  it("the self-enroll path cannot be used to add a third party", async () => {
+    await assertFails(
+      updateDoc(doc(db(STUDENT_C), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2, "someoneElse"],
+      })
+    );
+  });
+
+  it("the self-enroll path cannot smuggle other field changes alongside the roster append", async () => {
+    await assertFails(
+      updateDoc(doc(db(STUDENT_C), "classes/classA"), {
+        studentIds: [STUDENT_A1, STUDENT_A2, STUDENT_C],
+        instructorId: STUDENT_C,
+      })
+    );
+  });
+
+  it("denies a non-instructor renaming someone else's class", async () => {
+    await assertFails(updateDoc(doc(db(STUDENT_A1), "classes/classA"), { name: "Hacked" }));
+  });
+
+  it("lets the instructor rename their own class", async () => {
+    await assertSucceeds(updateDoc(doc(db(INSTRUCTOR_A), "classes/classA"), { name: "Renamed" }));
+  });
+
+  it("lets the instructor delete their own class", async () => {
+    await assertSucceeds(deleteDoc(doc(db(INSTRUCTOR_A), "classes/classA")));
+  });
+
+  it("denies a student deleting their instructor's class", async () => {
+    await assertFails(deleteDoc(doc(db(STUDENT_A1), "classes/classA")));
   });
 });

@@ -85,6 +85,13 @@ export { createPortalSession } from "./callable/createPortalSession";
 // received a delivery from Stripe. See functions/src/http/stripeWebhook.ts.
 export { stripeWebhook } from "./http/stripeWebhook";
 
+// Month 6 — education pilot. Class creation is server-side so the join
+// code (the class's self-enrollment credential) can't be chosen or guessed
+// by a client — same reasoning as createBoard/createSession above. A class
+// is NOT gated by any plan/seat cap (R78 — sold manually, not self-serve),
+// so unlike those two this callable never reads a workspace at all.
+export { createClass } from "./callable/createClass";
+
 // Month 6 — anonymous-poll tallies. Maintains a server-side vote count at
 // boards/{boardId}/polls/{pollId}/tally/summary on every write (create/
 // update/delete) to a poll's votes subcollection — the ONLY way an anonymous

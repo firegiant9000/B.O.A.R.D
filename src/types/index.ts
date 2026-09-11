@@ -107,8 +107,45 @@ export interface Board {
   // migration-tolerant: absent ⇒ no overrides (every member is an editor).
   roles?: Record<string, BoardRole>;
   backgroundTemplate?: BackgroundTemplate;
+  // Month 6 — education pilot (ROADMAP.md Appendix E.2 "Cohort views"). Links
+  // this board to a `classes/{classId}` doc as a student's assignment
+  // submission. Optional/migration-tolerant: absent ⇒ not part of any class
+  // (every pre-existing board). PINNED once set — firestore.rules'
+  // `classIdTransitionValid` refuses any later change or removal, the same
+  // way `workspaceIdUnchanged` pins `workspaceId` above, so a student can't
+  // detach their own board from instructor oversight after submitting it.
+  // Set only via classroomService.attachBoardToClass, which rules gate on
+  // the caller being an ENROLLED STUDENT of that class at write time.
+  classId?: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Month 6 — education pilot (invite-based class enrollment). A class is its
+// own top-level `classes/{classId}` collection, deliberately NOT an
+// overloaded workspace — see firestore.rules' `classes` match block for the
+// full argument (a class carries none of a workspace's plan/billing/seat-cap
+// semantics, and the edu tier is sold manually with no self-serve).
+//
+// University-level only; K-12 is explicitly out of scope (COPPA's
+// verifiable-parental-consent requirement for under-13 users, which nothing
+// here attempts to satisfy). `studentIds` holds only uids of students who
+// redeemed `joinCode` with their OWN account — no name, email, date of
+// birth, or minor-status field is ever collected, and there is no bulk/CSV
+// roster-import path. Do NOT add one; see ROADMAP.md's Education-pilot
+// section ("A5") for why that path was deliberately reshaped away from.
+export interface ClassRoom {
+  id: string;
+  name: string;
+  instructorId: string;
+  // Server-generated only (functions/src/callable/createClass.ts, reusing
+  // createBoard.ts's generateInviteCode) — a client can never choose or
+  // change this value; a guessable code lets a stranger self-enroll and
+  // hand their board to a class's instructor uninvited.
+  joinCode: string;
+  studentIds: string[];
+  schemaVersion: 1;
+  createdAt: Date;
 }
 
 export interface DrawPath {

@@ -292,6 +292,60 @@ service cloud.firestore {
       return next.get('workspaceId', null) == board.get('workspaceId', null);
     }
 
+    // ── M6 education pilot (invite-based class enrollment + instructor grid) ──
+    // A class is its own top-level `classes/{classId}` collection (see that
+    // match block below for why), and a board links to one via `classId`.
+    // Task 27's controller ruling R79: the instructor's cross-board read must
+    // be a rules predicate resolvable in a BOUNDED number of get()s, because
+    // rules cannot query — so the linkage lives on the board doc itself
+    // (`classId`), never only inside `classes/{id}/...`, and this resolves it
+    // with exactly one get() on the named class.
+
+    // Whether `uid` is an enrolled student of `classId` — the enrollment
+    // proof `classIdTransitionValid` requires before a board may ever be
+    // stamped with that class. `.get('studentIds', [])` so a class doc with
+    // no enrollments yet reads as an empty list rather than erroring.
+    function isEnrolledInClass(classId, uid) {
+      return classId != null && classId != '' &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        uid in get(/databases/$(database)/documents/classes/$(classId)).data.get('studentIds', []);
+    }
+
+    // The instructor cohort grid's read path (Appendix E.2 "Cohort views —
+    // see all student boards for an assignment in one grid"). A board whose
+    // `classId` names a real class is readable by THAT class's instructor,
+    // resolved from the class doc's own `instructorId` — never from a
+    // client-supplied claim.
+    function isInstructorOfClass(classId, uid) {
+      return classId != null && classId != '' &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        get(/databases/$(database)/documents/classes/$(classId)).data.instructorId == uid;
+    }
+
+    // A board's `classId` is pinned the same way `workspaceIdUnchanged` pins
+    // `workspaceId` above (see that helper's comment for the re-parenting
+    // hazard this mirrors) — ANDed into the whole board `update` rule below,
+    // so it binds even the admin arm, which otherwise has no field
+    // restriction. Without this, a board's own owner — typically the exact
+    // student who submitted it — could simply update `classId` away (or
+    // clear it) to escape the instructor's cohort view after the fact.
+    //
+    // The one legitimate transition is null -> a real classId, and even that
+    // requires the CALLER (request.auth.uid — the uid performing this write,
+    // not necessarily the board's owner) to be an enrolled student of that
+    // class at this instant. Without that check, any board admin could
+    // attach a board to an arbitrary/guessed classId and hand its content to
+    // a class's instructor without ever having joined that class — exactly
+    // the kind of forged-membership hole R79's bounded-get() design exists
+    // to keep out of a rules predicate that cannot itself verify enrollment
+    // any other way.
+    function classIdTransitionValid(board, next) {
+      let prevClassId = board.get('classId', null);
+      let nextClassId = next.get('classId', null);
+      return nextClassId == prevClassId ||
+        (prevClassId == null && nextClassId != null && isEnrolledInClass(nextClassId, request.auth.uid));
+    }
+
     // ── M6 plan gates (feature tiers other than the seat cap) ──────────────────
     // A board's plan, resolved through the SAME `planOfWorkspace` helper the M5
     // seat cap uses above — never a second way to read `plan`. A legacy board
@@ -515,6 +569,71 @@ service cloud.firestore {
       }
     }
 
+    // ── classes (Month 6 — education pilot) ─────────────────────────────────────
+    // A class is its own top-level collection, deliberately NOT an overloaded
+    // workspace: a workspace carries plan/billing/seat-cap semantics a class
+    // does not want, and the edu tier is sold manually with no self-serve
+    // (ROADMAP.md's Education-pilot section) — see this task's controller
+    // ruling R78 for the full argument.
+    //
+    // University-level only; K-12 is explicitly out of scope (COPPA's
+    // verifiable-parental-consent requirement for under-13 users, which this
+    // invite-based flow makes no attempt to satisfy). Enrollment is
+    // self-service by design: a student redeems `joinCode` with THEIR OWN
+    // account, so no roster of a person who has never signed up is ever
+    // collected here. Do not "helpfully" add a bulk/CSV roster importer —
+    // that is exactly the bulk-PII path the education pilot was reshaped
+    // away from (ROADMAP.md A5).
+    match /classes/{classId} {
+      // Read is the instructor + enrolled students, PLUS a public
+      // "does a class with this join code exist" lookup — mirrors the board
+      // `inviteCode != null` disjunct just below (classroomService.
+      // enrollInClass needs to resolve a code to a classId before the
+      // caller is enrolled, exactly like joinBoardByCode). Same tradeoff
+      // already accepted for boards: obscurity of the code/classId, not a
+      // hard access boundary — a class's full document (including its
+      // roster) is exposed to any signed-in user who has or guesses the
+      // classId, same as an invite-coded board's `members` list already is.
+      allow read: if isSignedIn() && (
+                    request.auth.uid == resource.data.instructorId ||
+                    request.auth.uid in resource.data.get('studentIds', []) ||
+                    resource.data.joinCode != null
+                  );
+
+      // Creating a class is Cloud-Function-only
+      // (functions/src/callable/createClass.ts) for the same reason board/
+      // session creation is: the join code must be generated where a client
+      // cannot choose it (see generateInviteCode's header on
+      // functions/src/callable/createBoard.ts). A client that could pick its
+      // own join code could plant a class document whose code collides with
+      // (or is more memorable than) a real instructor's, silently diverting
+      // that instructor's students' self-enrollment query into an
+      // attacker-controlled class instead — the same query-collision hazard
+      // a guessable board invite code would create.
+      allow create: if false;
+
+      // The instructor may rename their class; nothing else about it
+      // (roster, join code, instructorId) is client-writable outside the
+      // self-enroll arm below. Self-enrollment mirrors the board
+      // invite-code self-join rule exactly: append EXACTLY the caller's own
+      // uid to `studentIds`, nothing else — proves enrollment without
+      // letting a caller enroll a third party or edit anyone else's
+      // membership.
+      allow update: if isSignedIn() && (
+                      (request.auth.uid == resource.data.instructorId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt'])) ||
+                      (
+                        resource.data.joinCode != null &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
+                        request.resource.data.studentIds.hasAll(resource.data.get('studentIds', [])) &&
+                        request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() + 1 &&
+                        request.resource.data.studentIds.hasAny([request.auth.uid])
+                      )
+                    );
+
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.instructorId;
+    }
+
     // ── boards ────────────────────────────────────────────────────────────────
     match /boards/{boardId} {
       // Members + owner can read, but only while they're still in the board's
@@ -525,7 +644,13 @@ service cloud.firestore {
       allow read:   if (isSignedIn() && (
                       (request.auth.uid == resource.data.ownerId && inBoardWorkspace(resource.data)) ||
                       (request.auth.uid in resource.data.members && inBoardWorkspace(resource.data)) ||
-                      resource.data.inviteCode != null
+                      resource.data.inviteCode != null ||
+                      // Month 6 — the instructor cohort grid (Appendix E.2).
+                      // Deliberately NOT gated by `inBoardWorkspace`: the
+                      // instructor is very likely not a member of the
+                      // student's own workspace at all, and this is a
+                      // narrow, class-scoped grant, not general board access.
+                      isInstructorOfClass(resource.data.get('classId', null), request.auth.uid)
                     )) ||
                     // Phase 8 — a board-scoped embed token grants read-only access.
                     isEmbedViewer(boardId);
@@ -594,7 +719,12 @@ service cloud.firestore {
                       )
                     ) &&
                     workspaceIdUnchanged(resource.data, request.resource.data) &&
-                    withinSeatCap(resource.data, request.resource.data);
+                    withinSeatCap(resource.data, request.resource.data) &&
+                    // Month 6 — see classIdTransitionValid's own header: ANDed
+                    // here (not scoped to one arm) so even the otherwise-
+                    // unrestricted admin arm above can't re-parent or clear a
+                    // board's class linkage once set.
+                    classIdTransitionValid(resource.data, request.resource.data);
       allow delete: if isBoardAdmin(boardId);
 
       // Canvas content (paths, notes, textElements, shapes, images, audio, snapshots):
