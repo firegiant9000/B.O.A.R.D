@@ -33,6 +33,7 @@ const baseProps = {
   canManageWorkspace: true,
   workspaceSwatches: ["#123456"],
   onAddSwatch: jest.fn(),
+  onUpgradeRequested: jest.fn(),
 };
 
 afterEach(() => jest.clearAllMocks());
@@ -42,12 +43,23 @@ it("shows the current alpha as a percentage", () => {
   expect(screen.getByText("Alpha: 40%")).toBeTruthy();
 });
 
-it("submitting a valid hex in the text field applies it", () => {
+it("submitting a valid 6-digit hex in the text field applies it, alpha unchanged", () => {
   render(<ColorPickerModal {...baseProps} />);
   const input = screen.getByTestId("color-picker-hex-input");
   fireEvent.changeText(input, "#00aaff");
   fireEvent(input, "submitEditing");
   expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 1);
+});
+
+// Fix round 1, item 6: an 8-digit hex DOES carry a real alpha byte
+// (`fromHex8` reads it) — the field must apply it, not silently keep
+// whatever the alpha slider happened to be at.
+it("submitting an 8-digit hex applies its OWN embedded alpha, not the current slider value", () => {
+  render(<ColorPickerModal {...baseProps} alpha={1} />);
+  const input = screen.getByTestId("color-picker-hex-input");
+  fireEvent.changeText(input, "#00aaff80");
+  fireEvent(input, "submitEditing");
+  expect(baseProps.onChange).toHaveBeenCalledWith("#00aaff", 0x80 / 255);
 });
 
 it("does not call onChange for a malformed hex", () => {
@@ -86,20 +98,10 @@ describe("Pro gate on adding a swatch (ROADMAP item 14)", () => {
   });
 
   it("tapping the badge or the disabled add control on free routes to the caller's upgrade flow", () => {
-    const onUpgradeRequested = jest.fn();
-    render(<ColorPickerModal {...baseProps} plan="free" onUpgradeRequested={onUpgradeRequested} />);
-    fireEvent.press(screen.getByTestId("color-picker-swatch-pro-badge"));
-    expect(onUpgradeRequested).toHaveBeenCalledTimes(1);
-    expect(baseProps.onAddSwatch).not.toHaveBeenCalled();
-  });
-
-  it("falls back to a plain alert when no onUpgradeRequested is given", () => {
-    const { Alert } = require("react-native");
-    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     render(<ColorPickerModal {...baseProps} plan="free" />);
-    fireEvent.press(screen.getByTestId("color-picker-add-swatch"));
-    expect(alertSpy).toHaveBeenCalled();
-    alertSpy.mockRestore();
+    fireEvent.press(screen.getByTestId("color-picker-swatch-pro-badge"));
+    expect(baseProps.onUpgradeRequested).toHaveBeenCalledTimes(1);
+    expect(baseProps.onAddSwatch).not.toHaveBeenCalled();
   });
 });
 
@@ -119,15 +121,46 @@ describe("workspace-role gate on adding a swatch (firestore.rules restricts non-
   });
 });
 
-it("the alpha slider drag reads the width reported by layout, not the pre-layout placeholder", () => {
-  render(<ColorPickerModal {...baseProps} alpha={0} />);
-  const track = screen.getByTestId("color-picker-alpha-track");
+describe("alpha slider drag (fix round 1, item 2 — must not write on every move)", () => {
+  it("reads the width reported by layout, not the pre-layout placeholder", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0} />);
+    const track = screen.getByTestId("color-picker-alpha-track");
 
-  fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
-  // Midpoint of a 200px track over [0, 1] is 0.5 -> onChange(color, 0.5).
-  fireEvent(track, "responderMove", { nativeEvent: { locationX: 100 } });
+    fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
+    // Midpoint of a 200px track over [0, 1] is 0.5.
+    fireEvent(track, "responderGrant", { nativeEvent: { locationX: 100 } });
+    fireEvent(track, "responderRelease", { nativeEvent: { locationX: 100 } });
 
-  expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.5);
+    expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.5);
+  });
+
+  it("a move updates the live label but does NOT call onChange — only release commits", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0} />);
+    const track = screen.getByTestId("color-picker-alpha-track");
+    fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
+
+    fireEvent(track, "responderGrant", { nativeEvent: { locationX: 100 } });
+    expect(baseProps.onChange).not.toHaveBeenCalled();
+    fireEvent(track, "responderMove", { nativeEvent: { locationX: 150 } });
+    fireEvent(track, "responderMove", { nativeEvent: { locationX: 160 } });
+    expect(baseProps.onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Alpha: 80%")).toBeTruthy();
+
+    fireEvent(track, "responderRelease", { nativeEvent: { locationX: 160 } });
+    expect(baseProps.onChange).toHaveBeenCalledTimes(1);
+    expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.8);
+  });
+
+  it("an interrupted drag (responderTerminate) still commits the last value, same as a release", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0} />);
+    const track = screen.getByTestId("color-picker-alpha-track");
+    fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
+
+    fireEvent(track, "responderGrant", { nativeEvent: { locationX: 100 } });
+    fireEvent(track, "responderTerminate", { nativeEvent: { locationX: 100 } });
+
+    expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.5);
+  });
 });
 
 it("closing via Done or the close button calls onClose", () => {

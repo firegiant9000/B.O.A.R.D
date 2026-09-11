@@ -34,6 +34,7 @@ import {
   queryBounds,
 } from "../lib/spatialIndex";
 import { ShapeDraft, SHAPE_FILL_ALPHA, shapeBbox, hexToRgba } from "../lib/shapes";
+import { persistedStyleFields } from "../lib/penStyles";
 import { imageBbox, placementBox, PreparedImage } from "../lib/images";
 import { pickAndPrepareImage, prepareWebFile, prepareNativeImageUri, ImageSource } from "../lib/imagePicker";
 import { getClipboardImage } from "../lib/osClipboard";
@@ -391,6 +392,11 @@ export interface BoardElements {
   sendToBack: () => Promise<void>;
   applyColor: (color: string) => void;
   applyStrokeWidth: (w: number) => void;
+  /** Month 5 (ROADMAP item 12) — applies stroke alpha to the selection's pen
+   *  paths only (shapes/text have no `opacity` field in this model; an
+   *  eraser path has neither a colour nor an opacity concept). No-op when
+   *  nothing is selected, mirroring `applyColor`/`applyStrokeWidth`. */
+  applyOpacity: (opacity: number) => void;
 
   // --- Text elements ---
   createTextElement: (point: Point, color: string) => Promise<void>;
@@ -1373,14 +1379,13 @@ export function useBoardElements(
 
   // RDP-simplify in board-space before the write: fewer points = smaller doc,
   // cheaper sync, and lighter render — without a visible change to the stroke.
-  // Month 5 (ROADMAP item 12) — only persist `penStyle`/`opacity` when they
-  // diverge from the plain-pen default, so an ordinary stroke's doc shape is
-  // byte-for-byte what it was before this task (and Firestore never sees an
-  // `undefined` field value, which it rejects outright).
-  const penStyleFields = (style?: PenStrokeStyle): Partial<Pick<DrawPath, "penStyle" | "opacity">> => ({
-    ...(style?.penStyle && style.penStyle !== "pen" ? { penStyle: style.penStyle } : {}),
-    ...(style?.opacity != null && style.opacity < 1 ? { opacity: style.opacity } : {}),
-  });
+  // Month 5 (ROADMAP item 12) — delegates to the pure, unit-tested
+  // `persistedStyleFields` (see its own header for the fix-round-1 defect it
+  // guards against: comparing opacity to a hardcoded 1 instead of the
+  // style's own default reverted a full-opacity highlighter to 35% on the
+  // very next render).
+  const penStyleFields = (style?: PenStrokeStyle): Partial<Pick<DrawPath, "penStyle" | "opacity">> =>
+    persistedStyleFields(style?.penStyle, style?.opacity);
 
   const commitStroke = async (
     points: Point[],
@@ -2002,6 +2007,30 @@ export function useBoardElements(
       });
   };
 
+  // Month 5 (ROADMAP item 12) — alpha applies to the selection's pen paths
+  // only. Shapes/text have no `opacity` field in this model (a deliberate
+  // scoping decision — see DrawPath.opacity's own comment); an eraser path
+  // has no colour to make translucent either, so it's excluded the same way
+  // applyColor already excludes it.
+  const applyOpacity = (opacity: number) => {
+    const ids = selection.selectedIds;
+    if (ids.size === 0) return;
+    const pathUpdates: { id: string; data: any }[] = [];
+    const nextPaths = paths.map((p) => {
+      if (!ids.has(p.id) || p.tool === "eraser") return p;
+      pathUpdates.push({ id: p.id, data: { opacity } });
+      return { ...p, opacity };
+    });
+    setPaths(nextPaths);
+    pathService
+      .batchUpdatePaths(boardId, pathUpdates)
+      .then(onScheduleSave)
+      .catch((e) => {
+        captureException(e, { op: "board.opacity" });
+        onError("Opacity update failed.");
+      });
+  };
+
   // ────────── WRITE PATH — TEXT ELEMENTS ────────────────────────────────
   // --- Text element handlers ---
 
@@ -2320,6 +2349,7 @@ export function useBoardElements(
     sendToBack,
     applyColor,
     applyStrokeWidth,
+    applyOpacity,
 
     createTextElement,
     commitTextEdit,

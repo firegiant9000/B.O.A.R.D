@@ -212,15 +212,21 @@ export async function removeWorkspaceSwatch(workspaceId: string, hex: string): P
 // voice notes).
 //
 // The per-workspace custom swatch palette is billed as a Pro-tier feature
-// (ROADMAP item 12 / item 14). Nothing server-side enforces that today:
-// firestore.rules' Month 5 workspace `update` rule denies a client touching
-// `plan`, but has no predicate on `swatches` at all — any workspace member
-// with write access to the doc can call `addWorkspaceSwatch` /
-// `removeWorkspaceSwatch` on a free-plan workspace right now, the same way a
-// patched bundle or a raw SDK `updateDoc` call bypassing this module entirely
-// could. This function exists solely so `ColorPickerModal` can show a "Pro"
-// badge and route a free user to the upsell instead of silently accepting
-// the write; it denies nothing a server would enforce.
+// (ROADMAP item 12 / item 14). Nothing server-side enforces THAT today:
+// firestore.rules' `workspaces/{id}` update rule denies a client touching
+// `plan` at all, but has no predicate on `plan` for `swatches` specifically
+// — any workspace OWNER OR ADMIN (that rule's existing role check, same as
+// every field but `name`; see `MANAGER_ROLES` above) can call
+// `addWorkspaceSwatch`/`removeWorkspaceSwatch` on a FREE-plan workspace
+// right now, the same way a patched bundle or a raw SDK `updateDoc` call
+// bypassing this module entirely could. Do not read this as "any member" —
+// a plain (non-owner/admin) member's update is already rejected by that
+// same rule for any field but `name`, `swatches` included; that part IS
+// enforced (see `ColorPickerModal`'s `canManageWorkspace` prop, which
+// exists for exactly that reason). What's unenforced is narrower: PLAN. This
+// function exists solely so `ColorPickerModal` can show a "Pro" badge and
+// route a free user to the upsell instead of silently accepting the write;
+// it denies nothing a server would enforce.
 //
 // Closing this gap needs the same kind of change quotaService.ts's header
 // describes for boards/sessions: a rules predicate on `plan` (or a

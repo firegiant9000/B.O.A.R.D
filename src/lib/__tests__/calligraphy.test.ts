@@ -51,27 +51,43 @@ describe("calligraphyPathD", () => {
     ).not.toThrow();
   });
 
-  it("varies width with direction: a stroke parallel to the nib is narrower than one perpendicular to it", () => {
-    // NIB_ANGLE is fixed at 45°. A horizontal stroke (0°) and a stroke along
-    // the anti-diagonal (135°, perpendicular to the nib) should not produce
-    // identically-sized joint circles — this is a coarse structural check
-    // (both must at least differ), not an exact-geometry assertion.
-    const horizontal = calligraphyPathD(
-      [
-        { x: 0, y: 0 },
-        { x: 20, y: 0 },
-      ],
-      2,
-      10
-    );
-    const antiDiagonal = calligraphyPathD(
-      [
-        { x: 0, y: 0 },
-        { x: -20, y: 20 },
-      ],
-      2,
-      10
-    );
-    expect(horizontal).not.toEqual(antiDiagonal);
+  // Fix round 1, item 5: the previous version of this test compared the
+  // whole `d` STRING between two differently-angled strokes — which two
+  // different (x, y) coordinates will always produce, even under a
+  // constant-width implementation, so it proved nothing about width
+  // specifically. This version parses the actual emitted radius (the `r` in
+  // the leading cap's `A r r ...` arc command) and asserts it differs in the
+  // specific way `widthForAngle`'s 45°-nib formula predicts.
+  describe("width genuinely responds to direction (not just the d string differing)", () => {
+    // The radius baked into the very first drawn command: for a straight
+    // 2-point stroke, calligraphyPathD's leading circleD(start, startW/2)
+    // is `M ${x-r} ${y} A ${r} ${r} 0 1 0 ...` — this is the same `r` for
+    // both the start cap and the single segment's quad half-width.
+    const capRadius = (d: string): number => {
+      const m = d.match(/A ([\d.]+) /);
+      if (!m) throw new Error(`no arc command found in: ${d}`);
+      return parseFloat(m[1]);
+    };
+
+    const MIN_WIDTH = 2;
+    const MAX_WIDTH = 10;
+
+    it("a stroke running exactly along the 45° nib angle renders at maxWidth", () => {
+      // (0,0) -> (10,10) is a 45° direction.
+      const d = calligraphyPathD([{ x: 0, y: 0 }, { x: 10, y: 10 }], MIN_WIDTH, MAX_WIDTH);
+      expect(capRadius(d)).toBeCloseTo(MAX_WIDTH / 2, 5);
+    });
+
+    it("a stroke running perpendicular to the nib (135°) renders at minWidth", () => {
+      // (0,0) -> (-10,10) is a 135° direction, 90° from the nib angle.
+      const d = calligraphyPathD([{ x: 0, y: 0 }, { x: -10, y: 10 }], MIN_WIDTH, MAX_WIDTH);
+      expect(capRadius(d)).toBeCloseTo(MIN_WIDTH / 2, 5);
+    });
+
+    it("the two directions above produce genuinely different widths, end to end", () => {
+      const parallel = calligraphyPathD([{ x: 0, y: 0 }, { x: 10, y: 10 }], MIN_WIDTH, MAX_WIDTH);
+      const perpendicular = calligraphyPathD([{ x: 0, y: 0 }, { x: -10, y: 10 }], MIN_WIDTH, MAX_WIDTH);
+      expect(capRadius(parallel)).toBeGreaterThan(capRadius(perpendicular));
+    });
   });
 });

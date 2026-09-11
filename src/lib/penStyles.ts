@@ -97,3 +97,35 @@ export function renderParamsFor(
 export function calligraphyWidthRange(baseWidth: number): [min: number, max: number] {
   return [Math.max(1, baseWidth * 0.4), baseWidth * 1.3];
 }
+
+/**
+ * Which of `penStyle`/`opacity` a caller (`useBoardElements.ts#commitStroke`/
+ * `drawDot`) should actually persist on a new `DrawPath` doc — omitting a
+ * value that already equals what `renderParamsFor` would infer for an
+ * absent field anyway, so an ordinary stroke's doc shape stays exactly what
+ * it was before Month 5 added these fields (and Firestore never sees an
+ * explicit `undefined`, which it rejects outright).
+ *
+ * The one thing this must get right: "default" is PER STYLE, not a bare 1.
+ * A fix-round-1 defect this guards against: comparing `opacity` against the
+ * literal `1` (instead of `DEFAULT_ALPHA_FOR_STYLE[style]`) meant a
+ * highlighter drawn at full opacity had its `opacity: 1` omitted (1 is not
+ * `< 1`, so "nothing to persist") — `renderParamsFor` then read the ABSENT
+ * field back as the highlighter's own 0.35 default, so the stroke committed
+ * at full opacity and immediately re-rendered translucent, permanently on
+ * reload. Comparing against this style's real default instead of a
+ * hardcoded `1` fixes every style uniformly, pen included (whose real
+ * default already happens to be 1, so its behavior is unchanged).
+ */
+export function persistedStyleFields(
+  penStyle: PenStyle | undefined,
+  opacity: number | undefined
+): { penStyle?: PenStyle; opacity?: number } {
+  const resolvedStyle = penStyle ?? "pen";
+  const fields: { penStyle?: PenStyle; opacity?: number } = {};
+  if (penStyle && penStyle !== "pen") fields.penStyle = penStyle;
+  if (opacity != null && opacity !== DEFAULT_ALPHA_FOR_STYLE[resolvedStyle]) {
+    fields.opacity = opacity;
+  }
+  return fields;
+}

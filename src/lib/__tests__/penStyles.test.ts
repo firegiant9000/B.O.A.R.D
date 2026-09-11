@@ -1,4 +1,10 @@
-import { renderParamsFor, calligraphyWidthRange, DEFAULT_ALPHA_FOR_STYLE, PEN_STYLES } from "../penStyles";
+import {
+  renderParamsFor,
+  calligraphyWidthRange,
+  persistedStyleFields,
+  DEFAULT_ALPHA_FOR_STYLE,
+  PEN_STYLES,
+} from "../penStyles";
 
 describe("renderParamsFor", () => {
   it("defaults an undefined penStyle to plain pen params at the base width", () => {
@@ -42,6 +48,41 @@ describe("renderParamsFor", () => {
     for (const style of PEN_STYLES) {
       expect(() => renderParamsFor(style, 5, undefined)).not.toThrow();
     }
+  });
+});
+
+describe("persistedStyleFields", () => {
+  it("omits both fields for a plain pen at full opacity (the pre-Month-5 doc shape)", () => {
+    expect(persistedStyleFields(undefined, undefined)).toEqual({});
+    expect(persistedStyleFields("pen", 1)).toEqual({});
+  });
+
+  it("omits opacity when it already equals the style's own default", () => {
+    expect(persistedStyleFields("highlighter", DEFAULT_ALPHA_FOR_STYLE.highlighter)).toEqual({
+      penStyle: "highlighter",
+    });
+  });
+
+  // Fix round 1: the previous implementation compared `opacity` to a
+  // hardcoded `1` instead of this style's own default, so a highlighter
+  // saved at FULL opacity had that opacity silently omitted (1 is not
+  // `< 1`) — renderParamsFor then read the absent field back as the
+  // highlighter's own 0.35 default. This is the round trip that regressed.
+  it("persists opacity when it diverges from the style's default, even at 1 (regression)", () => {
+    const persisted = persistedStyleFields("highlighter", 1);
+    expect(persisted).toEqual({ penStyle: "highlighter", opacity: 1 });
+
+    const rendered = renderParamsFor(persisted.penStyle, 5, persisted.opacity);
+    expect(rendered.opacity).toBe(1);
+  });
+
+  it("always persists a non-pen penStyle, regardless of opacity", () => {
+    expect(persistedStyleFields("marker", undefined)).toEqual({ penStyle: "marker" });
+    expect(persistedStyleFields("calligraphy", 1)).toEqual({ penStyle: "calligraphy" });
+  });
+
+  it("never persists penStyle: 'pen' explicitly", () => {
+    expect(persistedStyleFields("pen", 0.5)).toEqual({ opacity: 0.5 });
   });
 });
 

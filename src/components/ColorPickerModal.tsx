@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Modal,
   View,
@@ -9,7 +9,6 @@ import {
   ScrollView,
   LayoutChangeEvent,
   GestureResponderEvent,
-  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { fromHex8, toHex6, toCssRgba, isValidHex, clampAlpha } from "../lib/color";
@@ -59,12 +58,16 @@ export interface ColorPickerModalProps {
   canManageWorkspace: boolean;
   workspaceSwatches: string[];
   onAddSwatch: (hex: string) => void;
-  /** Called instead of the built-in `Alert` when a free-tier user taps the
-   *  locked "add swatch" affordance, so the caller can open the real upsell
-   *  flow (UpsellModal, via `upsellResource="customPalette"`) instead of
-   *  this component's plain-text fallback — mirrors
-   *  `AudioAffordance`'s `onUpgradeRequested`. */
-  onUpgradeRequested?: () => void;
+  /** Called when a free-tier user taps the locked "add swatch" affordance,
+   *  routing to the real upsell flow (UpsellModal, via
+   *  `upsellResource="customPalette"`) — mirrors `AudioAffordance`'s
+   *  `onUpgradeRequested`, except REQUIRED here rather than optional with a
+   *  plain-`Alert` fallback: this project's own native-denial bar
+   *  (`UpsellModal.test.tsx`) forbids even the word "upgrade" on a denial
+   *  surface, and a fallback `Alert` in this file would be a second denial
+   *  surface neither of the store-compliance source scans cover (this file
+   *  is in neither list). Required means there is exactly one. */
+  onUpgradeRequested: () => void;
 }
 
 export default function ColorPickerModal({
@@ -92,24 +95,53 @@ export default function ColorPickerModal({
   // value would be a worse failure mode than a wrong-looking swatch.
   const parsedColor = fromHex8(color) ?? { r: 0, g: 0, b: 0, a: 1 };
 
+  // Fix round 1, item 6: an 8-digit hex the user typed DOES carry a real
+  // alpha byte (`fromHex8` reads it) — passing the OLD `alpha` prop here
+  // instead of `parsed.a` silently discarded it even though `isValidHex`
+  // advertises 8-digit input as valid. Whichever the field held wins.
   const commitHex = (text: string) => {
     const parsed = fromHex8(text);
-    if (parsed) onChange(toHex6(parsed), alpha);
+    if (parsed) onChange(toHex6(parsed), parsed.a);
   };
 
   const [trackWidth, setTrackWidth] = useState(1);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
-  // Plain Responder System props, not PanResponder — see StrokeWidthModal.tsx's
-  // identical header comment: this is a 1D drag with no velocity/multi-touch
-  // tracking to justify PanResponder's `touchHistory` bookkeeping (also not
-  // exercisable via RNTL's `fireEvent`), and an inline handler recreated every
-  // render always closes over the current `trackWidth`/`color` — no
-  // `useRef`-memoized handler to go stale once `onLayout` reports the real width.
+  // Fix round 1, item 2: `onChange` used to fire on every `onResponderMove`
+  // (~60/sec for a whole drag), each call rebuilding and batch-writing every
+  // selected element's doc through `elements.applyColor`/`applyOpacity` —
+  // this is a NEW way to reach those write paths this task added (they were
+  // previously reachable only from discrete taps: 8 colour dots, 3 width
+  // buttons). `localAlpha` is the live, per-move value this component's OWN
+  // preview (the % label, the thumb, the swatch) renders from; `onChange`
+  // — the actual Firestore-writing commit — fires exactly once, on release,
+  // with whatever `localAlpha` settled on. `localAlphaRef` (not just the
+  // `localAlpha` state) is what `commitAlpha` reads, so the release handler
+  // never risks reading a value from before the last move's `setState` flushed.
+  const [localAlpha, setLocalAlpha] = useState(alpha);
+  const localAlphaRef = useRef(alpha);
+  const draggingAlphaRef = useRef(false);
+  useEffect(() => {
+    if (!draggingAlphaRef.current) {
+      setLocalAlpha(alpha);
+      localAlphaRef.current = alpha;
+    }
+  }, [alpha]);
+
   const updateAlphaFromX = (x: number) => {
-    onChange(color, clampAlpha(Math.round(valueFromPosition(x, trackWidth, 0, 1) * 100) / 100));
+    const next = clampAlpha(Math.round(valueFromPosition(x, trackWidth, 0, 1) * 100) / 100);
+    localAlphaRef.current = next;
+    setLocalAlpha(next);
   };
-  const onAlphaTouch = (e: GestureResponderEvent) => updateAlphaFromX(e.nativeEvent.locationX);
+  const onAlphaGrant = (e: GestureResponderEvent) => {
+    draggingAlphaRef.current = true;
+    updateAlphaFromX(e.nativeEvent.locationX);
+  };
+  const onAlphaMove = (e: GestureResponderEvent) => updateAlphaFromX(e.nativeEvent.locationX);
+  const commitAlpha = () => {
+    draggingAlphaRef.current = false;
+    onChange(color, localAlphaRef.current);
+  };
 
   const canUseSwatches = workspaceService.canUseCustomPalette(plan);
   const atSwatchCap = workspaceSwatches.length >= workspaceService.MAX_WORKSPACE_SWATCHES;
@@ -120,14 +152,7 @@ export default function ColorPickerModal({
 
   const handleAddSwatch = () => {
     if (!canUseSwatches) {
-      if (onUpgradeRequested) {
-        onUpgradeRequested();
-      } else {
-        Alert.alert(
-          "Custom swatches are a Pro feature",
-          "Upgrade your plan to save colours to this workspace's swatch palette."
-        );
-      }
+      onUpgradeRequested();
       return;
     }
     if (!canAddSwatch) return;
@@ -153,7 +178,7 @@ export default function ColorPickerModal({
           <View style={styles.previewRow}>
             <View style={styles.previewCheckerboard}>
               <View
-                style={[styles.previewSwatch, { backgroundColor: toCssRgba({ ...parsedColor, a: alpha }) }]}
+                style={[styles.previewSwatch, { backgroundColor: toCssRgba({ ...parsedColor, a: localAlpha }) }]}
               />
             </View>
             <TextInput
@@ -169,19 +194,21 @@ export default function ColorPickerModal({
             />
           </View>
 
-          <Text style={styles.sectionLabel}>Alpha: {Math.round(alpha * 100)}%</Text>
+          <Text style={styles.sectionLabel}>Alpha: {Math.round(localAlpha * 100)}%</Text>
           <View
             testID="color-picker-alpha-track"
             style={styles.alphaTrack}
             onLayout={onTrackLayout}
             onStartShouldSetResponder={() => true}
             onMoveShouldSetResponder={() => true}
-            onResponderGrant={onAlphaTouch}
-            onResponderMove={onAlphaTouch}
+            onResponderGrant={onAlphaGrant}
+            onResponderMove={onAlphaMove}
+            onResponderRelease={commitAlpha}
+            onResponderTerminate={commitAlpha}
           >
             <View
               testID="color-picker-alpha-thumb"
-              style={[styles.alphaThumb, { left: positionFromValue(alpha, trackWidth, 0, 1) - 8 }]}
+              style={[styles.alphaThumb, { left: positionFromValue(localAlpha, trackWidth, 0, 1) - 8 }]}
             />
           </View>
 
@@ -194,7 +221,7 @@ export default function ColorPickerModal({
                     key={hex}
                     testID={`color-picker-recent-${hex}`}
                     style={[styles.swatch, { backgroundColor: hex }]}
-                    onPress={() => onChange(hex, alpha)}
+                    onPress={() => onChange(hex, localAlpha)}
                     accessibilityRole="button"
                     accessibilityLabel={`Use recent colour ${hex}`}
                   />
@@ -223,7 +250,7 @@ export default function ColorPickerModal({
                 key={hex}
                 testID={`color-picker-swatch-${hex}`}
                 style={[styles.swatch, { backgroundColor: hex }]}
-                onPress={() => onChange(hex, alpha)}
+                onPress={() => onChange(hex, localAlpha)}
                 accessibilityRole="button"
                 accessibilityLabel={`Use workspace swatch ${hex}`}
               />

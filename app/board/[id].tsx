@@ -590,7 +590,12 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           canComment={doc.canComment}
           onToolChange={tools.setActiveTool}
           onColorChange={(color) => {
-            tools.setActiveColor(color);
+            // Fix round 1, item 7: chooseColor (not the bare setActiveColor)
+            // so the 8 quick dots feed the recent-colours row too — before
+            // this, `chooseColor`'s own doc claimed to be "the one entry
+            // point every colour choice should go through" while this, the
+            // single most common way to pick a colour, bypassed it entirely.
+            tools.chooseColor(color);
             elements.applyColor(color);
           }}
           onStrokeWidthChange={(w) => {
@@ -645,6 +650,13 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           tools.chooseColor(hex);
           tools.setActiveAlpha(alpha);
           elements.applyColor(hex);
+          // Fix round 1, item 2: alpha used to change only the active
+          // default for NEW strokes — dragging it with elements already
+          // selected was a no-op on their actual content. applyOpacity
+          // mirrors applyColor/applyStrokeWidth's own "recolor the
+          // selection" behavior, scoped to pen paths only (see that
+          // function's own comment).
+          elements.applyOpacity(alpha);
         }}
         recentColors={tools.recentColors}
         plan={doc.boardWorkspace?.plan ?? "free"}

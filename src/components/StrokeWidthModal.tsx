@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Modal,
   View,
@@ -53,10 +53,40 @@ export default function StrokeWidthModal({ visible, onClose, strokeWidth, onChan
   const [trackWidth, setTrackWidth] = useState(1);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
+  // Fix round 1, item 2: `onChange` used to fire on every `onResponderMove`
+  // (~60/sec for a whole drag), each call rebuilding and batch-writing every
+  // selected element's `strokeWidth` through `elements.applyStrokeWidth` — a
+  // NEW way to reach that write path this task added (previously reachable
+  // only from the 3 discrete width buttons). `localWidth` is the live,
+  // per-move value this component's OWN preview (the label, the thumb)
+  // renders from; `onChange` — the actual Firestore-writing commit — fires
+  // exactly once, on release, with whatever `localWidth` settled on. See
+  // `ColorPickerModal.tsx`'s identical `localAlpha`/`localAlphaRef` comment
+  // for why a ref, not just the state, is what the release handler reads.
+  const [localWidth, setLocalWidth] = useState(strokeWidth);
+  const localWidthRef = useRef(strokeWidth);
+  const draggingRef = useRef(false);
+  useEffect(() => {
+    if (!draggingRef.current) {
+      setLocalWidth(strokeWidth);
+      localWidthRef.current = strokeWidth;
+    }
+  }, [strokeWidth]);
+
   const updateFromX = (x: number) => {
-    onChange(Math.round(valueFromPosition(x, trackWidth, MIN_WIDTH, MAX_WIDTH)));
+    const next = Math.round(valueFromPosition(x, trackWidth, MIN_WIDTH, MAX_WIDTH));
+    localWidthRef.current = next;
+    setLocalWidth(next);
   };
-  const onTouch = (e: GestureResponderEvent) => updateFromX(e.nativeEvent.locationX);
+  const onGrant = (e: GestureResponderEvent) => {
+    draggingRef.current = true;
+    updateFromX(e.nativeEvent.locationX);
+  };
+  const onMove = (e: GestureResponderEvent) => updateFromX(e.nativeEvent.locationX);
+  const commitWidth = () => {
+    draggingRef.current = false;
+    onChange(localWidthRef.current);
+  };
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -103,21 +133,23 @@ export default function StrokeWidthModal({ visible, onClose, strokeWidth, onChan
             })}
           </View>
 
-          <Text style={styles.sectionLabel}>Custom: {strokeWidth}px</Text>
+          <Text style={styles.sectionLabel}>Custom: {localWidth}px</Text>
           <View
             testID="stroke-width-slider-track"
             style={styles.track}
             onLayout={onTrackLayout}
             onStartShouldSetResponder={() => true}
             onMoveShouldSetResponder={() => true}
-            onResponderGrant={onTouch}
-            onResponderMove={onTouch}
+            onResponderGrant={onGrant}
+            onResponderMove={onMove}
+            onResponderRelease={commitWidth}
+            onResponderTerminate={commitWidth}
           >
             <View
               testID="stroke-width-slider-thumb"
               style={[
                 styles.thumb,
-                { left: positionFromValue(strokeWidth, trackWidth, MIN_WIDTH, MAX_WIDTH) - 8 },
+                { left: positionFromValue(localWidth, trackWidth, MIN_WIDTH, MAX_WIDTH) - 8 },
               ]}
             />
           </View>

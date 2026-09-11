@@ -129,7 +129,7 @@ function dashArray(strokeWidth: number): string {
  * the live `currentPath` preview below, instead of two render sites quietly
  * drifting apart on how a pen variant looks.
  */
-interface StrokeVisual {
+export interface StrokeVisual {
   d: string;
   fillMode: boolean;
   paintColor: string;
@@ -216,8 +216,12 @@ function multiplyBlendStyle(active: boolean): Partial<React.ComponentProps<typeo
   return { style: { mixBlendMode: "multiply" } } as unknown as Partial<React.ComponentProps<typeof Path>>;
 }
 
-/** Renders one resolved `StrokeVisual` as the right kind of `<Path>`. */
-function StrokeSvg({ visual }: { visual: StrokeVisual }) {
+/** Renders one resolved `StrokeVisual` as the right kind of `<Path>`. Exported
+ *  (only) for `DrawingCanvas.test.tsx`'s render-level check that
+ *  `multiplyBlendStyle` actually reaches the rendered `<Path>` as a `style`
+ *  prop on web and as nothing on native — this component has no test file
+ *  of its own otherwise (see that file's header for why). */
+export function StrokeSvg({ visual }: { visual: StrokeVisual }) {
   if (!visual.d) return null;
   if (visual.fillMode) {
     return <Path d={visual.d} fill={visual.paintColor} fillOpacity={visual.paintOpacity} stroke="none" />;

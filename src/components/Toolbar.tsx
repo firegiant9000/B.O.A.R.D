@@ -8,6 +8,7 @@ import {
   ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { STROKE_WIDTH_PRESETS } from "./StrokeWidthModal";
 
 // Month 5 adds "laser" — this type has to admit the value since `activeTool`
 // flows straight through from `useBoardTools`'s wider `Tool`.
@@ -60,18 +61,14 @@ const COLORS = [
   "#AF52DE",
 ];
 
-// Month 5 (ROADMAP item 12 — "6 stroke widths, was 3"): S/M/L keep their
-// original values (2/5/10) so `activeStrokeWidth`'s existing default (5,
-// useBoardTools.ts) still lands on a real preset — XS/XL/XXL are new, added
-// at both ends rather than renumbering the three that were already here.
-const STROKE_WIDTHS = [
-  { label: "XS", value: 1 },
-  { label: "S", value: 2 },
-  { label: "M", value: 5 },
-  { label: "L", value: 10 },
-  { label: "XL", value: 16 },
-  { label: "XXL", value: 24 },
-];
+// Month 5 (ROADMAP item 12 — "6 stroke widths, was 3"): imports
+// `StrokeWidthModal`'s own preset list rather than keeping a second literal
+// array here — fix round 1, item 9: the two were pinned by separate tests
+// with nothing asserting they stayed equal, so they could silently drift
+// (e.g. the modal's "more" picker offering a preset this bar's quick row
+// doesn't). S/M/L's values (2/5/10) predate this task; `activeStrokeWidth`'s
+// existing default (5, useBoardTools.ts) still lands on a real preset.
+const STROKE_WIDTHS = STROKE_WIDTH_PRESETS;
 
 export default function Toolbar({
   activeTool,

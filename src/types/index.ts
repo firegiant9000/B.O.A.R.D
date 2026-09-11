@@ -62,9 +62,16 @@ export interface Workspace {
   // picker's swatch row, shared by every member. Optional / migration-
   // tolerant: absent ⇒ [] (no board predates this, but every other workspace
   // field here treats absence as the pre-feature default, so this follows
-  // suit) — see `workspaceService.ts#addWorkspaceSwatch`. Advisory Pro gate
-  // only (`workspaceService.ts#canUseCustomPalette`); nothing in
-  // firestore.rules restricts who may write this array.
+  // suit) — see `workspaceService.ts#addWorkspaceSwatch`.
+  //
+  // TWO separate gates apply, and they are not the same rule:
+  //  - PLAN is advisory only (`workspaceService.ts#canUseCustomPalette`) —
+  //    nothing server-side reads `plan` before allowing this array to change.
+  //  - ROLE *is* enforced: firestore.rules' `workspaces/{id}` update rule
+  //    restricts every field but `name` (this one included) to workspace
+  //    owner/admin members, regardless of plan — a real, server-side gate,
+  //    which is exactly why `ColorPickerModal`'s `canManageWorkspace` prop
+  //    exists alongside the plan check, not in place of it.
   swatches?: string[];
   createdAt: Date;
 }

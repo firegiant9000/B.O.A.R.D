@@ -158,7 +158,7 @@ export function useBoardTools(opts: BoardToolsOptions): BoardTools {
   const { userId, enabled, editingTextId, onModifiers, onCommand } = opts;
 
   // Tool state
-  const [activeTool, setActiveTool] = useState<Tool>("pen");
+  const [activeTool, setActiveToolRaw] = useState<Tool>("pen");
   const [activeColor, setActiveColor] = useState("#000000");
   const [activeStrokeWidth, setActiveStrokeWidth] = useState(5);
 
@@ -181,6 +181,19 @@ export function useBoardTools(opts: BoardToolsOptions): BoardTools {
   const armEyedropper = useCallback(() => setEyedropperArmed(true), []);
   const disarmEyedropper = useCallback(() => setEyedropperArmed(false), []);
   const toggleEyedropper = useCallback(() => setEyedropperArmed((v) => !v), []);
+
+  // Fix round 1, item 8: arming the eyedropper and then switching to
+  // text/eraser/select (any tool switch, really) used to leave
+  // `eyedropperArmed` true with no visible control left to disarm it from —
+  // BoardCanvas.tsx's `handleCanvasTap` still checked the flag first, so the
+  // very next tap on any tool silently sampled a colour instead of doing
+  // whatever that tool normally does. Wrapping the setter (used by every
+  // internal tool-switch path below, plus every external caller via the
+  // returned `setActiveTool`) means switching tools always clears it.
+  const setActiveTool = useCallback((tool: Tool) => {
+    setActiveToolRaw(tool);
+    setEyedropperArmed(false);
+  }, []);
 
   // Shape tool state (Phase 7)
   const [shapeDraft, setShapeDraft] = useState<ShapeDraft | null>(null);

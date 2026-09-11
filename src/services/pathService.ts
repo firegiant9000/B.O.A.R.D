@@ -115,7 +115,9 @@ export async function clearBoardPaths(boardId: string): Promise<void> {
 // the already-computed field deltas (e.g. translated points + bbox) — the
 // service stays a dumb writer, mirroring savePath's "write what you're given".
 
-type PathUpdate = Partial<Pick<DrawPath, "points" | "color" | "strokeWidth" | "bbox" | "z">>;
+type PathUpdate = Partial<
+  Pick<DrawPath, "points" | "color" | "strokeWidth" | "bbox" | "z" | "opacity">
+>;
 
 export async function batchUpdatePaths(
   boardId: string,
