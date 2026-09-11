@@ -15,6 +15,12 @@ interface ShapeOptionsBarProps {
   onCycleSnap: () => void;
   arrowheadEnd: ArrowheadStyle;
   onCycleArrowhead: () => void;
+  /** Month 5 (ROADMAP item 12) — the eyedropper is tool-agnostic (it just
+   *  sets `tools.activeColor`, which the shape draft already reads), so this
+   *  bar gets the same toggle `PenOptionsBar` does rather than duplicating
+   *  any picking logic of its own. See `BoardCanvas.tsx`'s eyedropper wiring. */
+  eyedropperArmed: boolean;
+  onToggleEyedropper: () => void;
 }
 
 const KINDS: { kind: ShapeKind; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -50,6 +56,8 @@ export default function ShapeOptionsBar({
   onCycleSnap,
   arrowheadEnd,
   onCycleArrowhead,
+  eyedropperArmed,
+  onToggleEyedropper,
 }: ShapeOptionsBarProps) {
   const isArrow = activeKind === "arrow";
   const fillable = activeKind === "rect" || activeKind === "ellipse" || activeKind === "triangle";
@@ -67,6 +75,8 @@ export default function ShapeOptionsBar({
               key={kind}
               style={[styles.iconBtn, activeKind === kind && styles.iconBtnActive]}
               onPress={() => onSelectKind(kind)}
+              accessibilityRole="button"
+              accessibilityLabel={`Shape: ${kind}`}
             >
               <Ionicons name={icon} size={18} color={activeKind === kind ? "#fff" : "#333"} />
             </TouchableOpacity>
@@ -94,6 +104,13 @@ export default function ShapeOptionsBar({
               onPress={onCycleArrowhead}
             />
           )}
+          <Pill
+            active={eyedropperArmed}
+            icon="water-outline"
+            label={eyedropperArmed ? "Picking…" : "Eyedropper"}
+            onPress={onToggleEyedropper}
+            testID="shape-options-eyedropper-pill"
+          />
         </View>
       </ScrollView>
     </View>
@@ -105,14 +122,22 @@ function Pill({
   icon,
   label,
   onPress,
+  testID,
 }: {
   active: boolean;
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
+  testID?: string;
 }) {
   return (
-    <TouchableOpacity style={[styles.pill, active && styles.pillActive]} onPress={onPress}>
+    <TouchableOpacity
+      style={[styles.pill, active && styles.pillActive]}
+      onPress={onPress}
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
       <Ionicons name={icon} size={14} color={active ? "#fff" : "#333"} />
       <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
     </TouchableOpacity>

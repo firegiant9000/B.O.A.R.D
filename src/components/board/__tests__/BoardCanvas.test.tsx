@@ -111,6 +111,7 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     contentBounds: jest.fn(() => null),
     boxOfElement: jest.fn(() => null),
     hitTestAny: jest.fn(() => null),
+    colorOfElement: jest.fn(() => null),
     shapeGuideTargets: jest.fn(() => []),
     selectedPathIds: jest.fn(() => []),
     selectionText: jest.fn(() => ""),
@@ -178,6 +179,17 @@ function makeTools(overrides: Partial<BoardTools> & { activeTool: Tool }): Board
     setActiveColor: jest.fn(),
     activeStrokeWidth: 4,
     setActiveStrokeWidth: jest.fn(),
+
+    activeAlpha: 1,
+    setActiveAlpha: jest.fn(),
+    activePenStyle: "pen",
+    setActivePenStyle: jest.fn(),
+    chooseColor: jest.fn(),
+    recentColors: [],
+    eyedropperArmed: false,
+    armEyedropper: jest.fn(),
+    disarmEyedropper: jest.fn(),
+    toggleEyedropper: jest.fn(),
 
     activeShapeKind: "rect",
     setActiveShapeKind: jest.fn(),
@@ -487,7 +499,7 @@ describe("BoardCanvas — presenter lock on drawing gestures", () => {
       await mockDrawingCanvasProps.onStrokeEnd();
     });
 
-    expect(elements.commitStroke).toHaveBeenCalledWith([POINT], "#000000", 4);
+    expect(elements.commitStroke).toHaveBeenCalledWith([POINT], "#000000", 4, { penStyle: "pen", opacity: 1 });
   });
 
   it("a paused presenter also lets a pen stroke be committed", async () => {
@@ -509,7 +521,7 @@ describe("BoardCanvas — presenter lock on drawing gestures", () => {
       await mockDrawingCanvasProps.onStrokeEnd();
     });
 
-    expect(elements.commitStroke).toHaveBeenCalledWith([POINT], "#000000", 4);
+    expect(elements.commitStroke).toHaveBeenCalledWith([POINT], "#000000", 4, { penStyle: "pen", opacity: 1 });
   });
 
   it("an unpaused presenter blocks the text tool's tap-to-create", () => {
@@ -615,6 +627,98 @@ describe("BoardCanvas — laser pointer never creates persisted content (Month 5
     expect(elements.eraseAtPoint).not.toHaveBeenCalled();
     expect(elements.beginEraseStroke).not.toHaveBeenCalled();
     expect(elements.commitStroke).not.toHaveBeenCalled();
+  });
+});
+
+describe("BoardCanvas — eyedropper (Month 5, ROADMAP item 12)", () => {
+  it("samples the topmost hit element's colour via the shared hitTestAny/colorOfElement path and disarms", () => {
+    const { elements, tools } = renderCanvas({
+      tools: { activeTool: "pen", eyedropperArmed: true },
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "shape-1", kind: "shape" })),
+        colorOfElement: jest.fn(() => "#ff00aa"),
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.hitTestAny).toHaveBeenCalledWith(POINT);
+    expect(elements.colorOfElement).toHaveBeenCalledWith("shape-1", "shape");
+    expect(tools.chooseColor).toHaveBeenCalledWith("#ff00aa");
+    expect(tools.disarmEyedropper).toHaveBeenCalledTimes(1);
+  });
+
+  it("a miss (empty canvas) disarms without changing the active colour", () => {
+    const { elements, tools } = renderCanvas({
+      tools: { activeTool: "pen", eyedropperArmed: true },
+      elements: { hitTestAny: jest.fn(() => null) },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.colorOfElement).not.toHaveBeenCalled();
+    expect(tools.chooseColor).not.toHaveBeenCalled();
+    expect(tools.disarmEyedropper).toHaveBeenCalledTimes(1);
+  });
+
+  it("hitting an image (no sampleable colour) disarms without changing the active colour", () => {
+    const { tools } = renderCanvas({
+      tools: { activeTool: "pen", eyedropperArmed: true },
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "img-1", kind: "image" })),
+        colorOfElement: jest.fn(() => null),
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(tools.chooseColor).not.toHaveBeenCalled();
+    expect(tools.disarmEyedropper).toHaveBeenCalledTimes(1);
+  });
+
+  it("armed picking pre-empts the active tool's own tap behavior (pen would otherwise drop a dot)", () => {
+    const { elements } = renderCanvas({
+      tools: { activeTool: "pen", eyedropperArmed: true },
+      elements: { hitTestAny: jest.fn(() => null) },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.drawDot).not.toHaveBeenCalled();
+  });
+
+  it("a drag while armed draws nothing (start/move/end all no-op)", async () => {
+    const { elements } = renderCanvas({ tools: { activeTool: "pen", eyedropperArmed: true } });
+
+    act(() => {
+      mockDrawingCanvasProps.onStrokeStart();
+    });
+    act(() => {
+      mockDrawingCanvasProps.onStrokeMove(POINT);
+    });
+    await act(async () => {
+      await mockDrawingCanvasProps.onStrokeEnd();
+    });
+
+    expect(elements.commitStroke).not.toHaveBeenCalled();
+  });
+
+  it("not armed: a plain pen tap still drops a dot as usual", () => {
+    const { elements } = renderCanvas({ tools: { activeTool: "pen", eyedropperArmed: false } });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.drawDot).toHaveBeenCalledWith(POINT, "#000000", 4, { penStyle: "pen", opacity: 1 });
   });
 });
 

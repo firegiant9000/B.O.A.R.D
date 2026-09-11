@@ -20,7 +20,7 @@ import path from "path";
 import React from "react";
 import { render, fireEvent, waitFor } from "@testing-library/react-native";
 import { Linking } from "react-native";
-import type { QuotaResource } from "../../services/quotaService";
+import type { UpsellResource } from "../upsellCopy";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../../services/billingService";
 
 // The load-bearing part of this file: two SEPARATE physical modules, not one
@@ -54,7 +54,7 @@ const WebUpsellModal: React.ComponentType<
 const mockStartCheckout = startCheckout as jest.Mock;
 const mockOpenBillingPortal = openBillingPortal as jest.Mock;
 
-const RESOURCES: QuotaResource[] = ["board", "session", "aiSummary", "aiCall"];
+const RESOURCES: UpsellResource[] = ["board", "session", "aiSummary", "aiCall", "customPalette"];
 
 // The store-compliance guard's strongest layer: read every file the native
 // bundle actually pulls in, as SOURCE TEXT, rather than only rendered
@@ -158,6 +158,30 @@ describe("UpsellModal.native.tsx (rendered)", () => {
     );
     expect(getByText(/free plan's limit of 5 boards/i)).toBeTruthy();
   });
+
+  // Month 5 (ROADMAP items 12 + 14) — the custom-palette Pro badge routes
+  // here via `resource="customPalette"`, a value deliberately NOT in
+  // planLimits.ts's mirrored LimitedResource table (see upsellCopy.ts's
+  // UpsellResource header) — these pin that its special-case in
+  // isPlanCapped/limitMessage renders correctly, with no price/link, same as
+  // every other resource this modal covers.
+  it("customPalette on free: still explains it as a Pro feature, no price or link", () => {
+    const { getByText, toJSON } = render(
+      <NativeUpsellModal visible resource="customPalette" plan="free" onDismiss={() => {}} />
+    );
+    expect(getByText(/pro feature/i)).toBeTruthy();
+    const tree = JSON.stringify(toJSON());
+    expect(tree).not.toMatch(/\$\d/);
+    expect(tree).not.toMatch(/https?:\/\//);
+  });
+
+  it("customPalette on pro: shows the transient note, not a paywall — the plan already has it", () => {
+    const { getByText, queryByText } = render(
+      <NativeUpsellModal visible resource="customPalette" plan="pro" onDismiss={() => {}} />
+    );
+    expect(getByText(/sending requests a little fast/i)).toBeTruthy();
+    expect(queryByText(/pro feature/i)).toBeNull();
+  });
 });
 
 describe("UpsellModal.tsx (web, rendered)", () => {
@@ -178,6 +202,20 @@ describe("UpsellModal.tsx (web, rendered)", () => {
       <WebUpsellModal visible resource="board" onDismiss={() => {}} />
     );
     expect(getByText(/5 boards/i)).toBeTruthy();
+  });
+
+  it("customPalette on free: shows the price + upgrade action, same as a real quota resource", () => {
+    const { getByText, queryByText } = render(
+      <WebUpsellModal visible resource="customPalette" plan="free" onDismiss={() => {}} />
+    );
+    expect(getByText(/pro feature/i)).toBeTruthy();
+    expect(getByText(/\$5/)).toBeTruthy();
+    expect(getByText(/upgrade/i)).toBeTruthy();
+    // MAX_WORKSPACE_SWATCHES caps every plan, Pro included — "unlocks
+    // unlimited custom colour swatches" would overstate that (unlockPhrase's
+    // own header explains why this resource gets its own accurate phrase).
+    expect(getByText(/unlocks the custom colour swatch palette/i)).toBeTruthy();
+    expect(queryByText(/unlimited custom colour swatches/i)).toBeNull();
   });
 
   it("on an unlimited (Pro) plan, shows the transient note instead of the paywall — no price, no upgrade action", () => {

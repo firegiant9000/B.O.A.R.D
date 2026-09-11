@@ -57,6 +57,15 @@ export interface Workspace {
   // on the doc for membership queries — it is not surfaced on this type.
   members: Record<string, WorkspaceRole>;
   plan: Plan;
+  // Month 5 (ROADMAP items 12 + 14 — colour + stroke polish / Pro-affordance
+  // badges). Custom hex colours ("#rrggbb") the workspace has saved from the
+  // picker's swatch row, shared by every member. Optional / migration-
+  // tolerant: absent ⇒ [] (no board predates this, but every other workspace
+  // field here treats absence as the pre-feature default, so this follows
+  // suit) — see `workspaceService.ts#addWorkspaceSwatch`. Advisory Pro gate
+  // only (`workspaceService.ts#canUseCustomPalette`); nothing in
+  // firestore.rules restricts who may write this array.
+  swatches?: string[];
   createdAt: Date;
 }
 
@@ -100,6 +109,9 @@ export interface DrawPath {
   boardId: string;
   userId: string;
   points: { x: number; y: number }[];
+  // Plain opaque `#RRGGBB` — never an 8-digit hex embedding alpha. See
+  // `opacity` below for why alpha is a separate field rather than encoded
+  // into this string (src/lib/color.ts's own header explains the split).
   color: string;
   strokeWidth: number;
   tool: "pen" | "eraser";
@@ -110,6 +122,18 @@ export interface DrawPath {
   // Z-order within the paths layer (Phase 8). Optional/migration-tolerant: docs
   // predating it read as 0 and tiebreak on createdAt, preserving draw order.
   z?: number;
+  // Month 5 (ROADMAP item 12 — colour + stroke polish). Which pen variant
+  // drew this stroke; a rendering hint layered on top of `tool: "pen"` and
+  // never set for `tool: "eraser"`. Optional / migration-tolerant: absent ⇒
+  // "pen" (the pre-existing look) — see `src/lib/penStyles.ts`.
+  penStyle?: "pen" | "highlighter" | "marker" | "calligraphy";
+  // Stroke alpha (0-1), independent of `color`. Optional / migration-
+  // tolerant: absent ⇒ the active pen style's own default (1 for pen/marker/
+  // calligraphy, translucent for the highlighter — see
+  // `src/lib/penStyles.ts#DEFAULT_ALPHA_FOR_STYLE`), never a hard 1, so an
+  // old highlighter stroke saved before this field existed still renders
+  // translucent instead of silently turning opaque.
+  opacity?: number;
   createdAt: Date;
 }
 
@@ -125,6 +149,11 @@ export interface SnapshotPath {
   strokeWidth: number;
   tool: "pen" | "eraser";
   bbox?: Bounds;
+  // Mirrors DrawPath.penStyle/opacity (Month 5, ROADMAP item 12) — carried
+  // through a checkpoint so a highlighter/marker/calligraphy stroke doesn't
+  // revert to plain pen rendering once its board compacts into a snapshot.
+  penStyle?: "pen" | "highlighter" | "marker" | "calligraphy";
+  opacity?: number;
   createdAtMs: number;
 }
 

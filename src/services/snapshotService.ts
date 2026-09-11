@@ -37,6 +37,11 @@ function serializePath(p: DrawPath): SnapshotPath {
     // bbox is persisted on every modern write and recomputed on read for legacy
     // docs, so an in-memory path always has one — but stay defensive.
     ...(p.bbox ? { bbox: p.bbox } : {}),
+    // Month 5 (ROADMAP item 12) — carry the pen variant/alpha through a
+    // checkpoint; omitted entirely (not written as `undefined`) for a plain
+    // pen stroke, matching every other optional field's write-time pattern.
+    ...(p.penStyle ? { penStyle: p.penStyle } : {}),
+    ...(p.opacity != null ? { opacity: p.opacity } : {}),
     createdAtMs: p.createdAt.getTime(),
   };
 }
@@ -96,6 +101,8 @@ function snapshotPathToDrawPath(boardId: string, p: SnapshotPath): DrawPath {
     strokeWidth: p.strokeWidth,
     tool: p.tool,
     bbox: p.bbox,
+    penStyle: p.penStyle,
+    opacity: p.opacity,
     createdAt: new Date(p.createdAtMs),
   };
 }
@@ -144,6 +151,8 @@ export async function loadBoardState(
       strokeWidth: data.strokeWidth ?? 5,
       tool: data.tool,
       bbox: data.bbox ?? undefined,
+      penStyle: data.penStyle,
+      opacity: data.opacity,
       createdAt: data.createdAt?.toDate() ?? new Date(),
     });
   });

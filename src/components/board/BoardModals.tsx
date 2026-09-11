@@ -8,11 +8,13 @@ import CommentThreadPanel from "../CommentThreadPanel";
 import StartSessionModal from "../StartSessionModal";
 import DiagramPromptModal from "../DiagramPromptModal";
 import UpsellModal from "../UpsellModal";
+import ColorPickerModal from "../ColorPickerModal";
+import StrokeWidthModal from "../StrokeWidthModal";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
-import type { BoardPresence } from "../../types";
-import type { QuotaResource } from "../../services/quotaService";
+import type { BoardPresence, Plan } from "../../types";
+import type { UpsellResource } from "../upsellCopy";
 
 /**
  * The board's dialog layer (Month 5/6 Task 1 — extracted verbatim from
@@ -20,10 +22,11 @@ import type { QuotaResource } from "../../services/quotaService";
  *
  * Every board-level dialog, in the order the screen declared them: the deep-link
  * join prompt, the share sheet, the activity history, the shortcuts cheat sheet,
- * the background picker, the comment thread panel, the session composer and the
- * diagram prompt. All eight are React Native `<Modal>`s, which render above the
- * parent view hierarchy, so their relative order is what matters — and that is
- * preserved exactly.
+ * the background picker, the comment thread panel, the session composer, the
+ * diagram prompt, and (Month 5, ROADMAP item 12) the colour and stroke-width
+ * pickers. All are React Native `<Modal>`s, which render above the parent view
+ * hierarchy, so their relative order is what matters — and that is preserved
+ * exactly.
  *
  * Visibility stays screen state (the header and the canvas open these), so this
  * component only renders; it holds none of it.
@@ -71,13 +74,43 @@ interface BoardModalsProps {
   /** The plan-limit upsell, driven by whichever create/AI action on this
    *  screen last hit a quota denial (session create, or one of the three AI
    *  affordances via `ai`). Null hides it. */
-  upsellResource: QuotaResource | null;
+  upsellResource: UpsellResource | null;
   onDismissUpsell: () => void;
   /** StartSessionModal caught a quota denial (isQuotaDenial — the server's
    *  own resource-exhausted rejection, or the client-side pre-flight's own
    *  QuotaExceededError, which carries no code): close the session composer
    *  and show the upsell in its place. */
   onSessionQuotaExceeded: () => void;
+
+  // Month 5 — colour + stroke polish (ROADMAP items 12 + 14). Both modals
+  // are opened from a "Colour"/"Width" pill in `Toolbar`/`PenOptionsBar`;
+  // visibility stays screen state, same convention as every other modal here.
+  colorPickerVisible: boolean;
+  onCloseColorPicker: () => void;
+  activeColor: string;
+  activeAlpha: number;
+  onChangeColor: (hex: string, alpha: number) => void;
+  recentColors: string[];
+  /** The board's workspace plan — the advisory Pro gate `ColorPickerModal`
+   *  reads for the swatch-palette badge (see
+   *  `workspaceService.ts#canUseCustomPalette`'s header). */
+  plan: Plan;
+  /** Whether the CALLER may write workspace-doc fields beyond its name (see
+   *  `ColorPickerModal`'s identical prop doc — firestore.rules restricts
+   *  `swatches` writes to workspace owner/admin regardless of plan). */
+  canManageWorkspace: boolean;
+  workspaceSwatches: string[];
+  onAddSwatch: (hex: string) => void;
+  /** A free-plan member tapped the swatch row's "Pro" badge — routes to the
+   *  SAME upsell machinery as the session/AI quota denials above
+   *  (`upsellResource="customPalette"`), rather than a bespoke modal. Mirrors
+   *  `AudioAffordance`'s `onUpgradeRequested`. */
+  onRequestPaletteUpgrade: () => void;
+
+  widthPickerVisible: boolean;
+  onCloseWidthPicker: () => void;
+  activeStrokeWidth: number;
+  onChangeStrokeWidth: (w: number) => void;
 
   /**
    * Month 5 — true while an active, unpaused presenter locks out everyone
@@ -122,6 +155,21 @@ export default function BoardModals({
   upsellResource,
   onDismissUpsell,
   onSessionQuotaExceeded,
+  colorPickerVisible,
+  onCloseColorPicker,
+  activeColor,
+  activeAlpha,
+  onChangeColor,
+  recentColors,
+  plan,
+  canManageWorkspace,
+  workspaceSwatches,
+  onAddSwatch,
+  onRequestPaletteUpgrade,
+  widthPickerVisible,
+  onCloseWidthPicker,
+  activeStrokeWidth,
+  onChangeStrokeWidth,
   presenterLocksContentCreation,
 }: BoardModalsProps) {
   const activeComment = comments.activeComment;
@@ -225,10 +273,35 @@ export default function BoardModals({
         />
       )}
 
+      {/* Month 5 — colour + stroke polish (ROADMAP item 12). Hex/alpha
+          picker, recent colours, and the per-workspace swatch palette
+          (item 14's Pro badge). */}
+      <ColorPickerModal
+        visible={colorPickerVisible}
+        onClose={onCloseColorPicker}
+        color={activeColor}
+        alpha={activeAlpha}
+        onChange={onChangeColor}
+        recentColors={recentColors}
+        plan={plan}
+        canManageWorkspace={canManageWorkspace}
+        workspaceSwatches={workspaceSwatches}
+        onAddSwatch={onAddSwatch}
+        onUpgradeRequested={onRequestPaletteUpgrade}
+      />
+
+      <StrokeWidthModal
+        visible={widthPickerVisible}
+        onClose={onCloseWidthPicker}
+        strokeWidth={activeStrokeWidth}
+        onChange={onChangeStrokeWidth}
+      />
+
       {/* Plan-limit upsell, for session create (above) and the three AI
-          affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback).
-          Rendered only once there's an actual resource to show — no
-          placeholder `resource` fallback paired with a false `visible`. */}
+          affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback),
+          and now the custom-palette Pro badge above. Rendered only once
+          there's an actual resource to show — no placeholder `resource`
+          fallback paired with a false `visible`. */}
       {upsellResource && (
         <UpsellModal
           visible

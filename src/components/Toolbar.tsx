@@ -32,6 +32,14 @@ interface ToolbarProps {
   onToolChange: (tool: Tool) => void;
   onColorChange: (color: string) => void;
   onStrokeWidthChange: (width: number) => void;
+  /** Month 5 (ROADMAP item 12) — opens the full custom colour picker (hex,
+   *  alpha, recents, per-workspace swatches). Additive: the 8 quick dots
+   *  above keep their exact pre-existing behavior via `onColorChange`; this
+   *  is a 9th "more" entry, not a replacement. */
+  onOpenColorPicker: () => void;
+  /** Opens the stroke-width picker's continuous slider — the 6 quick presets
+   *  below keep working via `onStrokeWidthChange` unchanged. */
+  onOpenWidthPicker: () => void;
   /** Insert an image (gallery/camera on native, file dialog on web). Phase 9. */
   onInsertImage: () => void;
   onUndo: () => void;
@@ -52,10 +60,17 @@ const COLORS = [
   "#AF52DE",
 ];
 
+// Month 5 (ROADMAP item 12 — "6 stroke widths, was 3"): S/M/L keep their
+// original values (2/5/10) so `activeStrokeWidth`'s existing default (5,
+// useBoardTools.ts) still lands on a real preset — XS/XL/XXL are new, added
+// at both ends rather than renumbering the three that were already here.
 const STROKE_WIDTHS = [
+  { label: "XS", value: 1 },
   { label: "S", value: 2 },
   { label: "M", value: 5 },
   { label: "L", value: 10 },
+  { label: "XL", value: 16 },
+  { label: "XXL", value: 24 },
 ];
 
 export default function Toolbar({
@@ -68,6 +83,8 @@ export default function Toolbar({
   onToolChange,
   onColorChange,
   onStrokeWidthChange,
+  onOpenColorPicker,
+  onOpenWidthPicker,
   onInsertImage,
   onUndo,
   onRedo,
@@ -197,6 +214,7 @@ export default function Toolbar({
           {COLORS.map((c) => (
             <TouchableOpacity
               key={c}
+              testID={`toolbar-color-${c}`}
               style={[
                 styles.colorDot,
                 { backgroundColor: c },
@@ -205,6 +223,18 @@ export default function Toolbar({
               onPress={() => onColorChange(c)}
             />
           ))}
+          {/* Month 5 (ROADMAP item 12) — opens the full custom picker (hex,
+              alpha, recents, per-workspace swatches); the 8 dots above are
+              unchanged quick access, not replaced by this. */}
+          <TouchableOpacity
+            testID="toolbar-open-color-picker"
+            style={styles.moreBtn}
+            onPress={onOpenColorPicker}
+            accessibilityRole="button"
+            accessibilityLabel="More colours"
+          >
+            <Ionicons name="color-palette-outline" size={18} color="#333" />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.divider} />
@@ -214,6 +244,7 @@ export default function Toolbar({
           {STROKE_WIDTHS.map((sw) => (
             <TouchableOpacity
               key={sw.value}
+              testID={`toolbar-stroke-${sw.value}`}
               style={[
                 styles.strokeBtn,
                 activeStrokeWidth === sw.value && styles.strokeBtnActive,
@@ -234,6 +265,17 @@ export default function Toolbar({
               />
             </TouchableOpacity>
           ))}
+          {/* Opens the continuous-slider picker — the 6 presets above cover
+              the common cases via onStrokeWidthChange unchanged. */}
+          <TouchableOpacity
+            testID="toolbar-open-width-picker"
+            style={styles.moreBtn}
+            onPress={onOpenWidthPicker}
+            accessibilityRole="button"
+            accessibilityLabel="More stroke widths"
+          >
+            <Ionicons name="options-outline" size={18} color="#333" />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.divider} />
@@ -356,5 +398,16 @@ const styles = StyleSheet.create({
   },
   strokePreview: {
     backgroundColor: "#333",
+  },
+  moreBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#D1D1D6",
+    marginLeft: 2,
   },
 });

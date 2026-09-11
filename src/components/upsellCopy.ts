@@ -11,6 +11,24 @@ import type { Plan } from "../types";
 // same way it scans UpsellModal.native.tsx's.
 
 /**
+ * Every subject this modal can explain a denial for. `QuotaResource`
+ * (board/session/aiSummary/aiCall) are the countable quotas mirrored in
+ * `src/lib/planLimits.ts` (itself byte-mirrored against
+ * `functions/src/billing/limits.ts`, guarded by planLimits.test.ts).
+ * `"customPalette"` (Month 5, ROADMAP items 12 + 14) is deliberately NOT one
+ * of those: it's a boolean Pro feature-gate (the per-workspace custom colour
+ * swatch palette — see `workspaceService.ts#canUseCustomPalette`), not a
+ * countable quota, and nothing server-side enforces it at all. Adding it to
+ * `LimitedResource`/`PLAN_LIMITS` instead of here would force a matching
+ * (and equally fictitious) entry into the FUNCTIONS-side table just to keep
+ * that mirror test green — corrupting a real enforcement mirror for a
+ * feature with no server enforcement at all. Handled here instead, as a
+ * sibling type `isPlanCapped`/`limitMessage` special-case before ever
+ * touching `RESOURCE_TO_LIMIT`/`limitFor`.
+ */
+export type UpsellResource = QuotaResource | "customPalette";
+
+/**
  * The one props contract BOTH platform variants implement. `tsc` has no
  * platform-extension resolution of its own — every production import and
  * every test import type-checks against whichever file TypeScript happens to
@@ -25,7 +43,7 @@ import type { Plan } from "../types";
  */
 export interface UpsellModalProps {
   visible: boolean;
-  resource: QuotaResource;
+  resource: UpsellResource;
   onDismiss: () => void;
   /** The workspace's actual plan. Determines whether this resource can even
    *  be plan-capped (see `isPlanCapped` below) — falls back to "free" when
@@ -37,11 +55,12 @@ export interface UpsellModalProps {
   workspaceId?: string;
 }
 
-export const RESOURCE_LABEL: Record<QuotaResource, string> = {
+export const RESOURCE_LABEL: Record<UpsellResource, string> = {
   board: "boards",
   session: "sessions per month",
   aiSummary: "AI calls per month",
   aiCall: "AI calls per month",
+  customPalette: "custom colour swatches",
 };
 
 /**
@@ -55,13 +74,23 @@ export const RESOURCE_LABEL: Record<QuotaResource, string> = {
  * plan cap (`used < Infinity` is always true) — so it must be the throttle.
  * This is what stops a paying customer who briefly sent requests too fast
  * from being shown a paywall for a plan they already have.
+ *
+ * `"customPalette"` special-cases ahead of the `RESOURCE_TO_LIMIT` lookup
+ * (which has no entry for it — see `UpsellResource`'s own header): it's
+ * "capped" on free (there IS a real Pro feature to sell) and never capped on
+ * pro/edu (nothing to upsell to a plan that already has it), the same
+ * free-vs-not shape `canUseCustomPalette` uses.
  */
-export function isPlanCapped(plan: Plan, resource: QuotaResource): boolean {
+export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
+  if (resource === "customPalette") return plan === "free";
   return limitFor(plan, RESOURCE_TO_LIMIT[resource]) !== UNLIMITED;
 }
 
 /** Names the plan's limit for `resource` — only meaningful when `isPlanCapped`. */
-export function limitMessage(resource: QuotaResource, plan: Plan): string {
+export function limitMessage(resource: UpsellResource, plan: Plan): string {
+  if (resource === "customPalette") {
+    return "Custom colour swatches are a Pro feature.";
+  }
   const limit = limitFor(plan, RESOURCE_TO_LIMIT[resource]);
   return `You've reached the ${plan} plan's limit of ${limit} ${RESOURCE_LABEL[resource]}.`;
 }
@@ -70,3 +99,20 @@ export function limitMessage(resource: QuotaResource, plan: Plan): string {
  *  `isPlanCapped`) — a transient request-rate throttle, not a plan limit. */
 export const THROTTLE_MESSAGE =
   "You're sending requests a little fast. Wait a few seconds and try again.";
+
+/**
+ * The web-only "upgrading unlocks ___" line (UpsellModal.tsx, next to the
+ * figure that module imports separately — never named here; see this
+ * file's own header on why nothing in this module may name a cost figure).
+ * For a genuine `QuotaResource`, Pro/Edu really do grant an unlimited allowance
+ * (see `isPlanCapped`'s own header), so "unlimited {label}" is a true claim.
+ * `"customPalette"` is NOT unlimited on Pro — `workspaceService.ts`'s
+ * `MAX_WORKSPACE_SWATCHES` caps the swatch row the same way on every plan;
+ * what Pro actually unlocks is being able to add to it at all. Saying
+ * "unlocks unlimited custom colour swatches" here would overstate that, so
+ * this resource gets its own accurate phrase instead of the generic template.
+ */
+export function unlockPhrase(resource: UpsellResource): string {
+  if (resource === "customPalette") return "the custom colour swatch palette";
+  return `unlimited ${RESOURCE_LABEL[resource]}`;
+}

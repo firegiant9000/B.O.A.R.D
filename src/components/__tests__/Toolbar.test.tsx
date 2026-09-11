@@ -21,6 +21,8 @@ const baseProps = {
   isAdmin: false,
   onColorChange: jest.fn(),
   onStrokeWidthChange: jest.fn(),
+  onOpenColorPicker: jest.fn(),
+  onOpenWidthPicker: jest.fn(),
   onInsertImage: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
@@ -46,5 +48,44 @@ describe("Toolbar — laser pointer touch entry point (Month 5, fix round 1)", (
     fireEvent.press(screen.getByText("locate-outline"));
 
     expect(onToolChange).toHaveBeenCalledWith("laser");
+  });
+});
+
+describe("Toolbar — colour + stroke polish (Month 5, ROADMAP item 12)", () => {
+  it("offers 6 stroke-width presets (was 3), keeping the original S/M/L values (2/5/10) reachable", () => {
+    const onStrokeWidthChange = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onStrokeWidthChange={onStrokeWidthChange} />
+    );
+    for (const value of [1, 2, 5, 10, 16, 24]) {
+      expect(screen.getByTestId(`toolbar-stroke-${value}`)).toBeTruthy();
+    }
+    fireEvent.press(screen.getByTestId("toolbar-stroke-16"));
+    expect(onStrokeWidthChange).toHaveBeenCalledWith(16);
+  });
+
+  it("the 'more' stroke-width button opens the continuous-slider picker without changing the width itself", () => {
+    const onStrokeWidthChange = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onStrokeWidthChange={onStrokeWidthChange} />
+    );
+    fireEvent.press(screen.getByLabelText("More stroke widths"));
+    expect(baseProps.onOpenWidthPicker).toHaveBeenCalledTimes(1);
+    expect(onStrokeWidthChange).not.toHaveBeenCalled();
+  });
+
+  it("the 8 quick colour dots still call onColorChange unchanged", () => {
+    const onColorChange = jest.fn();
+    render(<Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onColorChange={onColorChange} />);
+    fireEvent.press(screen.getByTestId("toolbar-color-#FF3B30"));
+    expect(onColorChange).toHaveBeenCalledWith("#FF3B30");
+  });
+
+  it("the 'more' colour button opens the custom picker without changing the active colour itself", () => {
+    const onColorChange = jest.fn();
+    render(<Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onColorChange={onColorChange} />);
+    fireEvent.press(screen.getByLabelText("More colours"));
+    expect(baseProps.onOpenColorPicker).toHaveBeenCalledTimes(1);
+    expect(onColorChange).not.toHaveBeenCalled();
   });
 });

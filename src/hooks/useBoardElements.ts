@@ -224,6 +224,13 @@ export interface ElementHit {
   kind: ElementKind;
 }
 
+/** Month 5 (ROADMAP item 12) — the pen-variant/alpha pair `commitStroke`/
+ *  `drawDot` accept, mirroring `DrawPath.penStyle`/`opacity`. */
+export interface PenStrokeStyle {
+  penStyle?: DrawPath["penStyle"];
+  opacity?: number;
+}
+
 /** Live group-gesture preview: a resize about an anchor, or a rotation about a pivot. */
 export type TransformPreview =
   | { mode: "resize"; anchor: Point; sx: number; sy: number; bounds: Bounds }
@@ -312,6 +319,17 @@ export interface BoardElements {
   boxOfElement: (elId: string, kind?: string) => Bounds | null;
   /** Topmost element under a board-space point, across all kinds. */
   hitTestAny: (point: Point) => ElementHit | null;
+  /**
+   * Month 5 (ROADMAP item 12 — eyedropper). The sampleable colour of an
+   * already-hit element (from `hitTestAny`/`ElementHit`), or `null` for a
+   * kind that carries no single colour (an image) or an id no longer in the
+   * visible set. Deliberately NOT a second hit-test: this only resolves a
+   * colour for an element `hitTestAny` already found, so the eyedropper
+   * reuses the exact same picking path as tap-to-select instead of adding a
+   * new one — see `src/lib/hitTest.ts`'s header and `BoardCanvas.tsx`'s
+   * eyedropper wiring.
+   */
+  colorOfElement: (elId: string, kind: ElementHit["kind"]) => string | null;
   /** Bounding boxes of the on-screen shapes, for the shape tool's smart guides. */
   shapeGuideTargets: () => Bounds[];
   /** Ids of the selected stroke paths (the OCR cache key). */
@@ -331,10 +349,18 @@ export interface BoardElements {
   endTransform: () => Promise<void>;
 
   // --- Strokes ---
-  /** Persist a finished freehand stroke; resolves to its id, or null on failure. */
-  commitStroke: (points: Point[], color: string, strokeWidth: number) => Promise<string | null>;
+  /** Persist a finished freehand stroke; resolves to its id, or null on failure.
+   *  `style` is the Month 5 pen-variant/alpha pair (ROADMAP item 12) — omitted
+   *  entirely (not written as `undefined`/defaults) when the variant is plain
+   *  "pen" at full opacity, so an ordinary stroke's doc shape is unchanged. */
+  commitStroke: (
+    points: Point[],
+    color: string,
+    strokeWidth: number,
+    style?: PenStrokeStyle
+  ) => Promise<string | null>;
   /** Persist a single-point dot (a stationary pen tap). */
-  drawDot: (point: Point, color: string, strokeWidth: number) => Promise<void>;
+  drawDot: (point: Point, color: string, strokeWidth: number, style?: PenStrokeStyle) => Promise<void>;
   /** Swap a freehand stroke for the clean primitive the classifier recognized. */
   replaceStrokeWithShape: (
     pathId: string,
@@ -915,6 +941,18 @@ export function useBoardElements(
     return null;
   };
 
+  // Month 5 (ROADMAP item 12 — eyedropper). Resolves the colour of a kind/id
+  // pair `hitTestAny` already found; an image (no single sampleable colour)
+  // or an id no longer present both resolve to null, which the caller (the
+  // eyedropper) treats as "nothing to sample" rather than clearing the
+  // active colour.
+  const colorOfElement = (elId: string, kind: ElementHit["kind"]): string | null => {
+    if (kind === "path") return visiblePaths.find((p) => p.id === elId)?.color ?? null;
+    if (kind === "shape") return visibleShapes.find((s) => s.id === elId)?.stroke ?? null;
+    if (kind === "text") return visibleTextElements.find((el) => el.id === elId)?.color ?? null;
+    return null;
+  };
+
   // Tap in select mode: hit-test the topmost element. Shift toggles it in/out of
   // the selection; a plain tap replaces the selection (or clears on empty).
   const selectAtPoint = (point: Point, additive: boolean) => {
@@ -1335,10 +1373,20 @@ export function useBoardElements(
 
   // RDP-simplify in board-space before the write: fewer points = smaller doc,
   // cheaper sync, and lighter render — without a visible change to the stroke.
+  // Month 5 (ROADMAP item 12) — only persist `penStyle`/`opacity` when they
+  // diverge from the plain-pen default, so an ordinary stroke's doc shape is
+  // byte-for-byte what it was before this task (and Firestore never sees an
+  // `undefined` field value, which it rejects outright).
+  const penStyleFields = (style?: PenStrokeStyle): Partial<Pick<DrawPath, "penStyle" | "opacity">> => ({
+    ...(style?.penStyle && style.penStyle !== "pen" ? { penStyle: style.penStyle } : {}),
+    ...(style?.opacity != null && style.opacity < 1 ? { opacity: style.opacity } : {}),
+  });
+
   const commitStroke = async (
     points: Point[],
     color: string,
-    strokeWidth: number
+    strokeWidth: number,
+    style?: PenStrokeStyle
   ): Promise<string | null> => {
     const simplified = rdpSimplify(points, RDP_TOLERANCE);
 
@@ -1349,6 +1397,7 @@ export function useBoardElements(
       color,
       strokeWidth,
       tool: "pen",
+      ...penStyleFields(style),
     };
 
     try {
@@ -1362,7 +1411,7 @@ export function useBoardElements(
     }
   };
 
-  const drawDot = async (point: Point, color: string, strokeWidth: number) => {
+  const drawDot = async (point: Point, color: string, strokeWidth: number, style?: PenStrokeStyle) => {
     const dot: Omit<DrawPath, "id" | "createdAt"> = {
       boardId,
       userId: authorId,
@@ -1370,6 +1419,7 @@ export function useBoardElements(
       color,
       strokeWidth,
       tool: "pen",
+      ...penStyleFields(style),
     };
     try {
       await pathService.savePath(boardId, dot);
@@ -2227,6 +2277,7 @@ export function useBoardElements(
     contentBounds,
     boxOfElement,
     hitTestAny,
+    colorOfElement,
     shapeGuideTargets,
     selectedPathIds,
     selectionText,

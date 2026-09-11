@@ -226,3 +226,42 @@ describe("addMemberByEmail", () => {
     ).rejects.toThrow("Workspace not found");
   });
 });
+
+describe("getWorkspace — swatches default", () => {
+  it("maps a missing swatches field to an empty array (migration-tolerant)", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { ownerId: "o1" }));
+    const ws = await workspaceService.getWorkspace("ws-1");
+    expect(ws?.swatches).toEqual([]);
+  });
+
+  it("passes an existing swatches array through", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { ownerId: "o1", swatches: ["#3366ff"] }));
+    const ws = await workspaceService.getWorkspace("ws-1");
+    expect(ws?.swatches).toEqual(["#3366ff"]);
+  });
+});
+
+describe("addWorkspaceSwatch / removeWorkspaceSwatch", () => {
+  it("unions the hex into the swatches array", async () => {
+    await workspaceService.addWorkspaceSwatch("ws-1", "#3366ff");
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.swatches).toEqual({ __type: "arrayUnion", values: ["#3366ff"] });
+  });
+
+  it("removes the hex from the swatches array", async () => {
+    await workspaceService.removeWorkspaceSwatch("ws-1", "#3366ff");
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.swatches).toEqual({ __type: "arrayRemove", values: ["#3366ff"] });
+  });
+});
+
+describe("canUseCustomPalette — advisory Pro gate (mirrors canRecordVoiceNotes)", () => {
+  it("is false for the free plan", () => {
+    expect(workspaceService.canUseCustomPalette("free")).toBe(false);
+  });
+
+  it("is true for pro and edu", () => {
+    expect(workspaceService.canUseCustomPalette("pro")).toBe(true);
+    expect(workspaceService.canUseCustomPalette("edu")).toBe(true);
+  });
+});

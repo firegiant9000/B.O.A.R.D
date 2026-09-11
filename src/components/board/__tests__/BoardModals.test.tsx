@@ -9,6 +9,23 @@ jest.mock("../../BackgroundPicker", () => ({ __esModule: true, default: () => nu
 jest.mock("../../CommentThreadPanel", () => ({ __esModule: true, default: () => null }));
 jest.mock("../../StartSessionModal", () => ({ __esModule: true, default: () => null }));
 jest.mock("../../UpsellModal", () => ({ __esModule: true, default: () => null }));
+let mockColorPickerProps: any = null;
+jest.mock("../../ColorPickerModal", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockColorPickerProps = props;
+    return null;
+  },
+}));
+
+let mockStrokeWidthProps: any = null;
+jest.mock("../../StrokeWidthModal", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockStrokeWidthProps = props;
+    return null;
+  },
+}));
 
 let mockDiagramPromptProps: any = null;
 jest.mock("../../DiagramPromptModal", () => ({
@@ -115,11 +132,18 @@ function makeAi(overrides: Partial<BoardAI> = {}): BoardAI {
 function renderModals(opts: {
   presenterLocksContentCreation: boolean;
   ai?: Partial<BoardAI>;
+  plan?: "free" | "pro" | "edu";
+  canManageWorkspace?: boolean;
+  workspaceSwatches?: string[];
+  onAddSwatch?: jest.Mock;
+  onRequestPaletteUpgrade?: jest.Mock;
 }) {
   const doc = makeDoc();
   const comments = makeComments();
   // The diagram prompt is already open — the exact scenario under test.
   const ai = makeAi({ diagramEnabled: true, diagramOpen: true, ...opts.ai });
+  const onAddSwatch = opts.onAddSwatch ?? jest.fn();
+  const onRequestPaletteUpgrade = opts.onRequestPaletteUpgrade ?? jest.fn();
 
   render(
     <BoardModals
@@ -147,15 +171,32 @@ function renderModals(opts: {
       upsellResource={null}
       onDismissUpsell={jest.fn()}
       onSessionQuotaExceeded={jest.fn()}
+      colorPickerVisible={false}
+      onCloseColorPicker={jest.fn()}
+      activeColor="#000000"
+      activeAlpha={1}
+      onChangeColor={jest.fn()}
+      recentColors={[]}
+      plan={opts.plan ?? "free"}
+      canManageWorkspace={opts.canManageWorkspace ?? true}
+      workspaceSwatches={opts.workspaceSwatches ?? []}
+      onAddSwatch={onAddSwatch}
+      onRequestPaletteUpgrade={onRequestPaletteUpgrade}
+      widthPickerVisible={false}
+      onCloseWidthPicker={jest.fn()}
+      activeStrokeWidth={5}
+      onChangeStrokeWidth={jest.fn()}
       presenterLocksContentCreation={opts.presenterLocksContentCreation}
     />
   );
 
-  return { doc, comments, ai };
+  return { doc, comments, ai, onAddSwatch, onRequestPaletteUpgrade };
 }
 
 beforeEach(() => {
   mockDiagramPromptProps = null;
+  mockColorPickerProps = null;
+  mockStrokeWidthProps = null;
 });
 
 describe("BoardModals — diagram-generate gate while presenting", () => {
@@ -179,5 +220,39 @@ describe("BoardModals — diagram-generate gate while presenting", () => {
     const { ai } = renderModals({ presenterLocksContentCreation: false });
 
     expect(mockDiagramPromptProps.onGenerate).toBe(ai.generateDiagram);
+  });
+});
+
+describe("BoardModals — colour + stroke polish wiring (Month 5, ROADMAP items 12 + 14)", () => {
+  it("passes the workspace plan and swatches straight through to ColorPickerModal", () => {
+    renderModals({
+      presenterLocksContentCreation: false,
+      plan: "pro",
+      workspaceSwatches: ["#3366ff"],
+    });
+
+    expect(mockColorPickerProps.plan).toBe("pro");
+    expect(mockColorPickerProps.workspaceSwatches).toEqual(["#3366ff"]);
+  });
+
+  it("ColorPickerModal's onAddSwatch is the caller-supplied handler, not re-derived here", () => {
+    const onAddSwatch = jest.fn();
+    renderModals({ presenterLocksContentCreation: false, onAddSwatch });
+
+    mockColorPickerProps.onAddSwatch("#abcdef");
+    expect(onAddSwatch).toHaveBeenCalledWith("#abcdef");
+  });
+
+  it("ColorPickerModal's onUpgradeRequested is wired to onRequestPaletteUpgrade — the same upsell path as session/AI quota denials", () => {
+    const onRequestPaletteUpgrade = jest.fn();
+    renderModals({ presenterLocksContentCreation: false, onRequestPaletteUpgrade });
+
+    mockColorPickerProps.onUpgradeRequested();
+    expect(onRequestPaletteUpgrade).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the active stroke width straight through to StrokeWidthModal", () => {
+    renderModals({ presenterLocksContentCreation: false });
+    expect(mockStrokeWidthProps.strokeWidth).toBe(5);
   });
 });

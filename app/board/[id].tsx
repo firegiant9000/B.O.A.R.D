@@ -31,7 +31,8 @@ import { useBoardComments } from "../../src/hooks/useBoardComments";
 import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
-import type { QuotaResource } from "../../src/services/quotaService";
+import * as workspaceService from "../../src/services/workspaceService";
+import type { UpsellResource } from "../../src/components/upsellCopy";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
 
@@ -78,6 +79,11 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
   // by it, and the presence bar / cursor layer read it too.
   const [blockedIds, setBlockedIds] = useState<string[]>([]);
 
+  // Month 5 (ROADMAP items 12 + 14) — the workspace's custom swatch palette,
+  // mirrored from `doc.boardWorkspace` and optimistically appended to by
+  // `handleAddSwatch` below (see that effect's own comment for why).
+  const [workspaceSwatches, setWorkspaceSwatches] = useState<string[]>([]);
+
   // Inline text-edit lifecycle. Screen state because the element model, the
   // shortcut suppression and the culling window all key off it.
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
@@ -95,9 +101,13 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
   const [shareBoardModalVisible, setShareBoardModalVisible] = useState(false);
   const [historyVisible, setHistoryVisible] = useState(false);
   const [bgPickerVisible, setBgPickerVisible] = useState(false);
+  // Month 5 (ROADMAP item 12) — the custom colour picker and stroke-width
+  // picker, opened from Toolbar/PenOptionsBar's "Colour"/"Width" pills.
+  const [colorPickerVisible, setColorPickerVisible] = useState(false);
+  const [widthPickerVisible, setWidthPickerVisible] = useState(false);
   // The plan-limit upsell shown instead of a generic error when session
   // create or an AI affordance is denied for being over its cap.
-  const [upsellResource, setUpsellResource] = useState<QuotaResource | null>(null);
+  const [upsellResource, setUpsellResource] = useState<UpsellResource | null>(null);
 
   // Ref to the underlying SVG element on web, for canvas snapshot capture
   const canvasSvgRef = useRef<any>(null);
@@ -321,10 +331,40 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tools.activeTool, elements.selection.clear]);
 
+  // Month 5 (ROADMAP item 12) — mirror the workspace's swatch palette into
+  // local state whenever the workspace (re)loads, same optimistic-update
+  // shape as `handleBlockUser` below: `doc.boardWorkspace` is a one-time
+  // fetch (useBoardDocument.ts), not a live subscription, so a swatch this
+  // viewer just added has to be reflected here directly rather than waiting
+  // on a refetch that will never come on its own.
+  useEffect(() => {
+    setWorkspaceSwatches(doc.boardWorkspace?.swatches ?? []);
+  }, [doc.boardWorkspace]);
+
   // --- Actions that span hooks ---
 
   const handleBlockUser = (userId: string) => {
     setBlockedIds((prev) => [...prev, userId]);
+  };
+
+  // Month 5 (ROADMAP items 12 + 14) — optimistic add, then a fire-and-forget
+  // persist (mirrors `handleBlockUser`'s own local-first shape). Both gates
+  // (plan via `canUseCustomPalette`, workspace role via `canManageWorkspace`
+  // below — firestore.rules' `workspaces/{id}` update rule restricts
+  // `swatches` to owner/admin regardless of plan) live in `ColorPickerModal`;
+  // by the time this runs the caller has already decided the write is
+  // allowed, so a real permission-denied here (a role changed mid-session,
+  // say) still only reaches `captureException`, not the user — the local
+  // optimistic add would then silently revert on the next
+  // `doc.boardWorkspace` refresh, which is an acceptable failure mode for a
+  // rare race, not a user-facing error path worth building here.
+  const handleAddSwatch = (hex: string) => {
+    setWorkspaceSwatches((prev) => (prev.includes(hex) ? prev : [...prev, hex]));
+    const workspaceId = doc.board?.workspaceId;
+    if (!workspaceId) return;
+    workspaceService
+      .addWorkspaceSwatch(workspaceId, hex)
+      .catch((e) => captureException(e, { op: "board.addWorkspaceSwatch" }));
   };
 
   const handleDeleteSelected = async () => {
@@ -516,13 +556,27 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           onCycleSnap={tools.cycleSnap}
           arrowheadEnd={tools.shapeArrowheadEnd}
           onCycleArrowhead={tools.cycleArrowhead}
+          eyedropperArmed={tools.eyedropperArmed}
+          onToggleEyedropper={tools.toggleEyedropper}
         />
       )}
 
-      {/* Contextual pen options (Phase 9) — auto-perfect toggle, only while the
-          pen tool is active and the viewer can edit. Hidden in embed mode. */}
+      {/* Contextual pen options (Phase 9; Month 5 — ROADMAP item 12 added
+          the variant/colour/width/eyedropper pills) — only while the pen
+          tool is active and the viewer can edit. Hidden in embed mode. */}
       {tools.activeTool === "pen" && doc.canEdit && !collab.presenterLocksContentCreation && !embedMode && (
-        <PenOptionsBar mode={tools.shapeRecMode} onCycleMode={tools.cycleShapeRecMode} />
+        <PenOptionsBar
+          mode={tools.shapeRecMode}
+          onCycleMode={tools.cycleShapeRecMode}
+          activePenStyle={tools.activePenStyle}
+          onSelectPenStyle={tools.setActivePenStyle}
+          activeColor={tools.activeColor}
+          onOpenColorPicker={() => setColorPickerVisible(true)}
+          activeStrokeWidth={tools.activeStrokeWidth}
+          onOpenWidthPicker={() => setWidthPickerVisible(true)}
+          eyedropperArmed={tools.eyedropperArmed}
+          onToggleEyedropper={tools.toggleEyedropper}
+        />
       )}
 
       {/* Toolbar — hidden in embed mode (read-only viewer has no editing tools). */}
@@ -543,6 +597,8 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
             tools.setActiveStrokeWidth(w);
             elements.applyStrokeWidth(w);
           }}
+          onOpenColorPicker={() => setColorPickerVisible(true)}
+          onOpenWidthPicker={() => setWidthPickerVisible(true)}
           onInsertImage={elements.insertImage}
           onUndo={elements.undo}
           onRedo={elements.redo}
@@ -580,6 +636,30 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
         onSessionQuotaExceeded={() => {
           setSessionModalVisible(false);
           setUpsellResource("session");
+        }}
+        colorPickerVisible={colorPickerVisible}
+        onCloseColorPicker={() => setColorPickerVisible(false)}
+        activeColor={tools.activeColor}
+        activeAlpha={tools.activeAlpha}
+        onChangeColor={(hex, alpha) => {
+          tools.chooseColor(hex);
+          tools.setActiveAlpha(alpha);
+          elements.applyColor(hex);
+        }}
+        recentColors={tools.recentColors}
+        plan={doc.boardWorkspace?.plan ?? "free"}
+        canManageWorkspace={workspaceService.canManageMembers(
+          doc.boardWorkspace ? workspaceService.getWorkspaceRole(doc.boardWorkspace, user?.uid ?? "") : undefined
+        )}
+        workspaceSwatches={workspaceSwatches}
+        onAddSwatch={handleAddSwatch}
+        onRequestPaletteUpgrade={() => setUpsellResource("customPalette")}
+        widthPickerVisible={widthPickerVisible}
+        onCloseWidthPicker={() => setWidthPickerVisible(false)}
+        activeStrokeWidth={tools.activeStrokeWidth}
+        onChangeStrokeWidth={(w) => {
+          tools.setActiveStrokeWidth(w);
+          elements.applyStrokeWidth(w);
         }}
         presenterLocksContentCreation={collab.presenterLocksContentCreation}
       />

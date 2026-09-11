@@ -28,6 +28,7 @@ function mapWorkspace(id: string, data: Record<string, any>): Workspace {
     ownerId: data.ownerId ?? "",
     members: data.members ?? {},
     plan: data.plan ?? "free",
+    swatches: data.swatches ?? [],
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
 }
@@ -174,4 +175,58 @@ export async function addMemberByEmail(
     memberIds: arrayUnion(uid),
   });
   return { result: "added", uid };
+}
+
+// ── custom swatch palette (Month 5, ROADMAP items 12 + 14) ─────────────────
+
+/** Upper bound on how many swatches `ColorPickerModal` lets a member add —
+ *  enforced only by disabling the "add" control client-side once a
+ *  workspace's `swatches` array reaches this length; `addWorkspaceSwatch`
+ *  itself does not check it (see that function's own comment). */
+export const MAX_WORKSPACE_SWATCHES = 24;
+
+/** Adds `hex` to the workspace's shared swatch row (deduped via `arrayUnion`
+ *  — Firestore treats the field as a set on write). Advisory Pro gate only:
+ *  see `canUseCustomPalette` below for what that means and does not mean.
+ *  Does not itself enforce `MAX_WORKSPACE_SWATCHES` — a caller past the cap
+ *  would still succeed here; `ColorPickerModal` is what stops offering the
+ *  control once the workspace's current `swatches.length` reaches it. */
+export async function addWorkspaceSwatch(workspaceId: string, hex: string): Promise<void> {
+  await updateDoc(doc(db, "workspaces", workspaceId), {
+    swatches: arrayUnion(hex),
+  });
+}
+
+export async function removeWorkspaceSwatch(workspaceId: string, hex: string): Promise<void> {
+  await updateDoc(doc(db, "workspaces", workspaceId), {
+    swatches: arrayRemove(hex),
+  });
+}
+
+// ── advisory Pro entitlement check ──────────────────────────────────────────
+// ⚠️ ADVISORY ONLY — NOT AN ENFORCEMENT POINT. See quotaService.ts's module
+// header for the full rationale behind that framing; this is the same thing
+// for a boolean feature-gate instead of a countable quota — mirrors
+// audioService.ts#canRecordVoiceNotes exactly, for a different Pro
+// affordance (ROADMAP item 14's "custom palette" badge instead of item 9's
+// voice notes).
+//
+// The per-workspace custom swatch palette is billed as a Pro-tier feature
+// (ROADMAP item 12 / item 14). Nothing server-side enforces that today:
+// firestore.rules' Month 5 workspace `update` rule denies a client touching
+// `plan`, but has no predicate on `swatches` at all — any workspace member
+// with write access to the doc can call `addWorkspaceSwatch` /
+// `removeWorkspaceSwatch` on a free-plan workspace right now, the same way a
+// patched bundle or a raw SDK `updateDoc` call bypassing this module entirely
+// could. This function exists solely so `ColorPickerModal` can show a "Pro"
+// badge and route a free user to the upsell instead of silently accepting
+// the write; it denies nothing a server would enforce.
+//
+// Closing this gap needs the same kind of change quotaService.ts's header
+// describes for boards/sessions: a rules predicate on `plan` (or a
+// callable). That is tracked separately (owned by a later task that already
+// touches firestore.rules) — do not add a plan predicate to firestore.rules
+// here, and do not treat this function as enforcement anywhere it's called.
+export function canUseCustomPalette(plan: Plan): boolean {
+  return plan !== "free";
 }

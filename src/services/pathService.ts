@@ -75,6 +75,8 @@ export async function getBoardPaths(boardId: string): Promise<DrawPath[]> {
         // can treat every stroke uniformly.
         bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
         z: data.z,
+        penStyle: data.penStyle,
+        opacity: data.opacity,
         createdAt: data.createdAt?.toDate() ?? new Date(),
       };
     })
@@ -317,6 +319,8 @@ export function subscribeToBoardPaths(
           // can treat every stroke uniformly.
           bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
           z: data.z,
+          penStyle: data.penStyle,
+          opacity: data.opacity,
           createdAt: data.createdAt?.toDate() ?? new Date(),
         };
       })

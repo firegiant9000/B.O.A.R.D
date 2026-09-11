@@ -21,6 +21,7 @@ import type { RecognizedShape } from "../lib/shapeRecognition";
 import * as shapeRecognitionService from "../services/shapeRecognitionService";
 import { captureException } from "../lib/errorReporting";
 import { useShortcuts } from "./useShortcuts";
+import { PenStyle, DEFAULT_ALPHA_FOR_STYLE } from "../lib/penStyles";
 
 /**
  * The board's tool state (Month 5/6 Task 1 — extracted verbatim from
@@ -45,6 +46,14 @@ export type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "co
 
 const ARROWHEAD_CYCLE: ArrowheadStyle[] = ["classic", "dot", "circle", "open", "none"];
 const SNAP_CYCLE = [0, ...GRID_SIZES];
+
+// Month 5 (ROADMAP item 12) — how many recently-used colours the picker's
+// "recent" row keeps. Session-scoped only (plain `useState`, not persisted
+// anywhere): a scoping choice for this pass, not an oversight — the
+// per-workspace swatch row (workspaceService.ts) is the durable, shared
+// palette; this row is a per-session convenience for "the last few colours
+// I actually used," which resetting on reload is fine for.
+const MAX_RECENT_COLORS = 8;
 
 /** The "ask"-mode auto-perfect candidate: a just-saved stroke and its clean twin. */
 export interface PerfectCandidate {
@@ -76,6 +85,33 @@ export interface BoardTools {
   setActiveColor: (color: string) => void;
   activeStrokeWidth: number;
   setActiveStrokeWidth: (w: number) => void;
+
+  // Colour + stroke polish (Month 5, ROADMAP item 12)
+  /** Stroke alpha (0-1) for new pen strokes — see `DrawPath.opacity`. */
+  activeAlpha: number;
+  setActiveAlpha: (a: number) => void;
+  /** The active pen variant. Changing it also resets `activeAlpha` to that
+   *  variant's own default (see `chooseColor`'s sibling doc below) so
+   *  switching to the highlighter is translucent immediately, not only after
+   *  a user finds the alpha slider themselves. */
+  activePenStyle: PenStyle;
+  setActivePenStyle: (style: PenStyle) => void;
+  /** Sets the active colour AND records it on the recent-colours row
+   *  (deduped, newest-first, capped) — the one entry point every colour
+   *  choice (hex input, workspace swatch tap, eyedropper sample) should go
+   *  through instead of calling `setActiveColor` + hand-rolling the recents
+   *  list at each call site. */
+  chooseColor: (hex: string) => void;
+  recentColors: string[];
+  /** True while the eyedropper is armed: the *next* canvas tap samples a
+   *  colour instead of acting on the current tool (see `BoardCanvas.tsx`'s
+   *  `handleCanvasTap`/`handleStrokeStart`), then auto-disarms either way. */
+  eyedropperArmed: boolean;
+  armEyedropper: () => void;
+  disarmEyedropper: () => void;
+  /** What the eyedropper's own toolbar button toggles — arms it if idle,
+   *  disarms it if already armed (a second tap cancels picking). */
+  toggleEyedropper: () => void;
 
   // Shape tool (Phase 7)
   activeShapeKind: ShapeKind;
@@ -125,6 +161,26 @@ export function useBoardTools(opts: BoardToolsOptions): BoardTools {
   const [activeTool, setActiveTool] = useState<Tool>("pen");
   const [activeColor, setActiveColor] = useState("#000000");
   const [activeStrokeWidth, setActiveStrokeWidth] = useState(5);
+
+  // Colour + stroke polish (Month 5, ROADMAP item 12)
+  const [activeAlpha, setActiveAlpha] = useState(1);
+  const [activePenStyle, setActivePenStyleRaw] = useState<PenStyle>("pen");
+  const [recentColors, setRecentColors] = useState<string[]>([]);
+  const [eyedropperArmed, setEyedropperArmed] = useState(false);
+
+  const setActivePenStyle = useCallback((style: PenStyle) => {
+    setActivePenStyleRaw(style);
+    setActiveAlpha(DEFAULT_ALPHA_FOR_STYLE[style]);
+  }, []);
+
+  const chooseColor = useCallback((hex: string) => {
+    setActiveColor(hex);
+    setRecentColors((prev) => [hex, ...prev.filter((c) => c !== hex)].slice(0, MAX_RECENT_COLORS));
+  }, []);
+
+  const armEyedropper = useCallback(() => setEyedropperArmed(true), []);
+  const disarmEyedropper = useCallback(() => setEyedropperArmed(false), []);
+  const toggleEyedropper = useCallback(() => setEyedropperArmed((v) => !v), []);
 
   // Shape tool state (Phase 7)
   const [shapeDraft, setShapeDraft] = useState<ShapeDraft | null>(null);
@@ -329,6 +385,17 @@ export function useBoardTools(opts: BoardToolsOptions): BoardTools {
     setActiveColor,
     activeStrokeWidth,
     setActiveStrokeWidth,
+
+    activeAlpha,
+    setActiveAlpha,
+    activePenStyle,
+    setActivePenStyle,
+    chooseColor,
+    recentColors,
+    eyedropperArmed,
+    armEyedropper,
+    disarmEyedropper,
+    toggleEyedropper,
 
     activeShapeKind,
     setActiveShapeKind,

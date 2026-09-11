@@ -206,6 +206,10 @@ export default function BoardCanvas({
 
   const handleStrokeStart = () => {
     if (tools.activeTool === "select") { elements.beginSelectGesture(); return; }
+    // Month 5 (ROADMAP item 12 — eyedropper). Armed picking consumes only a
+    // stationary tap (below, in handleCanvasTap); a drag while armed draws
+    // nothing rather than starting a stroke the user didn't mean to make.
+    if (tools.eyedropperArmed) return;
     if (presenterLocksContentCreation) return;
     if (tools.activeTool === "shape") { tools.beginShapeDraft(); return; }
     if (!isDrawingTool) return;
@@ -219,6 +223,9 @@ export default function BoardCanvas({
       elements.moveSelectGesture(point, isShiftHeld());
       return;
     }
+    // Eyedropper armed: mirrors handleStrokeStart's own early return — a
+    // drag never accumulates stroke points while picking is armed.
+    if (tools.eyedropperArmed) return;
     // Month 5 — DrawingCanvas fires move/end for a gesture regardless of what
     // onStrokeStart did (it has no way to signal "ignore the rest of this
     // gesture"), so the lock has to be re-checked here too: without this,
@@ -244,6 +251,12 @@ export default function BoardCanvas({
   const handleStrokeEnd = async () => {
     if (tools.activeTool === "select") {
       await elements.endSelectGesture();
+      return;
+    }
+    // Eyedropper armed: same early return as handleStrokeStart/handleStrokeMove
+    // — nothing accumulated while armed, so there's nothing here to commit.
+    if (tools.eyedropperArmed) {
+      setCurrentPoints(null);
       return;
     }
     // Month 5 — same reasoning as the guard in handleStrokeMove: this is the
@@ -282,7 +295,10 @@ export default function BoardCanvas({
     const recognized = tools.shapeRecMode !== "never" ? recognizeShape(currentPoints) : null;
     const recColor = tools.activeColor;
     const recWidth = tools.activeStrokeWidth;
-    const pathId = await elements.commitStroke(currentPoints, recColor, recWidth);
+    const pathId = await elements.commitStroke(currentPoints, recColor, recWidth, {
+      penStyle: tools.activePenStyle,
+      opacity: tools.activeAlpha,
+    });
     if (pathId && recognized) {
       if (tools.shapeRecMode === "always") {
         await elements.replaceStrokeWithShape(pathId, recognized, recColor, recWidth);
@@ -320,6 +336,22 @@ export default function BoardCanvas({
   // --- Canvas tap (point is board-space) ---
 
   const handleCanvasTap = (point: Point) => {
+    // Month 5 (ROADMAP item 12 — eyedropper). Ahead of every other branch,
+    // same as the follow-mode exit below: while armed, a tap ALWAYS samples
+    // rather than acting on whatever tool happens to be active (so arming it
+    // while the pen/shape/text tool is selected can't fall through to that
+    // tool's own tap behavior). `hitTestAny` is the exact same hit-test
+    // `selectAtPoint`/`anchorCommentAt` use — see `colorOfElement`'s own doc
+    // for why this isn't a second picking path. A miss (empty canvas, or an
+    // image with no single sampleable colour) just disarms without changing
+    // the active colour, so the user can tell the tap registered.
+    if (tools.eyedropperArmed) {
+      const hit = elements.hitTestAny(point);
+      const sampled = hit ? elements.colorOfElement(hit.id, hit.kind) : null;
+      if (sampled) tools.chooseColor(sampled);
+      tools.disarmEyedropper();
+      return;
+    }
     // Phase 7: a tap while following hands control back to the follower and does
     // nothing else (the tap is consumed by exiting follow mode).
     if (collab.followingId) {
@@ -369,7 +401,10 @@ export default function BoardCanvas({
       return;
     }
     // Pen: a stationary tap drops a single-point dot.
-    elements.drawDot(point, tools.activeColor, tools.activeStrokeWidth);
+    elements.drawDot(point, tools.activeColor, tools.activeStrokeWidth, {
+      penStyle: tools.activePenStyle,
+      opacity: tools.activeAlpha,
+    });
   };
 
   const handleTextSelect = (elementId: string) => {
@@ -463,6 +498,8 @@ export default function BoardCanvas({
         currentPath={currentPoints}
         color={tools.activeColor}
         strokeWidth={tools.activeStrokeWidth}
+        penStyle={tools.activePenStyle}
+        opacity={tools.activeAlpha}
         tool={tools.activeTool === "eraser" ? "eraser" : "pen"}
         viewport={viewport}
         enablePanZoom={enablePanZoom}

@@ -13,7 +13,7 @@ import {
   limitMessage,
   isPlanCapped,
   THROTTLE_MESSAGE,
-  RESOURCE_LABEL,
+  unlockPhrase,
   type UpsellModalProps,
 } from "./upsellCopy";
 import { PENDING_PRO_PRICE_LABEL } from "../lib/pricingCopy";
@@ -101,7 +101,7 @@ export default function UpsellModal({ visible, resource, onDismiss, plan, worksp
               <Text style={styles.title}>You've reached your plan's limit</Text>
               <Text style={styles.body}>{limitMessage(resource, effectivePlan)}</Text>
               <Text style={styles.price}>
-                {PENDING_PRO_PRICE_LABEL} unlocks unlimited {RESOURCE_LABEL[resource]}
+                {PENDING_PRO_PRICE_LABEL} unlocks {unlockPhrase(resource)}
               </Text>
 
               {checkoutError && (
