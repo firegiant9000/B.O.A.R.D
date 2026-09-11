@@ -66,7 +66,7 @@ These are **out-of-band prerequisites**. A subagent cannot enable billing, creat
 | **G4 — Pricing confirmed** | Confirm $5/user/month against real measured AI cost-per-session from the M4 meter. The number in this plan is a placeholder for a decision, not a decision. | Task 2's `PRO` limits are structural and unblocked; only the displayed price in Task 13 waits. |
 | **G5 — PostHog project** | Create the project, note the public API key, set `EXPO_PUBLIC_POSTHOG_KEY` and `EXPO_PUBLIC_POSTHOG_HOST`. | Task 21 |
 | **G6 — Marketplace submissions** | Google Workspace Marketplace (Meet add-on) and Chrome Web Store developer account ($5). **Submit in week 1** — review queues run days to weeks. | Ship of Tasks 20 and 33; not their implementation. |
-| **G7 — Android device** | A real mid-range Android on the desk for the parity + perf gates. | Final verification, not any single task. |
+| **G7 — Android device** | A real mid-range Android on the desk for the parity + perf gates. | Final verification, not any single task; also Task 24's native PNG board export, which rides the same unverified `toDataURL`-with-`<Image>` path as the open Month 4 closeout item — shipped anyway (unverified, not disabled) pending this gate. |
 | **G8 — Non-code launch work** | Instructor outreach, three blog posts, launch-day coordination. | Nothing in this plan. Tracked in the spec, deliberately out of scope here. |
 
 **Explicitly not in this plan** (spec items with no code deliverable): ROADMAP M6 A5 outreach, A7 content and launch, and the M6 decision itself.

@@ -1,7 +1,11 @@
 import { Platform } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import type { Session, SessionSummary, ParticipantSnapshot } from "../types";
+import { toSvgDocument, SvgExportElement, SvgExportBounds } from "../lib/svgExport";
+import { tilePages, A4 } from "../lib/pdfTiling";
+import { captureBoardImageForExport } from "./canvasCapture";
 
 // Phase 4: exportable session recap (PDF). The HTML builder is a pure function so
 // it can be unit-tested without the platform print/share modules. Export is
@@ -10,6 +14,9 @@ import type { Session, SessionSummary, ParticipantSnapshot } from "../types";
 //    share sheet on it.
 //  - web: expo-print's printToFileAsync is unsupported, so we open the HTML in a
 //    new window and trigger the browser print dialog (Save as PDF).
+//
+// Month 6 — board export (SVG/PDF/PNG) reuses this exact platform split for
+// `exportBoardPdf`/`exportBoardPng` below, rather than inventing a second one.
 
 /** Normalizes either summary form (legacy string or structured) into the
  *  structured shape, mirroring SummaryCard.normalize. */
@@ -130,6 +137,219 @@ export async function exportRecapPdf(session: Session): Promise<void> {
       mimeType: "application/pdf",
       dialogTitle: `${session.title} — Recap`,
       UTI: "com.adobe.pdf",
+    });
+  }
+}
+
+// --- Month 6: board export (SVG/PDF/PNG) ---
+
+/** Fetches `url`'s bytes and returns them as a `data:` URI, or `null` on any
+ *  failure (offline, an expired Storage token, a CORS-blocked fetch on web).
+ *  `fetch` + `Blob` + `FileReader` all behave the same on web and React
+ *  Native, so this needs no platform split of its own. Never throws — a
+ *  broken image reference should degrade that one image, not the export. */
+async function fetchImageAsDataUri(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("image read failed"));
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    console.warn("[recapExport] failed to fetch image bytes for a self-contained export:", err);
+    return null;
+  }
+}
+
+/**
+ * Builds a self-contained `imageHrefs` map for `toSvgDocument` (see
+ * `svgExport.ts`'s IMAGE PORTABILITY section) by fetching every `image`
+ * element's bytes as a `data:` URI. Without this, an exported PDF's images
+ * are only references to their live (bearer-token, not-guaranteed-permanent)
+ * Firebase Storage URLs — fine for the exporting user right now, but a PDF
+ * is meant to be handed to someone else later: opened without access to this
+ * app's Storage bucket, or after the link's signing window lapses, those
+ * would render as broken image boxes. A PDF full of those is a worse outcome
+ * than a slower export, so this is called unconditionally by `exportBoardPdf`
+ * rather than left as an opt-in.
+ *
+ * `overrides` (a caller-supplied id → data URI map) wins per image id and is
+ * never re-fetched. A fetch failure for one image just leaves that id unset
+ * — `toSvgDocument` falls back to the element's own live URL for it — rather
+ * than failing the whole export.
+ */
+export async function buildImageHrefs(
+  elements: SvgExportElement[],
+  overrides: Record<string, string> | undefined
+): Promise<Record<string, string>> {
+  const hrefs: Record<string, string> = { ...overrides };
+  const toFetch = elements.filter(
+    (el): el is Extract<SvgExportElement, { kind: "image" }> =>
+      el.kind === "image" && !hrefs[el.data.id] && !!el.data.url
+  );
+  await Promise.all(
+    toFetch.map(async (el) => {
+      const dataUri = await fetchImageAsDataUri(el.data.url);
+      if (dataUri) hrefs[el.data.id] = dataUri;
+    })
+  );
+  return hrefs;
+}
+
+function svgPageDataUri(svg: string): string {
+  // Percent-encoding (not base64/`btoa`) so this works identically on native
+  // — `btoa` is a browser global this codebase does not assume exists off
+  // the web platform (see canvasCapture.ts's web-only `captureSvgAsPng`).
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * Builds the printable multi-page HTML for a tiled board export: one
+ * `<div class="page">` per tile, each holding that tile's own SVG document
+ * (see `pdfTiling.tilePages` + `svgExport.toSvgDocument`) as a plain `<img>`
+ * at its native size. Deliberately NOT scaled to fill the page — a full
+ * interior tile is already exactly one page's worth of content at 1:1 scale
+ * (this module always renders each page at `A4`'s own point dimensions, and
+ * passes those same dimensions to `Print.printToFileAsync` in
+ * `exportBoardPdf`), so scaling it up or down would make an edge tile (the
+ * last row/column, trimmed smaller by `tilePages`) disagree in physical
+ * scale with its full-size neighbors. Pure — no platform deps — so it's
+ * unit-testable the same way `buildRecapHtml` is.
+ */
+export function buildBoardPdfHtml(pageSvgs: string[]): string {
+  const pages = pageSvgs.map((svg) => `<div class="page"><img src="${svgPageDataUri(svg)}" /></div>`).join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8" />
+<style>
+  /* Native ignores this — Print.printToFileAsync's own width/height option
+     (see exportBoardPdf) sets its page size directly — but the web path's
+     window.print() has no such option, only whatever the browser's print
+     dialog defaults to, so this is the one place the intended physical page
+     size is stated for that path. */
+  @page { size: A4; margin: 0; }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  .page img { display: block; }
+</style></head><body>${pages}</body></html>`;
+}
+
+export interface BoardPdfExportOptions {
+  /** Shown in the native share sheet / web print dialog title, mirroring
+   *  `exportRecapPdf`'s own `dialogTitle`. */
+  title?: string;
+  /** Per-image-id `data:` URI overrides — see `svgExport.ts`'s IMAGE
+   *  PORTABILITY section. Any image element not covered here is fetched
+   *  automatically (see `buildImageHrefs`) so the exported PDF is
+   *  self-contained by default without the caller having to opt in. */
+  imageHrefs?: Record<string, string>;
+}
+
+/**
+ * Renders `elements` to a tiled, multi-page PDF and opens the platform
+ * share/print flow — the PDF sibling of `exportRecapPdf`, same platform
+ * split (native: `expo-print` + `expo-sharing`; web: open a window and
+ * trigger the browser print dialog).
+ *
+ * This path does NOT touch `react-native-svg`'s `toDataURL` at all: each
+ * page is a plain HTML `<img>` of an SVG document, rendered through
+ * `expo-print`'s ordinary HTML-to-PDF pipeline — the same one
+ * `buildRecapHtml`'s `session.canvasSnapshot` `<img>` already relies on. So
+ * unlike PNG export below, it carries none of that path's open-on-hardware
+ * risk (see `canvasCapture.ts#captureBoardImage`'s G7 caveat) and is,
+ * together with plain SVG export, the native-guaranteed format until that
+ * gate closes.
+ */
+export async function exportBoardPdf(
+  elements: SvgExportElement[],
+  bounds: SvgExportBounds,
+  opts?: BoardPdfExportOptions
+): Promise<void> {
+  const imageHrefs = await buildImageHrefs(elements, opts?.imageHrefs);
+  const pages = tilePages({ width: bounds.width, height: bounds.height }, A4);
+  const pageSvgs = pages.map((p) =>
+    toSvgDocument(
+      elements,
+      { x: bounds.x + p.x, y: bounds.y + p.y, width: p.width, height: p.height },
+      { imageHrefs }
+    )
+  );
+  const html = buildBoardPdfHtml(pageSvgs);
+  const title = opts?.title ?? "Board";
+
+  if (Platform.OS === "web") {
+    if (typeof window === "undefined") return;
+    const win = window.open("", "_blank");
+    if (!win) throw new Error("Popup blocked — allow popups to export the board.");
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.print();
+    return;
+  }
+
+  const { uri } = await Print.printToFileAsync({ html, width: A4.width, height: A4.height });
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(uri, {
+      mimeType: "application/pdf",
+      dialogTitle: `${title} — Export`,
+      UTI: "com.adobe.pdf",
+    });
+  }
+}
+
+export interface BoardPngExportOptions {
+  /** Shown in the native share sheet title and used as the web download's
+   *  filename (sanitized), mirroring `exportBoardPdf`'s `title`. */
+  title?: string;
+}
+
+/**
+ * Captures the board as a single PNG and opens the platform share/download
+ * flow: native shares the file via the share sheet, web triggers a browser
+ * download — the same platform split as `exportRecapPdf`/`exportBoardPdf`.
+ *
+ * CAVEAT (Month 6, gate G7 — a real Android device, still unmet): on native
+ * this rides `canvasCapture.ts#captureBoardImageForExport`'s `toDataURL`
+ * path, whose rendering of `image` elements has never been confirmed on real
+ * Android hardware (see that function's own doc comment for the full
+ * reasoning). This is UNVERIFIED — not confirmed broken, not confirmed
+ * correct — and ships anyway rather than being disabled: disabling a
+ * working feature on a suspicion is worse than shipping it with the risk
+ * recorded. `exportBoardPdf`/plain SVG export do not carry this risk and are
+ * the native-guaranteed formats until G7 closes.
+ */
+export async function exportBoardPng(canvasRef: any, opts?: BoardPngExportOptions): Promise<void> {
+  const dataUrl = await captureBoardImageForExport(canvasRef);
+  if (!dataUrl) {
+    throw new Error("PNG export failed — could not capture the board.");
+  }
+  const filename = `${(opts?.title ?? "board").replace(/[^a-z0-9-_]+/gi, "-")}.png`;
+
+  if (Platform.OS === "web") {
+    if (typeof document === "undefined") return;
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return;
+  }
+
+  // Sharing.shareAsync requires a local file URL, not a `data:` URI — reuse
+  // expo-image-manipulator (already a dependency; canvasCapture.ts's own
+  // cropNative uses the same manipulate→saveAsync round trip) purely to
+  // write the captured bytes to a real cache file.
+  const rendered = await ImageManipulator.manipulate(dataUrl).renderAsync();
+  const saved = await rendered.saveAsync({ format: SaveFormat.PNG });
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(saved.uri, {
+      mimeType: "image/png",
+      dialogTitle: `${opts?.title ?? "Board"} — Export`,
+      UTI: "public.png",
     });
   }
 }

@@ -25,9 +25,16 @@ import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
  * faithful to. Here they become real `<text>` nodes instead, so the whole
  * export is one uniform tree of SVG elements rather than a mix of SVG shapes
  * and un-exportable RN view overlays. That is a best-effort visual match,
- * not a pixel-identical one: this serializer has no text-measurement pass,
- * so it only respects explicit `\n` line breaks in the source text — it
- * does not reproduce the live editor's width-driven word-wrap.
+ * not a pixel-identical one, and the two kinds diverge from each other here:
+ * a `TextElement` has no wrap of its own (this serializer has no real
+ * text-measurement pass, so it only respects explicit `\n` line breaks in
+ * the source text), while a sticky note DOES estimate a width-driven wrap
+ * (`wrapByEstimatedWidth`, below) against its fixed `NOTE_WIDTH`, since
+ * ordinary note content routinely exceeds one line at that width and a
+ * `\n`-only render would just spill text past the note's coloured rect.
+ * Neither is a pixel-accurate match for the live editor's own text layout —
+ * see `AVG_CHAR_WIDTH_RATIO`'s comment for exactly how the note's estimate
+ * falls short of that.
  *
  * ELEMENT KINDS: `SvgExportElement`'s `kind` tag covers every element kind
  * that exists on the board today (path/shape/text/note/image/audio). Voice
