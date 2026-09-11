@@ -77,7 +77,11 @@ export type AnalyticsEvent = (typeof ALL_EVENTS)[number];
 const REDACTED = "[redacted]";
 // Deliberately loose: matches an email-shaped substring anywhere in a
 // string, not only a value that IS one — a note that merely mentions an
-// address ("invited student@university.edu") must not leak it either.
+// address ("invited student@university.edu") must not leak it either. The
+// cost of that looseness: a non-email `x@y.ext`-shaped string also matches
+// (a retina asset filename like "icon@2x.png" would be redacted). Accepted —
+// over-redaction is the safe direction under a no-identifiers constraint,
+// and no property in today's taxonomy has that shape.
 const EMAIL_PATTERN = /[^\s"'<>]+@[^\s"'<>]+\.[^\s"'<>]+/;
 // Analytics event properties are flat metadata, never app-state graphs —
 // this bounds pathological/circular input; it is not a depth this app's real
@@ -101,7 +105,18 @@ function isEmailKey(key: string): boolean {
  *  of it — anything email-shaped from event properties: strings, and strings
  *  nested inside objects/arrays at any depth, plus any value under a key
  *  that IS an "email" token (see isEmailKey) regardless of that value's own
- *  shape. */
+ *  shape. Also drops (see below) any entry whose KEY ITSELF is email-shaped
+ *  content, e.g. `{ "student@university.edu": true }` — a roster keyed by
+ *  email is an ordinary shape, and a scrub that only ever looks at values
+ *  and key *names* would let that through `JSON.stringify` verbatim.
+ *
+ *  Note: `value` is presumed JSON-plain data (string/number/boolean/null,
+ *  plus plain objects/arrays of the same) — the shape `track()`'s `props`
+ *  bag is documented to carry and the only shape any vendor SDK accepts. A
+ *  `Date`, `RegExp`, or other class instance isn't scrubbed specially; it
+ *  simply isn't itself a string or array, so it falls to the object branch,
+ *  and `Object.entries` on it yields no own enumerable properties — it
+ *  silently arrives at the vendor as `{}` rather than throwing. */
 function scrub(value: unknown, depth: number): unknown {
   if (depth > MAX_SCRUB_DEPTH) return REDACTED;
   if (typeof value === "string") {
@@ -113,6 +128,12 @@ function scrub(value: unknown, depth: number): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      // An email-shaped KEY is dropped entirely rather than kept under a
+      // constant redacted key: two email keys in the same object would
+      // otherwise collide onto one entry and silently drop data. The value
+      // under an email-shaped key is suspect anyway, so dropping it loses
+      // nothing worth keeping.
+      if (EMAIL_PATTERN.test(key)) continue;
       out[key] = isEmailKey(key) ? REDACTED : scrub(v, depth + 1);
     }
     return out;
@@ -189,5 +210,11 @@ export function identifyWorkspace(
 ): void {
   const posthogClient = getClient();
   if (!posthogClient) return;
-  posthogClient.identify(hashWorkspaceId(workspaceId), { role });
+  // `{ role }` can't actually carry PII today — WorkspaceRole is a closed
+  // union — but routing it through the same scrub() as track() costs nothing
+  // and removes any "why does this one path skip the guard?" question.
+  posthogClient.identify(
+    hashWorkspaceId(workspaceId),
+    scrub({ role }, 0) as Record<string, unknown>
+  );
 }

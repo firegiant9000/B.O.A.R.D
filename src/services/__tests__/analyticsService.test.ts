@@ -108,6 +108,32 @@ describe("with a configured PostHog key", () => {
     });
   });
 
+  // A roster keyed by email is an ordinary shape (student rosters flow
+  // through this app — see this file's header) — the scrub must also check
+  // the KEY string itself, not only values and key names.
+  it("drops an entry whose key itself is email-shaped content, e.g. a roster keyed by email", () => {
+    track("board_created", {
+      "student@university.edu": true,
+      boardId: "b1",
+    } as never);
+    expect(capture).toHaveBeenCalledTimes(1);
+    const [, properties] = capture.mock.calls[0];
+    expect(JSON.stringify(properties)).not.toMatch(/@/);
+    expect(properties).toEqual({ boardId: "b1" });
+  });
+
+  it("drops both entries — never collides them into one — when two keys are email-shaped", () => {
+    track("board_created", {
+      "a@university.edu": 1,
+      "b@university.edu": 2,
+      safe: "ok",
+    } as never);
+    const [, properties] = capture.mock.calls[0];
+    expect(JSON.stringify(properties)).not.toMatch(/@/);
+    expect(properties).toEqual({ safe: "ok" });
+    expect(Object.keys(properties as object)).toEqual(["safe"]);
+  });
+
   it("redacts a value under a key literally named email even without an @ in it, closing the obvious loophole", () => {
     track("board_created", { email: "not-shaped-like-one" } as never);
     const [, properties] = capture.mock.calls[0];
