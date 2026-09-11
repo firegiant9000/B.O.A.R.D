@@ -30,9 +30,13 @@ interface AiSelectionActionsProps {
   selectionActionable: boolean;
   selectionUnion: Bounds | null;
   ocrBusy: boolean;
-  onRecognizeText: () => void;
+  /** Undefined suppresses the "Recognize text" button (Month 5 presenter
+   *  lock) — its high-confidence path writes a text element directly. */
+  onRecognizeText?: () => void;
   explainBusy: boolean;
-  onExplain: () => void;
+  /** Undefined suppresses the "Explain this" button (Month 5 presenter
+   *  lock) — it always writes a text element. */
+  onExplain?: () => void;
   /** A held-back low-confidence OCR result, or null. */
   ocrCandidate: OcrCandidate | null;
   /** Undefined suppresses the "Insert anyway" button (Month 5 presenter lock) —
@@ -62,6 +66,7 @@ export default function AiSelectionActions({
           a text element. Hidden during a transform/drag and while a low-
           confidence confirm prompt is open. */}
       {ocrEnabled &&
+        onRecognizeText &&
         selectionActionable &&
         selectionUnion &&
         (() => {
@@ -98,6 +103,7 @@ export default function AiSelectionActions({
           the AI and drops a concept/explanation/example block beside it. Stacks
           below the OCR button when that one is also visible. */}
       {explainEnabled &&
+        onExplain &&
         selectionActionable &&
         selectionUnion &&
         (() => {

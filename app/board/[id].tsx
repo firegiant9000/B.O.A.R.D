@@ -183,7 +183,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     activeTool: tools.activeTool,
     viewport,
     embedMode,
-    // Task 14 resolved the churn question this closure used to raise: the hook
+    // Month 5 resolved the churn question this closure used to raise: the hook
     // now reads `onLeaderViewport` through a ref rather than listing it as an
     // effect dependency, so its identity no longer matters — this inline arrow
     // can stay exactly as it is, fresh every render, memoized or not. Full
@@ -192,26 +192,29 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     onLeaderViewport: (v) => viewportCtl.animateTo(v),
   });
 
-  // Task 14 — while someone *else* is presenting and hasn't paused, the
-  // audience's own drawing tools are disabled: `collab.activePresenter` is
-  // already `null` for the presenter's own client (see
+  // Month 5 — while someone *else* is presenting and hasn't paused, the
+  // audience's own content-creation tools/actions are disabled:
+  // `collab.presenterLocksContentCreation` is always false on the
+  // presenter's own client (`activePresenter` excludes self — see
   // `useBoardCollab`'s cursor-subscription effect), so this never locks out
   // the presenter themselves. This is a client-side affordance only — no
   // Firestore rule backs it (presenter state isn't part of the write-role
-  // model), so it stops the toolbar and gesture handlers from offering
-  // drawing, not a still-connected client from writing directly.
-  const presenterLocksDrawing = !!collab.activePresenter && !collab.activePresenter.paused;
-
+  // model), so it stops the toolbar, gesture handlers, AI affordances and
+  // keyboard shortcuts from offering content creation, not a still-connected
+  // client from writing directly. Single source of truth, read here (not
+  // re-derived) so this screen, `BoardCanvas` and `BoardHeader` can never
+  // compute two different answers to the same question.
+  //
   // If a presentation starts (or resumes) while this viewer's own tool is
   // still a drawing tool from before, snap back to Select rather than leaving
   // a hidden-but-still-active pen tool armed.
   useEffect(() => {
-    if (!presenterLocksDrawing) return;
+    if (!collab.presenterLocksContentCreation) return;
     if (tools.activeTool === "pen" || tools.activeTool === "eraser" || tools.activeTool === "shape" || tools.activeTool === "text") {
       tools.setActiveTool("select");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presenterLocksDrawing]);
+  }, [collab.presenterLocksContentCreation]);
 
   const comments = useBoardComments(id!, {
     user,
@@ -371,8 +374,14 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
     redo: elements.redo,
     selectAll: elements.selectAllVisible,
     copy: elements.copySelected,
-    paste: elements.shortcutPaste,
-    duplicate: elements.duplicateSelected,
+    // Month 5 — the same content-creation lock as the equivalent buttons
+    // (BoardCanvas's duplicate action, BoardOverlayLayer): both shortcuts
+    // write new elements, so both are gated while a presentation locks
+    // content creation. `onShortcutCommand` calls this table with `?.()`, so
+    // an undefined entry is already a silent no-op — no separate disabled
+    // state to wire for a keystroke.
+    paste: collab.presenterLocksContentCreation ? undefined : elements.shortcutPaste,
+    duplicate: collab.presenterLocksContentCreation ? undefined : elements.duplicateSelected,
     delete: handleDeleteSelected,
     deselect: deselectAll,
     bringToFront: elements.bringToFront,
@@ -423,7 +432,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           onOpenBackgroundPicker={() => setBgPickerVisible(true)}
           onOpenHistory={() => setHistoryVisible(true)}
           diagramEnabled={ai.diagramEnabled}
-          onOpenDiagram={ai.openDiagram}
+          onOpenDiagram={collab.presenterLocksContentCreation ? undefined : ai.openDiagram}
           onShare={() => setShareBoardModalVisible(true)}
           isAdmin={doc.isAdmin}
           hasActiveSession={!!doc.activeSession}
@@ -510,7 +519,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
 
       {/* Contextual pen options (Phase 9) — auto-perfect toggle, only while the
           pen tool is active and the viewer can edit. Hidden in embed mode. */}
-      {tools.activeTool === "pen" && doc.canEdit && !presenterLocksDrawing && !embedMode && (
+      {tools.activeTool === "pen" && doc.canEdit && !collab.presenterLocksContentCreation && !embedMode && (
         <PenOptionsBar mode={tools.shapeRecMode} onCycleMode={tools.cycleShapeRecMode} />
       )}
 
@@ -521,7 +530,7 @@ export default function BoardScreen({ embedMode = false }: { embedMode?: boolean
           activeColor={tools.activeColor}
           activeStrokeWidth={tools.activeStrokeWidth}
           isAdmin={doc.isAdmin}
-          canEdit={doc.canEdit && !presenterLocksDrawing}
+          canEdit={doc.canEdit && !collab.presenterLocksContentCreation}
           canComment={doc.canComment}
           onToolChange={tools.setActiveTool}
           onColorChange={(color) => {

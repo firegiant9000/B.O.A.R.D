@@ -61,7 +61,7 @@ import type { BoardAI } from "../../../hooks/useBoardAI";
 import type { BoardComments } from "../../../hooks/useBoardComments";
 
 /**
- * BoardCanvas.test.tsx (Task 14 fix round).
+ * BoardCanvas.test.tsx — the Month 5 presenter content-creation lock.
  *
  * BoardCanvas takes every hook as a prop, so it's testable without a live
  * board: build a complete, jest.fn()-backed double for each hook, mock the
@@ -295,7 +295,7 @@ function renderCanvas(opts: RenderOpts) {
   const ai = makeAi(opts.ai);
   const comments = makeComments(opts.comments);
 
-  render(
+  const withCollab = (c: BoardCollab) => (
     <BoardCanvas
       boardId="board1"
       currentUserId="self"
@@ -309,7 +309,7 @@ function renderCanvas(opts: RenderOpts) {
       canvasRef={{ current: null }}
       elements={elements}
       tools={tools}
-      collab={collab}
+      collab={c}
       ai={ai}
       comments={comments}
       commentPins={[]}
@@ -329,7 +329,20 @@ function renderCanvas(opts: RenderOpts) {
     />
   );
 
-  return { elements, tools, collab, ai, comments };
+  const view = render(withCollab(collab));
+
+  return {
+    elements,
+    tools,
+    collab,
+    ai,
+    comments,
+    /** Re-render with the same elements/tools/ai/comments doubles but a new
+     *  `collab` — used to simulate a presentation starting/pausing mid-gesture. */
+    rerenderWithCollab: (overrides: Partial<BoardCollab>) => {
+      view.rerender(withCollab(makeCollab(overrides)));
+    },
+  };
 }
 
 const POINT = { x: 5, y: 5 };
@@ -341,7 +354,7 @@ beforeEach(() => {
   mockPerfectShapePromptProps = null;
 });
 
-describe("BoardCanvas — presenter lock on drawing gestures (Task 14 fix round)", () => {
+describe("BoardCanvas — presenter lock on drawing gestures", () => {
   it("an unpaused presenter blocks the eraser's live deletion (eraseAtPoint)", () => {
     const { elements } = renderCanvas({
       tools: { activeTool: "eraser" },
@@ -385,6 +398,44 @@ describe("BoardCanvas — presenter lock on drawing gestures (Task 14 fix round)
     });
 
     expect(elements.eraseAtPoint).toHaveBeenCalledWith(POINT, tools.activeStrokeWidth);
+  });
+
+  it("closes an in-flight erase batch when the lock engages mid-gesture, without leaking it", () => {
+    const { elements, rerenderWithCollab } = renderCanvas({
+      tools: { activeTool: "eraser" },
+      collab: { presenterLocksContentCreation: false },
+    });
+
+    // Unlocked: the gesture starts normally — opens the erase batch and takes
+    // one real deletion.
+    act(() => {
+      mockDrawingCanvasProps.onStrokeStart();
+    });
+    act(() => {
+      mockDrawingCanvasProps.onStrokeMove(POINT);
+    });
+    expect(elements.beginEraseStroke).toHaveBeenCalledTimes(1);
+    expect(elements.eraseAtPoint).toHaveBeenCalledTimes(1);
+
+    // A presentation starts mid-gesture: re-render with the lock now engaged
+    // (mirrors `activePresenter` flipping via the cursor subscription while
+    // this same stroke is still in progress).
+    act(() => {
+      rerenderWithCollab({ presenterLocksContentCreation: true });
+    });
+
+    // Further move frames are blocked (already covered above) — the point of
+    // this test is stroke end: the batch `beginEraseStroke()` opened before
+    // the lock engaged must still be closed, or `erasedIdsRef`
+    // (`useBoardElements`) stays populated until the next eraser stroke's own
+    // `beginEraseStroke()` — the leaked-erase-batch fix this pins.
+    act(() => {
+      mockDrawingCanvasProps.onStrokeEnd();
+    });
+
+    expect(elements.endEraseStroke).toHaveBeenCalledTimes(1);
+    // No additional deletion snuck through once the lock engaged.
+    expect(elements.eraseAtPoint).toHaveBeenCalledTimes(1);
   });
 
   // Each gesture callback is fired in its own `act()` (rather than all three in
@@ -497,32 +548,50 @@ describe("BoardCanvas — presenter lock on drawing gestures (Task 14 fix round)
   });
 });
 
-describe("BoardCanvas — the three content-creation call sites (Task 14 fix round)", () => {
-  it("locked: onDuplicateSelected, onAcceptOcr and PerfectShapePrompt's onAccept are all suppressed (undefined)", () => {
+describe("BoardCanvas — gated content-creation call sites", () => {
+  // Covers all five props this component itself gates: `onDuplicateSelected`
+  // (BoardOverlayLayer), `onAcceptOcr`, `onRecognizeText` and `onExplain`
+  // (AiSelectionActions), and PerfectShapePrompt's `onAccept`. The remaining
+  // two content-creation paths the fix round closed — `BoardHeader`'s
+  // diagram-open button and the duplicate/paste keyboard shortcuts — live
+  // outside this component and are covered where they're wired
+  // (`app/board/[id].tsx`), not here.
+  it("locked: all five are suppressed (undefined)", () => {
     renderCanvas({
       tools: { activeTool: "select", perfectCandidate: { pathId: "p1", shape: { kind: "rect" } as any, color: "#000", strokeWidth: 2 } },
       collab: { presenterLocksContentCreation: true },
-      ai: { ocrEnabled: true, ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 } },
+      ai: {
+        ocrEnabled: true,
+        explainEnabled: true,
+        ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
+      },
     });
 
     expect(mockOverlayProps.onDuplicateSelected).toBeUndefined();
     expect(mockAiSelectionProps.onAcceptOcr).toBeUndefined();
+    expect(mockAiSelectionProps.onRecognizeText).toBeUndefined();
+    expect(mockAiSelectionProps.onExplain).toBeUndefined();
     expect(mockPerfectShapePromptProps.onAccept).toBeUndefined();
   });
 
-  it("unlocked (no presenter): all three are wired to the real handlers", async () => {
+  it("unlocked (no presenter): all five are wired to the real handlers", async () => {
     const { elements, ai, tools } = renderCanvas({
       tools: {
         activeTool: "select",
         perfectCandidate: { pathId: "p1", shape: { kind: "rect" } as any, color: "#000", strokeWidth: 2 },
       },
       collab: { presenterLocksContentCreation: false },
-      ai: { ocrEnabled: true, ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 } },
+      ai: {
+        ocrEnabled: true,
+        explainEnabled: true,
+        ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
+      },
     });
 
     expect(mockOverlayProps.onDuplicateSelected).toBe(elements.duplicateSelected);
-
     expect(mockAiSelectionProps.onAcceptOcr).toBe(ai.acceptOcr);
+    expect(mockAiSelectionProps.onRecognizeText).toBe(ai.recognizeText);
+    expect(mockAiSelectionProps.onExplain).toBe(ai.explain);
 
     // `acceptPerfect` is a local BoardCanvas closure, not `elements.replaceStrokeWithShape`
     // itself — call it and confirm it forwards to the real write path and clears
@@ -540,22 +609,28 @@ describe("BoardCanvas — the three content-creation call sites (Task 14 fix rou
     );
   });
 
-  it("unlocked (paused presenter): all three stay wired to the real handlers", () => {
+  it("unlocked (paused presenter): all five stay wired to the real handlers", () => {
     const { elements, ai } = renderCanvas({
       tools: { activeTool: "select" },
       collab: {
         presenterLocksContentCreation: false,
         activePresenter: { userId: "p", displayName: "Presenter", paused: true },
       },
-      ai: { ocrEnabled: true, ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 } },
+      ai: {
+        ocrEnabled: true,
+        explainEnabled: true,
+        ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
+      },
     });
 
     expect(mockOverlayProps.onDuplicateSelected).toBe(elements.duplicateSelected);
     expect(mockAiSelectionProps.onAcceptOcr).toBe(ai.acceptOcr);
+    expect(mockAiSelectionProps.onRecognizeText).toBe(ai.recognizeText);
+    expect(mockAiSelectionProps.onExplain).toBe(ai.explain);
   });
 });
 
-describe("BoardCanvas — presenter banner vs. follow banner (Task 14 fix round)", () => {
+describe("BoardCanvas — presenter banner vs. follow banner", () => {
   it("shows the presenter banner for the audience and suppresses the follow banner", () => {
     renderCanvas({
       collab: {

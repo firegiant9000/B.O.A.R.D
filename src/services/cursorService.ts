@@ -191,6 +191,21 @@ interface CursorSubscriptionEntry {
   unsubscribe: Unsubscribe;
   listeners: Set<(cursors: CursorPresence[]) => void>;
   lastCursors: CursorPresence[] | null;
+  /**
+   * Month 5 fix round — set once every local listener has detached. `active
+   * .subscribe` below can invoke its callback synchronously (the same
+   * cached-snapshot delivery the comment above relies on), and if the sole
+   * subscriber reacts to that first delivery by unsubscribing right there,
+   * the teardown branch in the returned closure runs *before*
+   * `active.subscribe` has returned — so `entry.unsubscribe` is still the
+   * `() => {}` placeholder below, and calling it tears down nothing. Without
+   * this flag that leaves the real underlying `onSnapshot` listener open
+   * forever with no local listener left to feed it: a leaked hot listener,
+   * the exact cost risk this multiplexing exists to bound. Checked once
+   * `active.subscribe` returns so that case tears the real listener down
+   * immediately instead.
+   */
+  detached: boolean;
 }
 const cursorSubscriptions = new Map<string, CursorSubscriptionEntry>();
 
@@ -204,15 +219,31 @@ export function subscribeToCursors(
     if (existing.lastCursors) cb(existing.lastCursors);
   } else {
     const listeners = new Set<(cursors: CursorPresence[]) => void>([cb]);
-    const entry: CursorSubscriptionEntry = { unsubscribe: () => {}, listeners, lastCursors: null };
+    const entry: CursorSubscriptionEntry = {
+      unsubscribe: () => {},
+      listeners,
+      lastCursors: null,
+      detached: false,
+    };
     cursorSubscriptions.set(boardId, entry);
-    entry.unsubscribe = active.subscribe(boardId, (cursors) => {
+    const realUnsubscribe = active.subscribe(boardId, (cursors) => {
       entry.lastCursors = cursors;
       // Snapshot before iterating: a listener that unsubscribes itself (or
       // another) synchronously during this fan-out must not mutate the set
       // while it's still being iterated.
       for (const listener of [...listeners]) listener(cursors);
     });
+    if (entry.detached) {
+      // See the `detached` field doc: the sole subscriber already tore this
+      // entry down (synchronously, during the call above) before this real
+      // unsubscribe existed to run — run it now instead of leaking it.
+      // `entry.unsubscribe` is not the right thing to assign at this point:
+      // the entry is already out of `cursorSubscriptions`, so nothing will
+      // ever read it again.
+      realUnsubscribe();
+    } else {
+      entry.unsubscribe = realUnsubscribe;
+    }
   }
 
   return () => {
@@ -220,8 +251,9 @@ export function subscribeToCursors(
     if (!e || !e.listeners.has(cb)) return; // already detached — idempotent
     e.listeners.delete(cb);
     if (e.listeners.size === 0) {
-      e.unsubscribe();
+      e.detached = true;
       cursorSubscriptions.delete(boardId);
+      e.unsubscribe();
     }
   };
 }

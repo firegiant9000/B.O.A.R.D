@@ -81,7 +81,7 @@ beforeEach(() => {
   subscribeToCursors.mockReturnValue(jest.fn());
 });
 
-describe("useBoardCollab — presenter precedence (Task 14)", () => {
+describe("useBoardCollab — presenter viewport precedence", () => {
   it("case 3: with no presenter, individual follow applies", () => {
     const onLeaderViewport = jest.fn();
     const { result } = renderCollab(onLeaderViewport);
@@ -203,7 +203,7 @@ describe("useBoardCollab — presenter precedence (Task 14)", () => {
   });
 });
 
-describe("useBoardCollab — onLeaderViewport churn decision (Task 14)", () => {
+describe("useBoardCollab — onLeaderViewport subscription stability", () => {
   it("does not resubscribe when the caller passes a fresh onLeaderViewport closure every render", () => {
     const { rerender } = renderCollab(() => {});
     expect(subscribeToCursors).toHaveBeenCalledTimes(1);
@@ -234,7 +234,7 @@ describe("useBoardCollab — onLeaderViewport churn decision (Task 14)", () => {
   });
 });
 
-describe("useBoardCollab — viewport dedupe (Task 14 fix round)", () => {
+describe("useBoardCollab — viewport dedupe", () => {
   it("calls onLeaderViewport once for a repeated leader viewport, again only on a real change", () => {
     const onLeaderViewport = jest.fn();
     const { result } = renderCollab(onLeaderViewport);
@@ -273,7 +273,7 @@ describe("useBoardCollab — viewport dedupe (Task 14 fix round)", () => {
   });
 });
 
-describe("useBoardCollab — presenter actions (Task 14)", () => {
+describe("useBoardCollab — presenter actions", () => {
   it("startPresenting publishes presenting:true and clears any existing follow", () => {
     const { result } = renderCollab();
     act(() => {

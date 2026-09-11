@@ -136,24 +136,47 @@ export default function BoardCanvas({
   //
   // Scope — "no new content creation," not "read-only": this guards every
   // reachable path in this component that creates, draws, or replaces board
-  // content while a presentation is live —
+  // content, or spends AI quota, while a presentation is live —
   //   - the drawing tools (pen, eraser, shape, text): stroke start/move/end
   //     and the tap handler below, not only stroke start;
   //   - `onDuplicateSelected` (below): a selection-actions button that writes
   //     new elements even though the select tool itself stays usable;
-  //   - `onAcceptOcr` (below): accepting an OCR result creates a new text
-  //     element and spends AI quota;
+  //   - `onAcceptOcr` (below): accepting a held-back low-confidence OCR
+  //     result creates a new text element and spends AI quota;
+  //   - `onRecognizeText` (below): the button that starts OCR in the first
+  //     place — its *common*, high-confidence path writes the text element
+  //     directly via `placeOcrText` (`useBoardAI.ts`) without ever reaching
+  //     the confirm prompt `onAcceptOcr` guards, so gating only the prompt
+  //     left the more common path open;
+  //   - `onExplain` (below): always creates a text element and spends AI
+  //     quota, unconditionally (no confirm step to gate instead);
   //   - `acceptPerfect`, wired as `PerfectShapePrompt`'s `onAccept` (below):
   //     accepting persists a shape in place of the freehand stroke —
   //     reachable even if the lock begins after the prompt is already on
   //     screen.
-  // For these three, the lock is applied by passing `undefined` instead of
-  // the real handler rather than wiring a no-op: each of the three
+  // For all five, the lock is applied by passing `undefined` instead of the
+  // real handler rather than wiring a no-op: each of the underlying
   // components renders no button at all for an undefined handler (matches
   // `SelectionOverlay`'s existing `btn()` pattern), so the audience isn't
   // shown an affordance that silently does nothing. `onAcceptOcr` and
   // `acceptPerfect` each keep their dismiss/discard action available so the
   // prompt can still be closed.
+  //
+  // Two more content-creation paths share this same lock but live outside
+  // this component, gated at their own entry point instead of duplicating the
+  // predicate's derivation:
+  //   - `BoardHeader`'s diagram-open button (`ai.openDiagram`,
+  //     `app/board/[id].tsx`) — the entry point to `ai.generateDiagram`,
+  //     which writes a whole batch of elements and spends AI quota. Gating
+  //     the open button, not `generateDiagram` itself, means a diagram prompt
+  //     already on screen when a presentation starts can still submit — the
+  //     same "lock begins after the surface is already open" gap
+  //     `acceptPerfect` and `onAcceptOcr` close for their own prompts, left
+  //     open here rather than plumbing the lock through `BoardModals` for a
+  //     panel this component doesn't render;
+  //   - the `duplicate`/`paste` keyboard shortcuts (`shortcutCommandsRef`,
+  //     `app/board/[id].tsx`) — the same two writes as `onDuplicateSelected`
+  //     above, reachable without touching this component's UI at all.
   //
   // It deliberately does NOT cover the select tool's drag-to-move
   // (`moveSelectGesture` → `commitMove`) or the resize/rotate handles
@@ -161,19 +184,6 @@ export default function BoardCanvas({
   // content isn't *new* content, and those stay reachable while presenting
   // the same way they already are for an ordinary `canEdit: false` viewer
   // (Toolbar's read-only row keeps Select enabled too).
-  //
-  // This is not a complete inventory of every content/quota-spending path a
-  // presentation leaves open — it's the three named above, which is what was
-  // scoped. At least these are known and un-gated, same as the
-  // duplicate/paste keyboard shortcuts (`app/board/[id].tsx`), which were
-  // already a separate pre-existing gap: `AiSelectionActions`' "Recognize
-  // text" (`ai.recognizeText` places a text element directly on a
-  // high-confidence result, not only through the confirm prompt this guards)
-  // and "Explain this" (`ai.explain`, which always creates a text element)
-  // are reachable through the same forced `activeTool === "select"` and both
-  // spend AI quota; `ai.generateDiagram` (opened from `BoardHeader`, gated
-  // only on the diagram feature flag) creates a batch of elements. None of
-  // these are closed by this guard.
   const presenterLocksContentCreation = collab.presenterLocksContentCreation;
 
   const handleStrokeStart = () => {
@@ -442,7 +452,7 @@ export default function BoardCanvas({
         blockedIds={blockedIds}
       />
       {/* Phase 7 — follow-mode indicator. Tapping it (or the canvas) exits.
-          Task 14: suppressed while `activePresenter` is set (active or
+          Month 5: suppressed while `activePresenter` is set (active or
           paused) — both banners render top-center and would overlap. While
           the presentation is active our camera mirrors the presenter, not
           `followingId` (precedence case 1 in `src/lib/presenter.ts`), so
@@ -460,7 +470,7 @@ export default function BoardCanvas({
           <Ionicons name="close" size={15} color="#fff" />
         </TouchableOpacity>
       )}
-      {/* Task 14 — audience-facing presenter banner. Renders nothing when
+      {/* Month 5 — audience-facing presenter banner. Renders nothing when
           `activePresenter` is null (nobody but possibly me is presenting —
           it's always null on the presenter's own client). */}
       <PresentingBanner
@@ -494,9 +504,9 @@ export default function BoardCanvas({
         }
         selectionUnion={elements.selectionUnion}
         ocrBusy={ai.ocrBusy}
-        onRecognizeText={ai.recognizeText}
+        onRecognizeText={presenterLocksContentCreation ? undefined : ai.recognizeText}
         explainBusy={ai.explainBusy}
-        onExplain={ai.explain}
+        onExplain={presenterLocksContentCreation ? undefined : ai.explain}
         ocrCandidate={ai.ocrCandidate}
         onAcceptOcr={presenterLocksContentCreation ? undefined : ai.acceptOcr}
         onDismissOcr={ai.dismissOcr}

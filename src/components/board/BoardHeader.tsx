@@ -37,7 +37,10 @@ interface BoardHeaderProps {
   onOpenHistory: () => void;
   /** `isDiagramConfigured()` — gates the text → diagram button. */
   diagramEnabled: boolean;
-  onOpenDiagram: () => void;
+  /** Undefined suppresses the button (Month 5 presenter lock) — opening the
+   *  prompt is the entry point to `generateDiagram`, which writes a batch of
+   *  new elements and spends AI quota. */
+  onOpenDiagram?: () => void;
   onShare: () => void;
 
   // Admin-only session controls
@@ -138,8 +141,9 @@ export default function BoardHeader({
           <Ionicons name="time-outline" size={20} color="#2563eb" />
         </TouchableOpacity>
         {/* Phase 12 — text → diagram. Opens the prompt sheet; gated OFF until the
-            diagram flag + AI gateway are both on. */}
-        {diagramEnabled && (
+            diagram flag + AI gateway are both on, and (Month 5) while an
+            active, unpaused presenter locks content creation. */}
+        {diagramEnabled && onOpenDiagram && (
           <TouchableOpacity
             onPress={onOpenDiagram}
             style={styles.iconBtn}

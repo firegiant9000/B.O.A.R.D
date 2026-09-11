@@ -167,6 +167,40 @@ describe("subscribeToCursors — A.6 listener multiplexing (Month 5)", () => {
     expect(underlyingUnsub).toHaveBeenCalledTimes(1);
   });
 
+  it("tears down the underlying listener immediately if the sole subscriber detaches synchronously during its own first (synchronous) delivery", () => {
+    // Firestore's onSnapshot delivers a cached snapshot synchronously to a
+    // fresh listener — the same contract the multiplexing comment above
+    // relies on for the first-subscriber-gets-it-too guarantee. If that sole
+    // subscriber reacts to this very first delivery by detaching, it does so
+    // *before* `active.subscribe` (mocked below) has returned its real
+    // unsubscribe, which is exactly the race this test pins.
+    const underlyingUnsub = jest.fn();
+    // Re-entering `subscribeToCursors` with the same `cb` reference (rather
+    // than capturing the outer call's own return value, which does not exist
+    // yet at this point in the synchronous delivery) resolves to the same
+    // registration and hands back an equivalent teardown closure — but for
+    // an already-registered `cb`, `subscribeToCursors` also replays
+    // `lastCursors` to it immediately (the "later subscriber" guarantee
+    // above), which would otherwise recurse forever through this same
+    // callback. The guard below is that replay stopping, not extra product
+    // behaviour under test.
+    let detaching = false;
+    const cb = () => {
+      if (detaching) return;
+      detaching = true;
+      subscribeToCursors("mux6", cb)();
+    };
+
+    onSnapshot.mockImplementation((_ref: unknown, snapCb: (snap: unknown) => void) => {
+      snapCb(makeQuerySnap([]));
+      return underlyingUnsub;
+    });
+
+    subscribeToCursors("mux6", cb);
+
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+  });
+
   it("gives a second board its own onSnapshot listener rather than sharing the first board's", () => {
     onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
       cb(makeQuerySnap([]));
