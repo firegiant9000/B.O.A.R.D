@@ -65,6 +65,24 @@ firebase functions:secrets:set EMBED_JWT_SECRET
 Rotating it invalidates every outstanding embed link immediately (they fail
 verification) — acceptable, since links are short-lived and the host re-mints.
 
+**Month 5 — embed issuer allowlist.** Editable embeds carry a host-asserted
+subject (`sub`) plus the host that asserted it (`iss`). `iss` is the namespace the
+exchanged Firebase uid is minted under (`embed:<iss>:<sub>`), so it is checked
+against an allowlist — an unvalidated issuer would make the namespace decorative.
+Not a secret, but a runtime param so it can never be edited from a client bundle:
+
+```bash
+# functions/.env.<projectId>
+EMBED_ALLOWED_ISSUERS=meet,extension
+```
+
+It **defaults to empty, which fails closed**: read-only embeds keep working (they
+carry no issuer), but every editable embed is refused until a host is listed. Add
+a host here only when you intend to trust its identity assertions — a compromised
+allowlisted host can impersonate its own users to each other inside its own
+namespace. It can never reach a real B.O.A.R.D account or a board its token does
+not name.
+
 ## 3. Deploy
 
 ```bash

@@ -7,9 +7,15 @@ import type { EmbedScope } from "../types";
 // wrappers over Cloud Functions:
 //   - createEmbedLink: a board member mints a short-lived signed link to share.
 //   - redeemEmbedToken: the embed page (no account) trades the link's token for a
-//     scoped, read-only Firebase identity and signs in with it.
+//     board-scoped Firebase identity and signs in with it.
 // No secret ever touches the client — the function holds the signing key, the
 // client only ever sees the opaque token and the resulting custom token.
+//
+// This client mints and redeems READ-ONLY links only. Month 5 added an 'edit'
+// scope for host integrations (Google Meet add-on, browser extension); it needs a
+// host-asserted subject the mint callable will not accept from here, so the
+// identity `redeemEmbedToken` signs in with is read-only in practice. Do not
+// describe it as read-only by construction — the scope comes from the token.
 
 export interface EmbedLink {
   /** Absolute URL on web (origin + path); the path alone elsewhere. */

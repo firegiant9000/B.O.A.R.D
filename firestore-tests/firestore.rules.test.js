@@ -1185,6 +1185,110 @@ describe("embed token read path", () => {
   });
 });
 
+// ── Month 5: editable embed identity ──────────────────────────────────────────
+// A v2 embed token carries a host-asserted subject, so the exchange mints a uid
+// namespaced by the issuing host (`embed:<iss>:<sub>` — exchangeEmbedToken.
+// embedIdentityUid) instead of the shared anonymous `embed:<boardId>`. The claim
+// set is identical to a view embed's apart from `embedScope`, which is the ONLY
+// thing separating the write grant from the read one — so every case below is
+// paired against its view-scoped twin.
+const EMBED_ISS = "meet";
+const EMBED_SUB = "u9";
+const EMBED_EDIT_UID = `embed:${EMBED_ISS}:${EMBED_SUB}`;
+
+function embedEditDb(boardId) {
+  return testEnv
+    .authenticatedContext(EMBED_EDIT_UID, {
+      embed: true,
+      embedBoardId: boardId,
+      embedScope: "edit",
+      embedIssuer: EMBED_ISS,
+      embedSubject: EMBED_SUB,
+    })
+    .firestore();
+}
+
+describe("editable embed identity", () => {
+  // boardWrite and boardPrivate are both seeded, both in wsA, and both already
+  // carry a paths/ doc — so a denial below is the embed claim, never a missing
+  // board, a missing workspace or an unwritable path.
+  it("lets an edit-scoped embed identity write to its own board", async () => {
+    await assertSucceeds(
+      setDoc(doc(embedEditDb("boardWrite"), "boards/boardWrite/paths/fromEmbed"), {
+        userId: EMBED_EDIT_UID,
+      })
+    );
+  });
+
+  it("denies an edit-scoped embed identity writing to a different board", async () => {
+    // Identical write to the accepted one above, on a board the claim does not
+    // name. EMBED_EDIT_UID is not in boardPrivate.members either, so no other arm
+    // could let it through.
+    await assertFails(
+      setDoc(doc(embedEditDb("boardWrite"), "boards/boardPrivate/paths/fromEmbed"), {
+        userId: EMBED_EDIT_UID,
+      })
+    );
+  });
+
+  it("denies a view-scoped embed identity writing at all", async () => {
+    // Byte-for-byte the write that succeeds in the first case, on the same board;
+    // only embedScope differs ('view' vs 'edit'). If isEmbedEditor stopped checking
+    // the scope, this would start passing.
+    await assertFails(
+      setDoc(doc(embedDb("boardWrite"), "boards/boardWrite/paths/fromEmbed"), {
+        userId: "embed:boardWrite",
+      })
+    );
+  });
+
+  it("an edit-scoped embed identity writes every canvas collection on its board", async () => {
+    const edb = embedEditDb("boardWrite");
+    await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/notes/fromEmbed"), { content: "hi" }));
+    await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/shapes/fromEmbed"), { kind: "rect" }));
+    await assertSucceeds(setDoc(doc(edb, "boards/boardWrite/textElements/fromEmbed"), { text: "hi" }));
+  });
+
+  it("an edit-scoped embed identity still cannot touch the board document", async () => {
+    // The write grant is canvas-only: it must never become a member, an admin, or
+    // able to rename/reshare the board.
+    const edb = embedEditDb("boardWrite");
+    await assertFails(updateDoc(doc(edb, "boards/boardWrite"), { title: "hijacked" }));
+    await assertFails(
+      updateDoc(doc(edb, "boards/boardWrite"), {
+        members: [ALICE, CAROL, DAVE, FRANK, EMBED_EDIT_UID],
+      })
+    );
+  });
+
+  it("an edit-scoped embed identity still cannot comment", async () => {
+    // Comments carry an authorId and a notification path; they stay member-only
+    // until a host integration needs them.
+    await assertFails(
+      setDoc(doc(embedEditDb("boardWrite"), "boards/boardWrite/comments/fromEmbed"), {
+        anchorElementId: "seed",
+        anchorKind: "shape",
+        authorId: EMBED_EDIT_UID,
+        body: "hi",
+        replies: [],
+        resolved: false,
+      })
+    );
+  });
+
+  it("an edit-scoped embed identity writes its own presence but not a member's", async () => {
+    const edb = embedEditDb("boardWrite");
+    await assertSucceeds(
+      setDoc(doc(edb, `boards/boardWrite/presence/${EMBED_EDIT_UID}`), { online: true })
+    );
+    // ALICE is a real seeded member of boardWrite — the denial is the own-doc
+    // guard, not an unknown user.
+    await assertFails(
+      setDoc(doc(edb, `boards/boardWrite/presence/${ALICE}`), { online: true })
+    );
+  });
+});
+
 // ── M5: `plan` is not client-writable ─────────────────────────────────────────
 // The single highest-value field in the database. Every server-side quota gate
 // (checkAiQuota, handleCreateBoard, handleCreateSession, and the seat cap above)

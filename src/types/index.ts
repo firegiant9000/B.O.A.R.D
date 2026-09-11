@@ -529,9 +529,12 @@ export interface AppNotification {
   createdAt: Date;
 }
 
-// Embeddable boards (Month 4, Phase 8). The scope an embed token grants. Phase 8
-// ships read-only ('view'); 'edit' is reserved for M5/M6 host integrations and is
-// not yet mintable client-side.
+// Embeddable boards (Month 4, Phase 8 — read-only; Month 5 — editable). The scope
+// an embed token grants. 'view' is the anonymous read-only embed any board member
+// can mint. 'edit' is the host-integration write scope: it requires a v2 token
+// carrying a host-asserted subject, only a board admin can mint one, and the
+// issuing host must be on the Functions-side allowlist. `createEmbedLink` below
+// mints 'view' only — nothing in this client asks for 'edit' today.
 export type EmbedScope = "view" | "edit";
 
 // Month 5/6 — billing. The narrowed set of Stripe subscription statuses this

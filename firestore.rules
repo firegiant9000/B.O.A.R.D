@@ -157,14 +157,39 @@ service cloud.firestore {
     // account who exchanged a short-lived signed embed token for a Firebase custom
     // token carrying these claims (functions/src/callable/exchangeEmbedToken.ts).
     // The claim is board-scoped: it grants READ to exactly the one board it names
-    // and that board's canvas — never another board, and (since the identity is
-    // neither owner nor member) never any write. This is the token-scoped embed
+    // and that board's canvas — never another board. This is the token-scoped embed
     // read path the roadmap requires be explicitly rules-tested. `.get(..,default)`
     // so a normal user's token (no embed claims) reads as false, not an error.
+    //
+    // NOTE: this predicate is scope-agnostic on purpose — it is the "is an embed
+    // identity for this board" test, and both scopes read. Writes are gated by
+    // isEmbedEditor below, never by this one.
     function isEmbedViewer(boardId) {
       return isSignedIn() &&
         request.auth.token.get('embed', false) == true &&
         request.auth.token.get('embedBoardId', '') == boardId;
+    }
+
+    // Month 5 — editable embed identity. The same custom-token identity, but
+    // exchanged from a v2 token that carried a HOST-ASSERTED subject, so its uid is
+    // namespaced per issuer (`embed:<iss>:<sub>`) and its writes attribute to a
+    // stable person rather than to a shared anonymous per-board uid. A v1 token can
+    // never produce this: verifyEmbedToken rejects v1 + edit outright.
+    //
+    // What it grants: canvas WRITE (and presence/cursor) on exactly the one board
+    // the claim names. What it does NOT grant, deliberately — this identity is not
+    // a board member and must never become one:
+    //   - the board document (title, members, roles, invite code) stays read-only;
+    //   - comments stay member-only (commenting needs a real account today);
+    //   - every other board is unreachable, same as a view embed.
+    //
+    // The subject behind this uid is asserted by the host, not proved. See the
+    // trust-model note at the top of functions/src/embed/token.ts: a compromised
+    // allowlisted host can impersonate its OWN users to each other; it cannot reach
+    // a real B.O.A.R.D account or a board its token does not name.
+    function isEmbedEditor(boardId) {
+      return isEmbedViewer(boardId) &&
+        request.auth.token.get('embedScope', '') == 'edit';
     }
 
     // ── M5 seat cap ───────────────────────────────────────────────────────────
@@ -441,29 +466,34 @@ service cloud.firestore {
       // any board member reads; only an effective editor writes (Phase 6 —
       // viewer/commenter are read-only on the canvas). This is the "viewer write
       // denied" gate the rules tests assert.
+      //
+      // Month 5 — an edit-scoped embed identity writes here too. It is the ONLY
+      // non-member write path on the canvas, it is board-scoped by its claim, and
+      // a read-only ('view') embed is unaffected: isEmbedEditor requires
+      // embedScope == 'edit'.
       match /paths/{pathId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /notes/{noteId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /textElements/{elementId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /shapes/{shapeId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /images/{imageId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9). Same
@@ -475,12 +505,12 @@ service cloud.firestore {
       // caveat.
       match /audio/{audioId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /snapshots/{snapshotId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       // OCR memoization cache (Month 4, Phase 10). The handwriting-OCR function
@@ -508,10 +538,14 @@ service cloud.firestore {
                          resource.data.authorId == request.auth.uid);
       }
 
-      // presence — each user manages only their own presence doc
+      // presence — each user manages only their own presence doc.
+      // Month 5: an edit-scoped embed identity is present on the board it is
+      // writing to, so it reads presence and writes its OWN doc (keyed by its
+      // namespaced uid) — the `isOwner(userId)` guard is what keeps it from
+      // impersonating a member's presence. A read-only embed stays out entirely.
       match /presence/{userId} {
-        allow read:   if isBoardMember(boardId);
-        allow write:  if isBoardMember(boardId) && isOwner(userId);
+        allow read:   if isBoardMember(boardId) || isEmbedEditor(boardId);
+        allow write:  if (isBoardMember(boardId) || isEmbedEditor(boardId)) && isOwner(userId);
       }
 
       // Live cursors (Month 4, Phase 6) — ephemeral pointer side channel. Any
@@ -519,8 +553,8 @@ service cloud.firestore {
       // the paths/* collections so cursor jitter never touches the persisted-
       // state listeners (Appendix A.4). Same own-uid trust model as presence.
       match /cursors/{userId} {
-        allow read:   if isBoardMember(boardId);
-        allow write:  if isBoardMember(boardId) && isOwner(userId);
+        allow read:   if isBoardMember(boardId) || isEmbedEditor(boardId);
+        allow write:  if (isBoardMember(boardId) || isEmbedEditor(boardId)) && isOwner(userId);
       }
     }
 
