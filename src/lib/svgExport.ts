@@ -85,6 +85,23 @@ export interface SvgExportBounds {
   height: number;
 }
 
+/**
+ * A `viewBox`/`width`/`height` of exactly zero disables rendering of the
+ * whole element per the SVG spec ("a value of zero disables rendering of
+ * the element") — it isn't merely a tiny image, it's a document every
+ * consumer renders as nothing. `useBoardElements.ts#contentBounds()` can
+ * hand this function exactly that today: a board whose only content is one
+ * legacy sticky note computes a zero-width/zero-height point bbox for it
+ * (`TextNote` carries no persisted width/height — see `NOTE_WIDTH`/
+ * `NOTE_MIN_HEIGHT` below for the same gap on this module's own note
+ * rendering). `toSvgDocument` clamps to this floor on every call rather than
+ * trusting every present and future caller to pass a non-degenerate box —
+ * it does not attempt to recover the "true" extent of whatever produced a
+ * degenerate box, which is that caller's bbox math to get right, not this
+ * serializer's; it only guarantees the document handed back is renderable.
+ */
+const MIN_EXPORT_DIMENSION = 1;
+
 export interface SvgExportOptions {
   /** Per-image-id override for the exported `<image>`'s `href`/`xlink:href`
    *  — e.g. a `data:` URI a caller has already fetched, so that image is
@@ -114,7 +131,11 @@ export function escapeXmlAttr(value: string): string {
 /** `M x y L x y L x y …` — mirrors `DrawingCanvas.tsx`'s (unexported)
  *  `pointsToSvgPath`, kept as a small local copy rather than importing a
  *  component module into this lib. A single point still draws a visible dot
- *  (a stationary pen tap), same as the canvas. */
+ *  (a stationary pen tap), same as the canvas. Deliberately uses the raw
+ *  stored points, not `DrawingCanvas.tsx`'s `simplifyPoints` (a display-only
+ *  perf optimization at render time) — invisible for ordinary strokes, and
+ *  an export should be faithful to the persisted data, not to a rendering
+ *  shortcut. Considered, not applied here. */
 function pointsToPathD(points: { x: number; y: number }[]): string {
   if (points.length === 0) return "";
   if (points.length === 1) {
@@ -131,15 +152,54 @@ function dashArrayFor(strokeWidth: number): string {
   return `${d},${d}`;
 }
 
-/** One line of `text`, split on explicit `\n` only — see this module's
- *  header for why width-driven word-wrap isn't reproduced here. */
-function tspanLines(text: string, x: number, fontSize: number): string {
-  const lines = text.split("\n");
-  if (lines.length === 1) return escapeXmlText(lines[0]);
+/** Renders pre-split `lines` as `<tspan>`s stacked under `x`, `fontSize *
+ *  1.2` apart (a standard single-line-height multiplier). A single line
+ *  skips the `<tspan>` wrapper entirely — plain text content is enough and
+ *  keeps the common case's output simple. */
+function tspansFor(lines: string[], x: number, fontSize: number): string {
+  if (lines.length <= 1) return escapeXmlText(lines[0] ?? "");
   const lineHeight = fontSize * 1.2;
   return lines
     .map((line, i) => `<tspan x="${x}" dy="${i === 0 ? 0 : lineHeight}">${escapeXmlText(line)}</tspan>`)
     .join("");
+}
+
+/** Average glyph-advance-width estimate used to word-wrap a sticky note (see
+ *  `noteNode`) without a real text-measurement pass — this module's stated
+ *  limitation for text generally (this module's header). 0.6 is a plain
+ *  sans-serif rule-of-thumb (roughly what this board's own UI faces average
+ *  out to), not a font-table lookup, so the wrap point is an estimate, not a
+ *  pixel-accurate match for `TextNoteOverlay.tsx`'s real (native) text
+ *  layout — it exists so realistic note content wraps at ROUGHLY the right
+ *  point instead of always rendering as one line spilling past the
+ *  coloured rect. */
+const AVG_CHAR_WIDTH_RATIO = 0.6;
+
+/** Word-wraps `text` to fit within `maxWidth` at `fontSize`, honoring
+ *  explicit `\n` breaks first. A single word longer than the estimated
+ *  per-line character budget is left unbroken on its own line (no
+ *  character-level hyphenation) rather than silently dropped. */
+function wrapByEstimatedWidth(text: string, maxWidth: number, fontSize: number): string[] {
+  const maxChars = Math.max(1, Math.floor(maxWidth / (fontSize * AVG_CHAR_WIDTH_RATIO)));
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    if (paragraph.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of paragraph.split(" ")) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length > maxChars && current) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    }
+    lines.push(current);
+  }
+  return lines;
 }
 
 function pathNode(p: DrawPath): string {
@@ -165,6 +225,11 @@ function pathNode(p: DrawPath): string {
   const d = pointsToPathD(p.points ?? []);
   if (!d) return "";
   const params = renderParamsFor(p.penStyle, p.strokeWidth, p.opacity);
+  // `params.multiplyBlend` (highlighter only) is deliberately not applied:
+  // it's DrawingCanvas.tsx's web-only CSS `mix-blend-mode`, with no SVG
+  // document equivalent to fall back to on other consumers, so overlapping
+  // highlighter strokes render flatter here than on the web canvas. Narrow
+  // and considered, not fixed here.
   return `<path d="${escapeXmlAttr(d)}" stroke="${escapeXmlAttr(color)}" stroke-opacity="${params.opacity}" stroke-width="${params.strokeWidth}" fill="none" stroke-linecap="${params.linecap}" stroke-linejoin="${params.linejoin}" />`;
 }
 
@@ -239,7 +304,7 @@ function textNode(t: TextElement): string {
   // and an SVG <text> baseline, so this is a reasonable approximation, not a
   // pixel match.
   const y = t.position.y + t.fontSize;
-  const content = tspanLines(text, x, t.fontSize);
+  const content = tspansFor(text.split("\n"), x, t.fontSize);
   const rotationAttr = t.rotation
     ? ` transform="rotate(${t.rotation}, ${t.position.x + t.width / 2}, ${t.position.y + t.height / 2})"`
     : "";
@@ -247,17 +312,23 @@ function textNode(t: TextElement): string {
 }
 
 // TextNote (the legacy sticky note) carries no persisted width/height or
-// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead. These
-// mirror that component's own fixed offsets/colors so the export's sticky
-// looks like the one on screen instead of an arbitrary box.
+// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead
+// (fixed `maxWidth: 200`, height grown to fit by real word-wrap). These
+// mirror that component's own fixed width/offsets/colors; `NOTE_MIN_HEIGHT`
+// is a floor for short content — `noteNode` below grows the rect for
+// longer content instead of using this as a fixed height, so realistic
+// note text doesn't overflow it: at 200 units wide and 14px type, ordinary
+// sticky-note text — as little as ~25-30 characters — already exceeds one
+// line, so a fixed height is wrong for typical content, not just outliers.
 const NOTE_LEFT_OFFSET = 60;
 const NOTE_TOP_OFFSET = 20;
 const NOTE_WIDTH = 200;
-const NOTE_HEIGHT = 70;
+const NOTE_MIN_HEIGHT = 70;
 const NOTE_FILL = "#FFF9C4";
 const NOTE_TEXT_COLOR = "#333333";
 const NOTE_FONT_SIZE = 14;
 const NOTE_PADDING = 10;
+const NOTE_LINE_HEIGHT = NOTE_FONT_SIZE * 1.2;
 
 function noteNode(n: TextNote): string {
   const content = n.content ?? "";
@@ -265,10 +336,12 @@ function noteNode(n: TextNote): string {
   const y = n.position.y - NOTE_TOP_OFFSET;
   const textX = x + NOTE_PADDING;
   const textY = y + NOTE_PADDING + NOTE_FONT_SIZE;
+  const lines = wrapByEstimatedWidth(content, NOTE_WIDTH - NOTE_PADDING * 2, NOTE_FONT_SIZE);
+  const height = Math.max(NOTE_MIN_HEIGHT, NOTE_PADDING * 2 + lines.length * NOTE_LINE_HEIGHT);
   return (
     `<g aria-label="${escapeXmlAttr(content)}">` +
-    `<rect x="${x}" y="${y}" width="${NOTE_WIDTH}" height="${NOTE_HEIGHT}" rx="6" fill="${NOTE_FILL}" stroke="none" />` +
-    `<text x="${textX}" y="${textY}" font-size="${NOTE_FONT_SIZE}" fill="${NOTE_TEXT_COLOR}">${tspanLines(content, textX, NOTE_FONT_SIZE)}</text>` +
+    `<rect x="${x}" y="${y}" width="${NOTE_WIDTH}" height="${height}" rx="6" fill="${NOTE_FILL}" stroke="none" />` +
+    `<text x="${textX}" y="${textY}" font-size="${NOTE_FONT_SIZE}" fill="${NOTE_TEXT_COLOR}">${tspansFor(lines, textX, NOTE_FONT_SIZE)}</text>` +
     `</g>`
   );
 }
@@ -334,17 +407,28 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
  * only `audio` — see this module's header) contributes nothing rather than
  * failing the whole export, and every reader here tolerates a partially
  * written or older-shape element the same way the rest of the board does
- * (`data?.field ?? default`).
+ * (`data?.field ?? default`). A zero (or negative) `bounds.width`/`height`
+ * is clamped up to `MIN_EXPORT_DIMENSION` rather than passed through, so the
+ * result is always a renderable document, never one the SVG spec's
+ * zero-disables-rendering rule turns into nothing.
+ *
+ * IMAGE ELEMENTS ARE NOT SELF-CONTAINED BY DEFAULT: an `image` element
+ * serializes as a REFERENCE to its live Firebase Storage URL unless the
+ * caller supplies `opts.imageHrefs`. See this module's header (IMAGE
+ * PORTABILITY) before treating this function's output as a portable,
+ * standalone file.
  */
 export function toSvgDocument(
   elements: SvgExportElement[],
   bounds: SvgExportBounds,
   opts?: SvgExportOptions
 ): string {
+  const width = Math.max(bounds.width, MIN_EXPORT_DIMENSION);
+  const height = Math.max(bounds.height, MIN_EXPORT_DIMENSION);
   const inner = elements.map((el) => nodeFor(el, opts)).join("");
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
-    `viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" width="${bounds.width}" height="${bounds.height}">` +
+    `viewBox="${bounds.x} ${bounds.y} ${width} ${height}" width="${width}" height="${height}">` +
     `${inner}</svg>`
   );
 }
