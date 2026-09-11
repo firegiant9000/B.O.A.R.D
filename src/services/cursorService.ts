@@ -9,6 +9,7 @@ import {
 import { db } from "../config/firebase";
 import { CursorPresence } from "../types";
 import { throttle, type Throttled } from "../lib/throttle";
+import type { LaserPing } from "../lib/laser";
 
 /**
  * Live cursors (Month 4, Phase 6 — ephemeral side channel).
@@ -46,6 +47,18 @@ export interface CursorPayload {
    * audience banner stays up through a pause.
    */
   presenterPaused?: boolean;
+  /**
+   * Month 5 (laser pointer): the author's most recently sampled point while
+   * using the laser tool. Like `presenting`/`presenterPaused`, this is an
+   * additive field on the same ephemeral payload — the laser is deliberately
+   * NOT a second realtime channel, and it never touches the path/element
+   * collections (there is no persistence path for it at all — see
+   * `writerFor` below). `src/lib/laser.ts` builds the fading multi-point
+   * trail reader-side from a stream of these; this field itself only ever
+   * carries the single latest point (`setDoc`'s full-document replace can't
+   * hold more — see the comment on `writerFor`).
+   */
+  ping?: LaserPing;
 }
 
 // ~20Hz write ceiling. The render side throttles independently (~12Hz) in the
@@ -98,6 +111,11 @@ function writerFor(boardId: string, userId: string): Throttled<[CursorPayload]> 
         ...(payload.following !== undefined ? { following: payload.following } : {}),
         ...(payload.presenting ? { presenting: true } : {}),
         ...(payload.presenterPaused ? { presenterPaused: true } : {}),
+        // Month 5 (laser pointer): never persisted anywhere else — this is
+        // the one write a ping ever takes part in, on the same ephemeral doc
+        // as everything above. Omitted whenever absent, exactly like the
+        // other optional fields (Firestore rejects `undefined`).
+        ...(payload.ping ? { ping: payload.ping } : {}),
       }).catch(() => {});
     }, CURSOR_WRITE_INTERVAL_MS);
     writers.set(key, w);
@@ -132,6 +150,17 @@ export const firestoreTransport: CursorTransport = {
           // defaulting to false rather than leaving it undefined.
           presenting: data.presenting === true,
           presenterPaused: data.presenterPaused === true,
+          // Month 5 (laser pointer): tolerate an absent or malformed `ping`
+          // (a pre-laser doc, or a partial write) by leaving it undefined
+          // rather than passing a shape `activeTrail`/`appendPing` don't
+          // expect.
+          ping:
+            data.ping &&
+            typeof data.ping.x === "number" &&
+            typeof data.ping.y === "number" &&
+            typeof data.ping.t === "number"
+              ? { x: data.ping.x, y: data.ping.y, t: data.ping.t }
+              : undefined,
         };
       });
       cb(cursors);

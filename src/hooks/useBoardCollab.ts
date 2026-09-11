@@ -231,6 +231,13 @@ export function useBoardCollab(
         following: followingId,
         presenting: isPresenting,
         presenterPaused: isPresenterPaused,
+        // Month 5 (laser pointer): every reported pointer position doubles as
+        // a laser sample while that tool is active — a plain hover on web (no
+        // click needed) or a touch-drag on native (`DrawingCanvas`'s Pan
+        // gesture `.onUpdate`, the only pointer-move signal native has). A
+        // stationary tap sends its own single ping from `BoardCanvas`'s tap
+        // handler instead, since a tap this short may never reach here.
+        ping: activeTool === "laser" ? { x: p.x, y: p.y, t: Date.now() } : undefined,
       });
     },
     [

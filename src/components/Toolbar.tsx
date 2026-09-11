@@ -9,7 +9,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment";
+// Month 5 adds "laser" (no toolbar button of its own yet — keyboard-only,
+// Shift+L — but this type has to admit the value since `activeTool` flows
+// straight through from `useBoardTools`'s wider `Tool`).
+type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment" | "laser";
 
 interface ToolbarProps {
   activeTool: Tool;

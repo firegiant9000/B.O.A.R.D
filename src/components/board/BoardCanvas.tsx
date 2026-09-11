@@ -309,6 +309,18 @@ export default function BoardCanvas({
     // The Hand tool only pans, and shapes require a drag to size them — a tap
     // does nothing in either.
     if (tools.activeTool === "hand" || tools.activeTool === "shape") return;
+    // Month 5 (laser pointer) — never content creation, so ahead of the
+    // `presenterLocksContentCreation` gate below like comment/select: a
+    // presentation shouldn't stop the audience from pointing at something.
+    // This also has to come before the fallback at the bottom of this
+    // function — without an explicit branch here, a stationary tap with the
+    // laser tool active would fall through to that fallback's "it's pen"
+    // assumption and persist a dot, which is exactly what this tool must
+    // never do (see `cursorService.ts`'s "never writes a laser ping to the
+    // path collection" test). A tap is short enough that it may never reach
+    // `publishPointer` via `onPointerMove`, so it sends its own single ping
+    // here instead.
+    if (tools.activeTool === "laser") { collab.publishPointer(point); return; }
     if (tools.activeTool === "comment") { anchorCommentAt(point); return; }
     if (tools.activeTool === "select") {
       elements.selectAtPoint(point, isShiftHeld());

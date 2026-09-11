@@ -15,6 +15,10 @@ import {
 const setDoc = fs.setDoc as jest.Mock;
 const deleteDoc = fs.deleteDoc as jest.Mock;
 const onSnapshot = fs.onSnapshot as jest.Mock;
+// The real persistence path a stroke takes (`pathService.savePath`) — see the
+// "laser never persists" test below, which asserts against this rather than
+// against something `cursorService.ts` never calls in the first place.
+const addDoc = fs.addDoc as jest.Mock;
 
 jest.useFakeTimers();
 
@@ -247,6 +251,144 @@ describe("publishCursor — presenter fields (Month 5)", () => {
 
   it("does not change the write ceiling — CURSOR_WRITE_INTERVAL_MS is untouched", () => {
     expect(CURSOR_WRITE_INTERVAL_MS).toBe(50);
+  });
+});
+
+describe("publishCursor — laser ping (Month 5)", () => {
+  it("omits ping from the written doc when the caller doesn't provide one", () => {
+    publishCursor("b-laser-omit", "u-laser-omit", { displayName: "U", x: 0, y: 0, tool: "pen" });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).not.toHaveProperty("ping");
+  });
+
+  it("writes ping when the caller provides one", () => {
+    publishCursor("b-laser-write", "u-laser-write", {
+      displayName: "U",
+      x: 0,
+      y: 0,
+      tool: "laser",
+      ping: { x: 7, y: 8, t: 12345 },
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).toMatchObject({ ping: { x: 7, y: 8, t: 12345 } });
+  });
+
+  // Point 1 in the task's four established facts: `cursorService.ts` never
+  // imports or calls `addDoc` — it writes cursors with `setDoc` only. Asserting
+  // "addDoc was not called" is meaningful *here* specifically because it's the
+  // same `addDoc` binding `pathService.savePath` uses for the one real
+  // persistence path a stroke takes (`collection(db, "boards", id, "paths")`
+  // then `addDoc`), shared through this file's `firebase/firestore` mock. This
+  // is proven falsifiable, not vacuous, in the task report: temporarily adding
+  // a rogue `addDoc(...)` call inside `writerFor` turns this test red, and
+  // reverting it turns it back green.
+  //
+  // Unique board/user ids (never reused by another test in this file) so the
+  // module-level throttle registry can't coalesce this call into a pending
+  // trailing write from an earlier test and mask a real assertion behind
+  // "nothing was written yet either way" — see point 2 in the task's four
+  // established facts.
+  it("never writes a laser ping to the path collection — only to the ephemeral cursor doc", () => {
+    publishCursor("b-laser-persist", "u-laser-persist", {
+      displayName: "U",
+      x: 5,
+      y: 5,
+      tool: "laser",
+      ping: { x: 5, y: 5, t: 999 },
+    });
+
+    // The throttle's leading edge fires synchronously for a key never used
+    // before in this file, so this alone proves a write was actually
+    // attempted — not merely "nothing happened yet" (point 2).
+    expect(setDoc).toHaveBeenCalledTimes(1);
+    expect(setDoc.mock.calls[0][0]).toMatchObject({
+      path: ["boards", "b-laser-persist", "cursors", "u-laser-persist"],
+    });
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ ping: { x: 5, y: 5, t: 999 } });
+
+    // The actual "never persists" guarantee (point 1): no call ever reaches
+    // the real stroke-persistence primitive.
+    expect(addDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe("subscribeToCursors — laser ping (Month 5)", () => {
+  it("maps a well-formed ping onto CursorPresence", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u20",
+            {
+              userId: "u20",
+              displayName: "Twenty",
+              x: 1,
+              y: 1,
+              tool: "laser",
+              updatedAt: 1,
+              ping: { x: 9, y: 9, t: 555 },
+            },
+          ],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("blaser1", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0]).toMatchObject({ ping: { x: 9, y: 9, t: 555 } });
+  });
+
+  it("tolerates a doc with no ping (pre-laser client) by leaving it undefined", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          ["u21", { userId: "u21", displayName: "TwentyOne", x: 0, y: 0, tool: "pen", updatedAt: 1 }],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("blaser2", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0].ping).toBeUndefined();
+  });
+
+  it("tolerates a malformed ping (non-numeric fields) by dropping it rather than throwing", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u22",
+            {
+              userId: "u22",
+              displayName: "TwentyTwo",
+              x: 0,
+              y: 0,
+              tool: "laser",
+              updatedAt: 1,
+              ping: { x: "nope", y: 0, t: 1 },
+            },
+          ],
+        ])
+      );
+      return jest.fn();
+    });
+
+    expect(() => {
+      subscribeToCursors("blaser3", (cursors) => {
+        received = cursors;
+      });
+    }).not.toThrow();
+
+    expect(received[0].ping).toBeUndefined();
   });
 });
 

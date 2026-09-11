@@ -33,6 +33,26 @@ describe("resolveShortcut — tool switches", () => {
   });
 });
 
+describe("resolveShortcut — laser pointer (Month 5)", () => {
+  it("maps Shift+L to the laser tool", () => {
+    expect(resolveShortcut(chord({ key: "L", shift: true }), ctx())).toEqual({
+      type: "tool",
+      tool: "laser",
+    });
+  });
+
+  it("leaves bare l (no Shift) mapped to the Line shape, not the laser", () => {
+    expect(resolveShortcut(chord({ key: "l" }), ctx())).toEqual({
+      type: "shape",
+      shape: "line",
+    });
+  });
+
+  it("suppresses the laser hotkey while editing text, like every other shortcut", () => {
+    expect(resolveShortcut(chord({ key: "L", shift: true }), ctx(true))).toBeNull();
+  });
+});
+
 describe("resolveShortcut — shape switches", () => {
   it.each([
     ["r", "rect"],

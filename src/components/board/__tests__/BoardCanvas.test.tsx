@@ -548,6 +548,54 @@ describe("BoardCanvas — presenter lock on drawing gestures", () => {
   });
 });
 
+describe("BoardCanvas — laser pointer never creates persisted content (Month 5)", () => {
+  it("a stationary tap with the laser tool draws no dot", () => {
+    const { elements } = renderCanvas({ tools: { activeTool: "laser" } });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.drawDot).not.toHaveBeenCalled();
+  });
+
+  it("a stationary tap with the laser tool publishes a single pointer ping instead", () => {
+    const { collab } = renderCanvas({ tools: { activeTool: "laser" } });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(collab.publishPointer).toHaveBeenCalledWith(POINT);
+  });
+
+  it("keeps working while an unpaused presenter locks out content creation — the laser isn't content", () => {
+    const { elements, collab } = renderCanvas({
+      tools: { activeTool: "laser" },
+      collab: { presenterLocksContentCreation: true },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(elements.drawDot).not.toHaveBeenCalled();
+    expect(collab.publishPointer).toHaveBeenCalledWith(POINT);
+  });
+
+  it("a laser stroke gesture (drag) never commits or erases anything either", () => {
+    const { elements } = renderCanvas({ tools: { activeTool: "laser" } });
+
+    act(() => {
+      mockDrawingCanvasProps.onStrokeStart();
+      mockDrawingCanvasProps.onStrokeMove(POINT);
+    });
+
+    expect(elements.eraseAtPoint).not.toHaveBeenCalled();
+    expect(elements.beginEraseStroke).not.toHaveBeenCalled();
+  });
+});
+
 describe("BoardCanvas — gated content-creation call sites", () => {
   // Covers all five props this component itself gates: `onDuplicateSelected`
   // (BoardOverlayLayer), `onAcceptOcr`, `onRecognizeText` and `onExplain`

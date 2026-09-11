@@ -7,7 +7,10 @@ import type { ShapeKind } from "../types";
 // react-native-key-command listener both normalize their event into a `KeyChord`
 // and call `resolveShortcut`, so the binding table lives in exactly one place.
 
-export type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand";
+// Month 5: "laser" joins this set outside the reserved P E T R O L A S H N
+// letters below — bare "l" is already the Line shape key, so the laser binds
+// to Shift+L instead (see the dedicated check in `resolveShortcut`).
+export type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "laser";
 
 export type CommandName =
   | "undo"
@@ -99,6 +102,16 @@ export function resolveShortcut(
     if (chord.shift && k === "0") {
       return { type: "command", name: "zoom100" };
     }
+    // Month 5 (laser pointer): the plan's "hotkey L" can't bind to bare "l" —
+    // that's already the Line shape key in the reserved P E T R O L A S H N
+    // set above — so this is the one deliberate exception to "no tool
+    // switches with Shift held" (the bare single-key block below explicitly
+    // excludes Shift). Press-and-hold vs. quick-tap for a continuous trail
+    // vs. a single ping is a pointer-gesture distinction made once this tool
+    // is selected, not a keyboard-hold distinction here.
+    if (chord.shift && k === "l") {
+      return { type: "tool", tool: "laser" };
+    }
   }
 
   // --- Modifier (Cmd/Ctrl) combos ---
@@ -169,6 +182,7 @@ export function buildCheatSheet(mod: string = modLabel()): CheatSection[] {
         { keys: ["T"], label: "Text" },
         { keys: ["S"], label: "Select" },
         { keys: ["H"], label: "Hand (pan)" },
+        { keys: ["⇧", "L"], label: "Laser pointer" },
       ],
     },
     {

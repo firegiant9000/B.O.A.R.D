@@ -40,13 +40,16 @@ const cursor = (userId: string, extra: object = {}) => ({
   ...extra,
 });
 
-function renderCollab(onLeaderViewport: (v: unknown) => void = jest.fn()) {
+function renderCollab(
+  onLeaderViewport: (v: unknown) => void = jest.fn(),
+  activeTool: BoardCollabOptions["activeTool"] = "pen"
+) {
   return renderHook(
     (opts: { onLeaderViewport: BoardCollabOptions["onLeaderViewport"] }) =>
       useBoardCollab("board1", SELF, {
         displayName: "Self",
         email: "self@example.com",
-        activeTool: "pen",
+        activeTool,
         viewport: VIEWPORT,
         embedMode: false,
         onLeaderViewport: opts.onLeaderViewport,
@@ -334,5 +337,29 @@ describe("useBoardCollab — presenter actions", () => {
       result.current.toggleFollowUser("someone");
     });
     expect(result.current.followingId).toBeNull();
+  });
+});
+
+describe("useBoardCollab — laser ping (Month 5)", () => {
+  it("publishPointer attaches a ping while the laser tool is active", () => {
+    const { result } = renderCollab(jest.fn(), "laser");
+    act(() => {
+      result.current.publishPointer({ x: 3, y: 4 });
+    });
+    const lastCall = publishCursor.mock.calls[publishCursor.mock.calls.length - 1];
+    expect(lastCall[2]).toMatchObject({ ping: { x: 3, y: 4 } });
+    expect(typeof lastCall[2].ping.t).toBe("number");
+  });
+
+  it("publishPointer sends no ping for every other tool", () => {
+    const { result } = renderCollab(jest.fn(), "pen");
+    act(() => {
+      result.current.publishPointer({ x: 1, y: 1 });
+    });
+    const lastCall = publishCursor.mock.calls[publishCursor.mock.calls.length - 1];
+    // `undefined`, not omitted — same convention this payload already uses for
+    // `viewport`/`following` above; `cursorService.ts`'s `writerFor` is the one
+    // place that turns "undefined" into "omitted from the doc" (see its tests).
+    expect(lastCall[2].ping).toBeUndefined();
   });
 });

@@ -41,7 +41,7 @@ import { useShortcuts } from "./useShortcuts";
  */
 
 /** The board's tools. A superset of `shortcuts.ts`'s `Tool` (which omits `comment`). */
-export type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment";
+export type Tool = "pen" | "eraser" | "text" | "select" | "shape" | "hand" | "comment" | "laser";
 
 const ARROWHEAD_CYCLE: ArrowheadStyle[] = ["classic", "dot", "circle", "open", "none"];
 const SNAP_CYCLE = [0, ...GRID_SIZES];

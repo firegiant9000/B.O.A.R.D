@@ -1,4 +1,5 @@
 import { Bounds } from "../lib/viewport";
+import { LaserPing } from "../lib/laser";
 
 export interface UserProfile {
   uid: string;
@@ -194,6 +195,15 @@ export interface CursorPresence {
   // banner stays up through a pause. Meaningless when `presenting` is
   // false/absent. Same migration-tolerance as `presenting`.
   presenterPaused?: boolean;
+  // Month 5 (laser pointer). This author's most recently sampled point while
+  // using the laser tool. The cursor doc holds at most one — `setDoc`
+  // replaces it whole on every write (see `cursorService.ts#writerFor`) — so
+  // `src/components/CursorLayer.tsx` accumulates a fading multi-point trail
+  // reader-side from a stream of these (`src/lib/laser.ts#appendPing`) rather
+  // than expecting an array here. Absent whenever the author isn't
+  // laser-pointing, or the doc predates the laser (migration-tolerant like
+  // every field above).
+  ping?: LaserPing;
 }
 
 export interface Session {
