@@ -243,9 +243,11 @@ export async function handlePollDeleted(
  * `makeRecomputeTally`'s own split above. Reads the full votes collection
  * (no `where` filter needed — the Admin SDK isn't subject to
  * firestore.rules' per-document read gate the client-side equivalent
- * needs; see `pollService.subscribeToVotes`/`deletePoll`'s own comments)
- * plus the tally doc, and deletes everything found in ≤500-doc batches —
- * same chunking `pollService.deletePoll` used to do client-side.
+ * needs; see `pollService.subscribeToVotes`'s own comment — the only one of
+ * the two that still adds such a filter, since `deletePoll` no longer
+ * queries votes at all) plus the tally doc, and deletes everything found in
+ * ≤500-doc batches — same chunking `pollService.deletePoll` used to do
+ * client-side.
  */
 export function makeDeletePollSubcollections(db: Firestore): PollCleanupDeps["deletePollSubcollections"] {
   return async (boardId, pollId) => {

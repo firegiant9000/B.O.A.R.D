@@ -1558,11 +1558,17 @@ describe("polls", () => {
     // Demonstrates the OLD deletePoll's exact shape still fails, so this
     // test doesn't just exercise a strawman: batching the vote + tally +
     // poll deletes together (mirroring pollService.deletePoll before this
-    // fix) is denied, because the tally delete inside it is. ONE shared
-    // `daveDb` for every ref in the batch — `writeBatch` and every doc it
-    // deletes must come from the SAME Firestore instance, and `db(uid)`
-    // (like `pollRef`/`voteRef`, which call it internally) mints a FRESH
-    // instance on every call.
+    // fix) is denied. This alone does NOT isolate the tally delete as the
+    // cause, though — DAVE is an effective editor but not the board admin,
+    // and firestore.rules' votes `allow delete` permits only
+    // isBoardAdmin(boardId) or the voter deleting their own doc, so DAVE's
+    // vote-delete line is independently denied too; removing the tally
+    // line here would not make this particular batch succeed. The
+    // differential pair in the next test isolates the tally as the actual,
+    // sole cause. ONE shared `daveDb` for every ref in the batch —
+    // `writeBatch` and every doc it deletes must come from the SAME
+    // Firestore instance, and `db(uid)` (like `pollRef`/`voteRef`, which
+    // call it internally) mints a FRESH instance on every call.
     const daveDb = db(DAVE);
     const oldStyleBatch = writeBatch(daveDb);
     oldStyleBatch.delete(doc(daveDb, "boards/boardWrite/polls/pollAnon/votes/alice"));
@@ -1576,6 +1582,53 @@ describe("polls", () => {
     // trigger using the Admin SDK, which bypasses the very rule that made
     // the batch above fail).
     await assertSucceeds(deleteDoc(pollRef(DAVE, "pollAnon")));
+  });
+
+  // Isolates the tally delete as the SOLE cause of an old-style batch's
+  // denial — the test above cannot, by itself, because DAVE (an effective
+  // editor, not the board admin) is independently denied on the vote-delete
+  // line too. Run instead as ALICE, the board admin: `isBoardAdmin(boardId)`
+  // lets her delete any vote doc regardless of who cast it, and she is also
+  // the board owner so `isBoardEditor(boardId)` lets her delete the poll —
+  // so both non-tally lines succeed for her on their own, and the tally
+  // line is the only thing left that can make a batch fail. A batch that
+  // succeeds actually deletes its poll, so the pair runs against two
+  // otherwise-identical fresh polls rather than sharing one: `[vote, poll]`
+  // succeeds; `[vote, tally, poll]` — the same two deletes, plus the tally
+  // line — fails.
+  it("a differential pair proves the tally delete alone is what fails an old-style batch", async () => {
+    const aliceDb = db(ALICE);
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const raw = ctx.firestore();
+      for (const pollId of ["diffNoTally", "diffWithTally"]) {
+        await setDoc(doc(raw, `boards/boardWrite/polls/${pollId}`), newPoll({ anonymous: true }));
+        await setDoc(doc(raw, `boards/boardWrite/polls/${pollId}/votes/alice`), {
+          userId: ALICE,
+          optionIndices: [0],
+          anonymous: true,
+        });
+      }
+      await setDoc(doc(raw, "boards/boardWrite/polls/diffWithTally/tally/summary"), {
+        counts: { "0": 1 },
+        totalVotes: 1,
+      });
+    });
+
+    // [vote, poll] — no tally line — succeeds.
+    const noTallyBatch = writeBatch(aliceDb);
+    noTallyBatch.delete(doc(aliceDb, "boards/boardWrite/polls/diffNoTally/votes/alice"));
+    noTallyBatch.delete(doc(aliceDb, "boards/boardWrite/polls/diffNoTally"));
+    await assertSucceeds(noTallyBatch.commit());
+
+    // [vote, tally, poll] — the identical vote + poll deletes that just
+    // succeeded above, plus the tally line — fails. The tally delete is the
+    // only variable between the two batches, which is what proves it's the
+    // cause.
+    const withTallyBatch = writeBatch(aliceDb);
+    withTallyBatch.delete(doc(aliceDb, "boards/boardWrite/polls/diffWithTally/votes/alice"));
+    withTallyBatch.delete(doc(aliceDb, "boards/boardWrite/polls/diffWithTally/tally/summary"));
+    withTallyBatch.delete(doc(aliceDb, "boards/boardWrite/polls/diffWithTally"));
+    await assertFails(withTallyBatch.commit());
   });
 });
 

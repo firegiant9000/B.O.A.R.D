@@ -257,8 +257,26 @@ describe("makeDeletePollSubcollections (the real cleanup core)", () => {
 describe("onPollDeleted — event type", () => {
   it("is bound to the poll document's own 'deleted' event, not the votes subcollection", () => {
     const endpoint = (onPollDeleted as unknown as {
-      __endpoint: { eventTrigger: { eventType: string; eventFilters?: Record<string, unknown> } };
+      __endpoint: {
+        eventTrigger: {
+          eventType: string;
+          eventFilterPathPatterns?: Record<string, unknown>;
+        };
+      };
     }).__endpoint;
     expect(endpoint.eventTrigger.eventType).toBe("google.cloud.firestore.document.v1.deleted");
+    // The eventType assertion above cannot, by itself, tell this trigger
+    // apart from one bound to `.../polls/{pollId}/votes/{voteId}` with the
+    // same event type — the title's "not the votes subcollection" claim
+    // needs the document path pinned too. Both this document's wildcards
+    // (`{boardId}`, `{pollId}`) make it a PathPattern with wildcards, which
+    // `firebase-functions`' `makeEndpoint` (v2/providers/firestore.js)
+    // routes into `eventFilterPathPatterns.document`, not the plain
+    // `eventFilters.document` a literal, wildcard-free path would use —
+    // confirmed against the installed package by printing this exact
+    // endpoint's real `eventTrigger`, not assumed from source line numbers.
+    expect(endpoint.eventTrigger.eventFilterPathPatterns?.document).toBe(
+      "boards/{boardId}/polls/{pollId}"
+    );
   });
 });

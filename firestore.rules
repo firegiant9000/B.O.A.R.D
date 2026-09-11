@@ -357,13 +357,17 @@ service cloud.firestore {
     // whole collection), an unfiltered collection query can no longer be
     // proven safe ahead of time — Firestore requires a LIST query to be
     // satisfiable from the query's own shape, not from re-checking each
-    // potential result. `pollService.subscribeToVotes` and
-    // `pollService.deletePoll` both add `where('anonymous', '==', false)`
-    // for exactly this reason (see their own comments) — no code path ever
-    // needed to list anonymous votes anyway (nothing may ever read them,
-    // not even to clean them up: an anonymous poll's votes are permanently
-    // orphaned once its poll doc is gone, by the same design that keeps
-    // them unreadable in the first place).
+    // potential result. `pollService.subscribeToVotes` adds
+    // `where('anonymous', '==', false)` for exactly this reason (see its
+    // own comment). `pollService.deletePoll` no longer queries votes at
+    // all (fix round 3 moved subcollection cleanup server-side, below), so
+    // it needs no such filter.
+    //
+    // No client-side path ever needed to LIST anonymous votes — but they
+    // are NOT permanently orphaned (fix round 3): once the poll doc is
+    // gone, `functions/src/triggers/pollTally.ts`'s `onPollDeleted` removes
+    // every vote doc (anonymous or not) and the tally doc, via the Admin
+    // SDK, which bypasses this same read gate.
 
     // Bounds `optionIndices`' SIZE against the poll's mode (single = exactly
     // one; dots = 1..MAX_DOT_VOTES, mirrored from pollService.MAX_DOT_VOTES —
