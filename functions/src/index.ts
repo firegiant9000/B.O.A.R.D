@@ -128,10 +128,10 @@ export { onPollDeleted } from "./triggers/pollTally";
 // functions/src/triggers/embeddings.ts's header for the three reasons a
 // wildcard is wrong here (it would also fire on ocrCache/polls/comments/
 // aiUsage/... writes, AND on `embeddings` itself, a self-feedback loop).
-// Each embed is rate-limited, plan-quota-gated, debounced on top of the
-// content-hash skip, and metered under `feature: "embeddings"` — see that
-// file's header for the metering design and its known cooldown-vs-true-
-// debounce tradeoff.
+// Each embed is rate-limited, plan-quota-gated (a legacy board still METERS
+// under a synthetic `solo-${authorUid}` bucket, deliberately, even though it
+// has no plan to cap), and recorded under `feature: "embeddings"` — see that
+// file's header for the full metering design.
 export {
   onNoteWritten,
   onTextElementWritten,

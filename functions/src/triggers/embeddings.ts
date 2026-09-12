@@ -43,10 +43,23 @@ import { OPENAI_API_KEY } from "../config";
 // callable (generateFlashcards.ts, the pattern this mirrors):
 //   - No auth context. There is no caller to resolve a workspace from, so the
 //     workspace is resolved from the BOARD document instead. A legacy board
-//     (no workspaceId) buckets its rate limit per the element's own author
-//     uid and skips the plan-quota check entirely — same carve-out
-//     generateFlashcards.ts uses for a solo/legacy board, since there is no
-//     plan to cap.
+//     (no workspaceId) buckets its rate limit AND its cost telemetry under
+//     `solo-${authorUid}` (a synthetic bucket, not a real workspace — see
+//     `bucketKey` below) rather than skipping metering the way
+//     generateFlashcards.ts's own solo/legacy carve-out does. THIS IS A
+//     DELIBERATE DIVERGENCE from that precedent, not an oversight: a callable
+//     needs a human clicking a button per call, but a trigger fires on every
+//     write with nobody present — `templateService.applyTemplateToBoard` and
+//     onboardingService's seeding both bulk-create notes, so a template
+//     applied to a legacy board would otherwise bill OpenAI at bucket rate
+//     (~120/hour, ~2,880/day, per author) with no dollar figure anywhere that
+//     could ever reveal the spend. Still no PLAN to cap a legacy board
+//     against (there is no plan model for solo boards, and inventing one
+//     here is not the ask) — only visibility into what it costs. This is the
+//     THIRD instance of "a legacy board bypasses a quota gate" on this
+//     branch (voice notes' `boardOnPaidPlan`, and the M5 seat cap's own
+//     legacy fallback, are the other two) — a known class of gap on
+//     workspace-less boards, not a local quirk of this feature.
 //   - No caller to throw an error at. `HttpsError("resource-exhausted", ...,
 //     { reason })` (every callable's convention for telling a client which
 //     kind of denial it hit) does not apply here — there is no client
@@ -56,80 +69,42 @@ import { OPENAI_API_KEY } from "../config";
 //     correctness (the next settled edit gets another chance to index; a
 //     skipped refresh corrupts nothing).
 //
-// DEBOUNCE, on top of the hash-skip, not instead of it. `contentHash` is a
-// DEDUP, not a debounce: it collapses IDENTICAL re-embeds to zero cost (the
-// common case, and genuinely most of the savings), but does nothing for a
-// burst of rapid, each-genuinely-DIFFERENT edits — someone typing sentence
-// by sentence produces one paid call per autosave flush, because every
-// intermediate hash differs from the last. `EMBEDDING_DEBOUNCE_MS` below
-// adds a cooldown on top: skip (again, no provider call) when this
-// element's last REAL embed was too recent, using the `updatedAt` already
-// stored — no new dependency, no Cloud Tasks, no delayed scheduling.
-export const EMBEDDING_DEBOUNCE_MS = 20_000;
-// Chosen relative to the app's own autosave cadence: `useBoardDocument.ts`'s
-// `scheduleSave` debounces the board's `updatedAt` bump at 2000ms, so a burst
-// of active edits already produces Firestore writes roughly every couple of
-// seconds. 20s is ~10x that: comfortably long enough to coalesce a typing
-// burst into roughly one paid embed rather than one per flush, while still
-// short enough that a normal pause between sentences or elements reindexes
-// well within the timescale board Q&A needs to feel current. KNOWN
-// LIMITATION, disclosed rather than hidden: this is a cooldown, not a true
-// trailing-edge debounce — if editing stops WHILE an element is inside its
-// cooldown window, that final text is not re-embedded until the NEXT write
-// to that element (there is no scheduled follow-up call). A true
-// trailing-edge debounce would need delayed/cancellable scheduling (Cloud
-// Tasks), which conflicts with "no new dependencies"; this is the accepted,
-// cheaper tradeoff.
+// NO COOLDOWN/DEBOUNCE ON TOP OF THE HASH-SKIP — deliberately. An earlier
+// version of this file added a time-based cooldown here, justified against
+// `useBoardDocument.ts`'s 2000ms `scheduleSave` debounce. That justification
+// was wrong: `scheduleSave` debounces the BOARD document's own `updatedAt`
+// bump, which none of these ten bindings watch. The collections this file
+// DOES watch are commit-on-finish, not stream-of-keystrokes: `notes` has no
+// update function at all (`pathService.saveTextNote` only creates), and
+// `textElements` is created with `text: ""` then written ONCE, complete,
+// when `commitTextEdit` closes the inline editor. There is no repeated-save
+// burst for a single element's text to coalesce here — the one real repeat
+// case (dragging/resizing/reordering an element, where the TEXT is
+// unchanged) is exactly what the content-hash skip already collapses to
+// zero cost, for free. A cooldown on top would only have added a real risk
+// with no corresponding benefit: commit a text element, spot a typo,
+// re-commit within the window → skipped, and if that element is never
+// touched again the index holds the pre-correction text permanently. It
+// also would not have addressed this app's actual burst pattern (a template
+// import creates N DIFFERENT elements at once) — a cooldown is per-element,
+// so every one of the N is a first write and embeds regardless. Removed
+// rather than kept with a corrected rationale that would have admitted it
+// does nothing.
 
-/**
- * Whether to skip attempting an embed for this write — BEFORE spending a
- * rate-limit token or a quota check on a call that would turn out to be a
- * no-op. Two independent reasons to skip:
- *   1. Unchanged content (the same check `embedElement` makes internally —
- *      duplicated here, not shared, because this gate needs the answer
- *      BEFORE metering, while `embedElement`'s own check happens AFTER).
- *   2. Debounced: changed content, but the last REAL embed of this element
- *      was too recent.
- *
- * DELIBERATELY DOES NOT follow this codebase's "deny unless provably under"
- * quota-gate convention (`!(used < limit)`, failing closed toward DENY on
- * corrupt data) for the debounce half of this check. That convention exists
- * because a quota gate is the LAST line of defense against overspend, so
- * corrupt data must fail toward the safe (denying) side. This gate is not a
- * spend gate — `consumeToken`/`checkAiQuota` downstream of it are, and they
- * apply regardless of what this function decides. So a corrupt/non-finite
- * `updatedAt` here fails toward ATTEMPT, not skip: attempting is
- * self-healing (a successful embed overwrites the corrupt `updatedAt` with a
- * fresh valid one, via `embedElement`) and cannot cause overspend (the real
- * spend gates still run right after); skipping on corrupt data would not
- * self-heal anything — it would silently stop re-indexing that element
- * FOREVER, since a skip never writes a fresh `updatedAt` either. See this
- * function's own tests for the RED-check that confirms the direction.
- */
-export function shouldSkipEmbedAttempt(
-  stored: StoredEmbedding | null,
-  text: string,
-  now: number,
-  debounceMs: number = EMBEDDING_DEBOUNCE_MS
-): boolean {
-  if (stored?.contentHash === contentHashFor(text)) {
-    return true; // unchanged — embedElement would no-op this anyway.
-  }
-  if (
-    typeof stored?.updatedAt === "number" &&
-    Number.isFinite(stored.updatedAt) &&
-    now - stored.updatedAt < debounceMs
-  ) {
-    return true; // too soon since the last REAL embed of this element.
-  }
-  return false; // no stored doc yet, corrupt/missing updatedAt, or past the cooldown — attempt.
+/** Whether `stored`'s content hash already matches `text` — the memoization
+ *  check `embedElement` makes internally, duplicated here (not shared)
+ *  because this gate needs the answer BEFORE spending a rate-limit token or
+ *  a quota check on a call that would turn out to be a no-op; `embedElement`
+ *  makes the same check AFTER, as the thing that actually skips the write. */
+export function isContentUnchanged(stored: StoredEmbedding | null, text: string): boolean {
+  return stored?.contentHash === contentHashFor(text);
 }
 
 /** One canvas-content element's extracted embeddable content, plus its
  *  author — a trigger has no auth context, so the element's own `userId`
  *  stands in for a caller uid: it's the closest identity available, used
- *  only for the rate-limit bucket fallback (legacy boards) and the usage
- *  log's `uid` field. */
+ *  only for the rate-limit/telemetry bucket fallback (legacy boards) and
+ *  the usage log's `uid` field. */
 export interface ExtractedElement {
   element: BoardElementInput;
   authorUid: string;
@@ -142,30 +117,34 @@ type ElementExtractor = (
   data: FirebaseFirestore.DocumentData
 ) => Promise<ExtractedElement | null>;
 
-function authorOf(data: FirebaseFirestore.DocumentData): string {
+export function authorOf(data: FirebaseFirestore.DocumentData): string {
   return typeof data.userId === "string" && data.userId ? data.userId : "unknown";
 }
 
-const extractNote: ElementExtractor = async (_db, _boardId, elementId, data) => {
+export const extractNote: ElementExtractor = async (_db, _boardId, elementId, data) => {
   const content = typeof data.content === "string" ? data.content : "";
   if (!content.trim()) return null;
   return { element: { id: elementId, elementType: "note", text: content }, authorUid: authorOf(data) };
 };
 
-const extractTextElement: ElementExtractor = async (_db, _boardId, elementId, data) => {
+export const extractTextElement: ElementExtractor = async (_db, _boardId, elementId, data) => {
   const text = typeof data.text === "string" ? data.text : "";
   if (!text.trim()) return null;
   return { element: { id: elementId, elementType: "textElement", text }, authorUid: authorOf(data) };
 };
 
-// `paths`/`shapes`/`images` carry no native text field (`DrawPath`,
-// `ShapeElement`, `ImageElement` in src/types/index.ts — geometry and
-// storage metadata only, never a text/label property). A single STROKE's
-// transcription, once run, already lands as a NEW `textElements` document
-// instead (`useBoardAI.ts`'s `recognizeText`/`acceptOcr` → `placeOcrText`),
-// which `extractTextElement` above already embeds — duplicating that text
-// onto the stroke's own embedding would double-index the same words under
-// two ids, not add coverage.
+// `paths`/`shapes` carry no native text field (`DrawPath`, `ShapeElement` in
+// src/types/index.ts — geometry only, never a text/label property).
+// `ImageElement` DOES carry an `alt: string` field, but it is populated from
+// the uploaded file's NAME (imageService), not descriptive text about the
+// image's content — embedding a filename would not answer a board Q&A
+// question, so it is skipped for the same reason as shapes, not because the
+// field doesn't exist. A single STROKE's transcription, once run, already
+// lands as a NEW `textElements` document instead (`useBoardAI.ts`'s
+// `recognizeText`/`acceptOcr` → `placeOcrText`), which `extractTextElement`
+// above already embeds — duplicating that text onto the stroke's own
+// embedding would double-index the same words under two ids, not add
+// coverage.
 //
 // `extractPath` still makes ONE narrow, real (not fabricated) attempt:
 // `ocrCache` is keyed by a hash of the OCR'd SELECTION's path ids
@@ -177,7 +156,7 @@ const extractTextElement: ElementExtractor = async (_db, _boardId, elementId, da
 // this cache entry" from just this one path's own id. This under-covers
 // multi-stroke transcriptions (only reachable via `textElements` above) but
 // never double-counts or guesses.
-const extractPath: ElementExtractor = async (db, boardId, elementId, data) => {
+export const extractPath: ElementExtractor = async (db, boardId, elementId, data) => {
   const key = ocrCacheKey([elementId]);
   const cached = await getCachedOcr(db, boardId, key);
   if (!cached || !cached.text.trim()) return null;
@@ -186,19 +165,18 @@ const extractPath: ElementExtractor = async (db, boardId, elementId, data) => {
 
 // No OCR or captioning runs against a whole SHAPE or IMAGE element today
 // (OCR runs only against a user-selected STROKE region — useBoardAI.ts —
-// never a shape or an image), and neither type carries a text field to
-// begin with. Explicit no-op extractors (not simply omitted bindings) so the
-// five bindings below stay exactly the element-subcollection set
-// firestore.rules names, ready to gain a real extractor the moment one of
-// these sources gains embeddable text. Audio transcripts (Whisper,
+// never a shape or an image). Explicit no-op extractors (not simply omitted
+// bindings) so the five bindings below stay exactly the element-subcollection
+// set firestore.rules names, ready to gain a real extractor the moment one
+// of these sources gains embeddable text. Audio transcripts (Whisper,
 // ROADMAP.md) are expected to join this set NEXT, as a SIXTH binding — this
 // list is not written to calcify as exhaustive.
-const extractShape: ElementExtractor = async () => null;
-const extractImage: ElementExtractor = async () => null;
+export const extractShape: ElementExtractor = async () => null;
+export const extractImage: ElementExtractor = async () => null;
 
 type Collection = "notes" | "textElements" | "paths" | "shapes" | "images";
 
-const EXTRACTORS: Record<Collection, ElementExtractor> = {
+export const EXTRACTORS: Record<Collection, ElementExtractor> = {
   notes: extractNote,
   textElements: extractTextElement,
   paths: extractPath,
@@ -225,6 +203,13 @@ export interface EmbeddingTriggerDeps {
     usage: { promptTokens: number; totalTokens: number };
     now: number;
   }): Promise<void>;
+  /** Re-reads the ELEMENT's own document (not the embedding doc) — the race
+   *  guard in `handleElementWrite` below. Bound to one specific board/
+   *  collection/element at construction time (see `makeDeps`), not
+   *  parameterized here, since one `EmbeddingTriggerDeps` is already
+   *  constructed per invocation for exactly one element. */
+  elementStillExists(): Promise<boolean>;
+  deleteEmbedding(boardId: string, elementId: string): Promise<void>;
 }
 
 /**
@@ -242,6 +227,16 @@ export async function handleElementWrite(
 ): Promise<void> {
   const { element, authorUid } = extracted;
 
+  // Checked FIRST, before any board read: a position/resize/z-order write
+  // (a drag, a reorder) changes none of these element TYPES' text, so this
+  // is the by-far-most-common invocation shape and it should cost nothing
+  // but this one read — not also a board-document read that the unchanged
+  // hash makes moot immediately afterward.
+  const stored = await deps.getStoredEmbedding(boardId, element.id);
+  if (isContentUnchanged(stored, element.text)) {
+    return; // unchanged content — no board read, no metering, no embed.
+  }
+
   const workspaceId = await deps.getBoardWorkspaceId(boardId);
   if (workspaceId === null) {
     // The board itself is gone (deleted mid-flight, between the element
@@ -252,16 +247,11 @@ export async function handleElementWrite(
     return;
   }
 
-  const stored = await deps.getStoredEmbedding(boardId, element.id);
-  if (shouldSkipEmbedAttempt(stored, element.text, now)) {
-    return; // unchanged content, or too soon since the last real embed — free.
-  }
-
   // Rate limit BEFORE quota, mirroring generateFlashcards.ts's own order: a
   // transient throttle is cheaper to check than a Firestore quota read.
-  // Legacy (no-workspace) boards bucket per AUTHOR, the closest thing to a
-  // caller identity a trigger has (mirrors generateFlashcards' `solo-${uid}`
-  // fallback).
+  // `bucketKey` is ALSO the telemetry bucket below for a legacy board — see
+  // this file's header for why that's a deliberate divergence from
+  // generateFlashcards.ts, not an oversight.
   const bucketKey = workspaceId || `solo-${authorUid}`;
   const allowed = await deps.consumeToken(bucketKey, now);
   if (!allowed) {
@@ -279,7 +269,8 @@ export async function handleElementWrite(
   }
 
   // Plan quota gate — only meaningful for a real workspace; a legacy board
-  // has no plan to cap (same carve-out as generateFlashcards.ts).
+  // has no plan to cap (same carve-out as generateFlashcards.ts). Telemetry
+  // below is NOT carved out the same way — see this file's header.
   if (workspaceId) {
     const withinQuota = await deps.checkAiQuota(workspaceId, now);
     if (!withinQuota) {
@@ -295,41 +286,76 @@ export async function handleElementWrite(
   }
 
   const outcome = await deps.embed(boardId, element, now);
-  if (!outcome.embedded || !workspaceId || !outcome.model || !outcome.usage) {
-    // Either a narrow race with another invocation made this a hash-skip
-    // after all, or a legacy board with nothing to meter under — either way,
-    // no real provider call happened here that needs recording.
-    return;
+  if (!outcome.embedded) {
+    return; // a narrow race with another invocation made this a hash-skip after all.
   }
 
-  try {
-    await deps.recordUsage({
-      workspaceId,
-      uid: authorUid,
-      model: outcome.model,
-      usage: outcome.usage,
-      now,
-    });
-  } catch (err) {
-    // A telemetry write must never undo an embed that already happened and
-    // was already paid for — log and swallow, mirroring generateFlashcards'
-    // own recordAiUsage try/catch.
-    logger.error("embeddings trigger: usage telemetry write failed", { boardId, err });
+  // Meter regardless of the race guard below: the provider was actually
+  // called and the cost was actually incurred, whether or not the element
+  // (and so the embedding this call just wrote) still exists a moment
+  // later. `workspaceId: bucketKey` is what makes a legacy board's spend
+  // show up somewhere at all — `workspaces/solo-${authorUid}/aiUsage/...`
+  // is a synthetic bucket, not a real workspace document, and nothing in
+  // the product UI surfaces it; it exists so the spend is not INVISIBLE,
+  // not so it's a polished dashboard entry. See this file's header.
+  if (outcome.model && outcome.usage) {
+    try {
+      await deps.recordUsage({
+        workspaceId: bucketKey,
+        uid: authorUid,
+        model: outcome.model,
+        usage: outcome.usage,
+        now,
+      });
+    } catch (err) {
+      // A telemetry write must never undo an embed that already happened
+      // and was already paid for — log and swallow, mirroring
+      // generateFlashcards' own recordAiUsage try/catch.
+      logger.error("embeddings trigger: usage telemetry write failed", { boardId, err });
+    }
+  }
+
+  // Write/delete race guard. `embedElement` above can take seconds (a real
+  // OpenAI round trip); if the element was deleted WHILE it was in flight,
+  // `onXDeleted`'s cleanup trigger (below) may already have run and found
+  // NOTHING to delete yet — then THIS write lands afterward and resurrects
+  // exactly the "citation pointing at nothing" item the deletion trigger
+  // exists to prevent. Re-reading the element's own document (not the
+  // embedding doc) after the embed catches that: if it's gone, delete the
+  // embedding we just wrote.
+  //
+  // NOT AIRTIGHT — stated honestly, not implied otherwise: this is a
+  // read-then-maybe-delete, not a transaction spanning the element's
+  // collection and `embeddings` together. A delete landing in the gap
+  // between THIS existence check and the compensating delete below would
+  // still be missed, vanishingly rare as that narrower window is. Closing
+  // it fully would need a transaction; this narrows the exposure from "the
+  // full duration of a paid embed call" to one more Firestore round trip,
+  // not to zero.
+  const stillExists = await deps.elementStillExists();
+  if (!stillExists) {
+    await deps.deleteEmbedding(boardId, element.id);
   }
 }
 
-function makeDeps(db: Firestore, provider: EmbeddingProvider): EmbeddingTriggerDeps {
+function makeDeps(
+  db: Firestore,
+  provider: EmbeddingProvider,
+  boardId: string,
+  collection: Collection,
+  elementId: string
+): EmbeddingTriggerDeps {
   return {
-    getBoardWorkspaceId: async (boardId) => {
-      const snap = await db.doc(`boards/${boardId}`).get();
+    getBoardWorkspaceId: async (bId) => {
+      const snap = await db.doc(`boards/${bId}`).get();
       if (!snap.exists) return null;
       const workspaceId = snap.data()?.workspaceId;
       return typeof workspaceId === "string" ? workspaceId : "";
     },
-    getStoredEmbedding: (boardId, elementId) => getStoredEmbedding(db, boardId, elementId),
+    getStoredEmbedding: (bId, elId) => getStoredEmbedding(db, bId, elId),
     consumeToken: (bucketKey, now) => consumeToken(db, bucketKey, now),
     checkAiQuota: (workspaceId, now) => checkAiQuota(db, workspaceId, now),
-    embed: (boardId, element, now) => embedElement(db, boardId, element, provider, now),
+    embed: (bId, element, now) => embedElement(db, bId, element, provider, now),
     recordUsage: ({ workspaceId, uid, model, usage, now }) =>
       recordAiUsage(db, {
         workspaceId,
@@ -339,6 +365,13 @@ function makeDeps(db: Firestore, provider: EmbeddingProvider): EmbeddingTriggerD
         usage: { promptTokens: usage.promptTokens, completionTokens: 0, totalTokens: usage.totalTokens },
         now,
       }).then(() => undefined),
+    elementStillExists: async () => {
+      const snap = await db.doc(`boards/${boardId}/${collection}/${elementId}`).get();
+      return snap.exists;
+    },
+    deleteEmbedding: async (bId, elId) => {
+      await db.doc(`boards/${bId}/embeddings/${elId}`).delete();
+    },
   };
 }
 
@@ -357,7 +390,12 @@ function makeWriteTrigger(collection: Collection) {
       if (!extracted) return; // nothing embeddable in this write.
 
       const provider = new OpenAIEmbeddingProvider(OPENAI_API_KEY.value());
-      await handleElementWrite(boardId, extracted, makeDeps(db, provider), Date.now());
+      await handleElementWrite(
+        boardId,
+        extracted,
+        makeDeps(db, provider, boardId, collection, elementId),
+        Date.now()
+      );
     }
   );
 }

@@ -99,11 +99,12 @@ function embeddingRef(db: Firestore, boardId: string, elementId: string) {
 }
 
 /** Reads back the stored embedding doc, or `null` if none exists yet. Shared
- *  by `embedElement`'s own hash-check below and by the trigger's debounce
- *  gate (`shouldSkipEmbedAttempt` in triggers/embeddings.ts), which needs the
- *  same `contentHash`/`updatedAt` pair BEFORE deciding whether metering a
- *  real provider call is even on the table — so both read through this one
- *  implementation rather than each constructing the doc path separately. */
+ *  by `embedElement`'s own hash-check below and by the trigger's own
+ *  pre-metering gate (`isContentUnchanged` in triggers/embeddings.ts), which
+ *  needs the same `contentHash` BEFORE deciding whether spending a
+ *  rate-limit token or a quota check on a real provider call is even worth
+ *  it — so both read through this one implementation rather than each
+ *  constructing the doc path separately. */
 export async function getStoredEmbedding(
   db: Firestore,
   boardId: string,

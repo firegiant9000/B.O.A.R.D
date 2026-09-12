@@ -1,22 +1,23 @@
-// Unit tests for the board Q&A embedding TRIGGER (Month 6) — the debounce
-// gate, the metering-gated pure handler, deletion cleanup, and the actual
-// registered shape of all ten bindings. No emulator, no Functions runtime:
-// mirrors pollTally.test.ts's split between pure-logic tests (deps injected
-// directly) and "__endpoint" metadata tests that pin the real registered
-// event type/path without ever invoking a handler through a fake CloudEvent.
-
-// No jest.mock calls needed: every test below either calls the pure
-// functions directly with hand-built deps, or inspects an exported
-// trigger's `__endpoint` metadata without ever invoking its handler body —
-// so `getFirestore()`, `OpenAIEmbeddingProvider`, `consumeToken`, etc. are
-// never actually reached. Mirrors pollTally.test.ts's own "__endpoint"
-// tests, which need no mocking for the same reason.
+// Unit tests for the board Q&A embedding TRIGGER (Month 6) — the
+// unchanged-content gate, the metering-gated pure handler (including legacy-
+// board telemetry and the write/delete race guard), deletion cleanup, the
+// per-collection extractors, and the actual registered shape of all ten
+// bindings. No emulator, no Functions runtime: mirrors pollTally.test.ts's
+// split between pure-logic tests (deps injected directly) and "__endpoint"
+// metadata tests that pin the real registered event type/path without ever
+// invoking a handler through a fake CloudEvent.
 
 import {
-  shouldSkipEmbedAttempt,
+  isContentUnchanged,
   handleElementWrite,
   handleElementDeleted,
-  EMBEDDING_DEBOUNCE_MS,
+  authorOf,
+  extractNote,
+  extractTextElement,
+  extractPath,
+  extractShape,
+  extractImage,
+  EXTRACTORS,
   onNoteWritten,
   onTextElementWritten,
   onPathWritten,
@@ -32,6 +33,7 @@ import {
   type ExtractedElement,
 } from "../triggers/embeddings";
 import { contentHashFor, type StoredEmbedding, type EmbedOutcome } from "../ai/embeddings";
+import { ocrCacheKey } from "../ai/ocrCache";
 
 function makeStored(overrides: Partial<StoredEmbedding> = {}): StoredEmbedding {
   return {
@@ -45,41 +47,19 @@ function makeStored(overrides: Partial<StoredEmbedding> = {}): StoredEmbedding {
   };
 }
 
-describe("shouldSkipEmbedAttempt", () => {
-  it("skips when the content hash is unchanged", () => {
+describe("isContentUnchanged", () => {
+  it("is true when the stored contentHash matches the new text's hash", () => {
     const stored = makeStored({ contentHash: contentHashFor("same text") });
-    expect(shouldSkipEmbedAttempt(stored, "same text", 999_999)).toBe(true);
+    expect(isContentUnchanged(stored, "same text")).toBe(true);
   });
 
-  it("skips when the text changed but the last real embed was inside the debounce window", () => {
-    const stored = makeStored({ contentHash: contentHashFor("old"), updatedAt: 1_000 });
-    const now = 1_000 + EMBEDDING_DEBOUNCE_MS - 1;
-    expect(shouldSkipEmbedAttempt(stored, "new", now)).toBe(true);
+  it("is false when the text changed", () => {
+    const stored = makeStored({ contentHash: contentHashFor("old") });
+    expect(isContentUnchanged(stored, "new")).toBe(false);
   });
 
-  it("attempts when the text changed and the debounce window has passed", () => {
-    const stored = makeStored({ contentHash: contentHashFor("old"), updatedAt: 1_000 });
-    const now = 1_000 + EMBEDDING_DEBOUNCE_MS;
-    expect(shouldSkipEmbedAttempt(stored, "new", now)).toBe(false);
-  });
-
-  it("never debounces the first-ever embed (no stored doc)", () => {
-    expect(shouldSkipEmbedAttempt(null, "brand new text", 5)).toBe(false);
-  });
-
-  // The NaN-guard direction. Deliberately does NOT follow the "deny unless
-  // provably under" quota-gate convention here (see this function's own
-  // header) — corrupt/non-finite `updatedAt` must fail toward ATTEMPT
-  // (self-healing: a real embed overwrites it with a fresh value), not
-  // toward skip (which would silently stop re-indexing this element
-  // forever, since a skip never writes anything). This is genuinely
-  // falsifiable: the OPPOSITE, "deny unless provably past the cooldown"
-  // phrasing (`!(elapsed >= debounceMs)`) flips a NaN `updatedAt` to
-  // "skip" instead — see this task's report for the RED-check confirming
-  // that flip actually fails this exact assertion.
-  it("attempts (does not silently skip forever) when updatedAt is corrupt/non-finite", () => {
-    const stored = makeStored({ contentHash: contentHashFor("old"), updatedAt: NaN });
-    expect(shouldSkipEmbedAttempt(stored, "new", 1_000_000)).toBe(false);
+  it("is false when there is no stored doc yet (first-ever embed)", () => {
+    expect(isContentUnchanged(null, "brand new text")).toBe(false);
   });
 });
 
@@ -96,6 +76,8 @@ describe("handleElementWrite", () => {
         usage: { promptTokens: 5, totalTokens: 5 },
       })),
       recordUsage: jest.fn(async () => undefined),
+      elementStillExists: jest.fn(async () => true),
+      deleteEmbedding: jest.fn(async () => undefined),
       ...overrides,
     };
   }
@@ -104,7 +86,7 @@ describe("handleElementWrite", () => {
     return { element: { id: "el1", elementType: "note", text }, authorUid };
   }
 
-  it("embeds and meters on the happy path", async () => {
+  it("embeds and meters on the happy path, and does not touch the race guard's delete", async () => {
     const deps = makeDeps();
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
@@ -116,29 +98,23 @@ describe("handleElementWrite", () => {
       usage: { promptTokens: 5, totalTokens: 5 },
       now: 1_000_000,
     });
+    expect(deps.elementStillExists).toHaveBeenCalledTimes(1);
+    expect(deps.deleteEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("skips the embed (no board read, no rate-limit consume) when the content hash is unchanged", async () => {
+    const stored = makeStored({ contentHash: contentHashFor("hello") });
+    const deps = makeDeps({ getStoredEmbedding: jest.fn(async () => stored) });
+    await handleElementWrite("b1", extracted("hello"), deps, 999_999_999);
+
+    expect(deps.getBoardWorkspaceId).not.toHaveBeenCalled();
+    expect(deps.consumeToken).not.toHaveBeenCalled();
+    expect(deps.embed).not.toHaveBeenCalled();
   });
 
   it("skips everything (no rate-limit consume, no embed) when the board doc is missing", async () => {
     const deps = makeDeps({ getBoardWorkspaceId: jest.fn(async () => null) });
     await handleElementWrite("gone", extracted(), deps, 1_000_000);
-
-    expect(deps.consumeToken).not.toHaveBeenCalled();
-    expect(deps.embed).not.toHaveBeenCalled();
-  });
-
-  it("skips the embed (no rate-limit consume) when the content hash is unchanged", async () => {
-    const stored = makeStored({ contentHash: contentHashFor("hello") });
-    const deps = makeDeps({ getStoredEmbedding: jest.fn(async () => stored) });
-    await handleElementWrite("b1", extracted("hello"), deps, 999_999_999);
-
-    expect(deps.consumeToken).not.toHaveBeenCalled();
-    expect(deps.embed).not.toHaveBeenCalled();
-  });
-
-  it("skips the embed when debounced (changed text, too soon since the last real embed)", async () => {
-    const stored = makeStored({ contentHash: contentHashFor("old"), updatedAt: 1_000 });
-    const deps = makeDeps({ getStoredEmbedding: jest.fn(async () => stored) });
-    await handleElementWrite("b1", extracted("new"), deps, 1_000 + EMBEDDING_DEBOUNCE_MS - 1);
 
     expect(deps.consumeToken).not.toHaveBeenCalled();
     expect(deps.embed).not.toHaveBeenCalled();
@@ -161,26 +137,53 @@ describe("handleElementWrite", () => {
     expect(deps.recordUsage).not.toHaveBeenCalled();
   });
 
-  it("a legacy (no-workspace) board buckets the rate limit per author and skips the quota check and metering", async () => {
+  // The money item from fix round 2: a legacy board's spend must be
+  // visible, even though there is still no plan to cap it against.
+  it("a legacy (no-workspace) board buckets the rate limit AND meters usage under the synthetic solo-author bucket, but skips the quota check", async () => {
     const deps = makeDeps({ getBoardWorkspaceId: jest.fn(async () => "") });
     await handleElementWrite("legacyBoard", extracted("hello", "author-9"), deps, 1_000_000);
 
     expect(deps.consumeToken).toHaveBeenCalledWith("solo-author-9", 1_000_000);
     expect(deps.checkAiQuota).not.toHaveBeenCalled();
-    expect(deps.embed).toHaveBeenCalled(); // still embeds — just nothing to meter under
-    expect(deps.recordUsage).not.toHaveBeenCalled();
+    expect(deps.embed).toHaveBeenCalled();
+    expect(deps.recordUsage).toHaveBeenCalledWith({
+      workspaceId: "solo-author-9",
+      uid: "author-9",
+      model: "text-embedding-3-small",
+      usage: { promptTokens: 5, totalTokens: 5 },
+      now: 1_000_000,
+    });
   });
 
-  it("does not meter when embedElement itself reports a hash-skip (a narrow race with another invocation)", async () => {
+  it("does not meter or check the race guard when embedElement itself reports a hash-skip (a narrow race with another invocation)", async () => {
     const deps = makeDeps({ embed: jest.fn(async () => ({ embedded: false })) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.recordUsage).not.toHaveBeenCalled();
+    expect(deps.elementStillExists).not.toHaveBeenCalled();
+    expect(deps.deleteEmbedding).not.toHaveBeenCalled();
   });
 
   it("swallows a usage-telemetry write failure without throwing (a paid embed must not be undone by a logging failure)", async () => {
     const deps = makeDeps({ recordUsage: jest.fn(async () => { throw new Error("firestore down"); }) });
     await expect(handleElementWrite("b1", extracted(), deps, 1_000_000)).resolves.toBeUndefined();
+  });
+
+  // The write/delete race from fix round 2, item 2.
+  it("deletes the just-written embedding when the element was deleted during the (multi-second) embed call, while still recording the spend that already happened", async () => {
+    const deps = makeDeps({ elementStillExists: jest.fn(async () => false) });
+    await handleElementWrite("b1", extracted(), deps, 1_000_000);
+
+    expect(deps.recordUsage).toHaveBeenCalled(); // the OpenAI call already happened and was paid for
+    expect(deps.deleteEmbedding).toHaveBeenCalledWith("b1", "el1");
+    expect(deps.deleteEmbedding).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not delete the embedding when the element still exists (the ordinary case)", async () => {
+    const deps = makeDeps({ elementStillExists: jest.fn(async () => true) });
+    await handleElementWrite("b1", extracted(), deps, 1_000_000);
+
+    expect(deps.deleteEmbedding).not.toHaveBeenCalled();
   });
 });
 
@@ -193,6 +196,113 @@ describe("handleElementDeleted", () => {
 
     expect(deleteEmbedding).toHaveBeenCalledWith("b1", "el1");
     expect(deleteEmbedding).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Extractors — fix round 2, item 5. Each tested against the REAL element
+// field names (src/types/index.ts:342-367: TextNote.content,
+// TextElement.text), not just imported and trusted: if `extractNote` read
+// `data.text` instead of `data.content`, these fixtures (which set only
+// `content`) would make it return null instead of the expected element,
+// and the test below would fail — the whole point, since a silent field-
+// name mismatch here means the feature indexes nothing, with no error
+// anywhere to notice it by.
+
+describe("authorOf", () => {
+  it("returns the element's userId when present", () => {
+    expect(authorOf({ userId: "alice" })).toBe("alice");
+  });
+
+  it("falls back to 'unknown' when userId is missing, empty, or not a string", () => {
+    expect(authorOf({})).toBe("unknown");
+    expect(authorOf({ userId: "" })).toBe("unknown");
+    expect(authorOf({ userId: 42 })).toBe("unknown");
+  });
+});
+
+describe("extractNote", () => {
+  it("extracts a TextNote's content field (not text — notes have no such field)", async () => {
+    const result = await extractNote({} as any, "b1", "n1", { content: "hello board", userId: "alice" });
+    expect(result).toEqual({
+      element: { id: "n1", elementType: "note", text: "hello board" },
+      authorUid: "alice",
+    });
+  });
+
+  it("returns null for blank or missing content", async () => {
+    expect(await extractNote({} as any, "b1", "n1", { content: "   ", userId: "alice" })).toBeNull();
+    expect(await extractNote({} as any, "b1", "n1", { userId: "alice" })).toBeNull();
+  });
+});
+
+describe("extractTextElement", () => {
+  it("extracts a TextElement's text field (not content — text elements have no such field)", async () => {
+    const result = await extractTextElement({} as any, "b1", "t1", { text: "hello board", userId: "bob" });
+    expect(result).toEqual({
+      element: { id: "t1", elementType: "textElement", text: "hello board" },
+      authorUid: "bob",
+    });
+  });
+
+  it("returns null for blank or missing text (e.g. a freshly created, still-empty text box)", async () => {
+    expect(await extractTextElement({} as any, "b1", "t1", { text: "", userId: "bob" })).toBeNull();
+    expect(await extractTextElement({} as any, "b1", "t1", { userId: "bob" })).toBeNull();
+  });
+});
+
+describe("extractPath", () => {
+  function fakeOcrDb(
+    entries: Record<string, { text: string; confidence: number; source: string; model: string; createdAt: number } | undefined>
+  ) {
+    return {
+      doc: (path: string) => ({
+        get: async () => {
+          const hit = entries[path];
+          return { exists: hit !== undefined, data: () => hit };
+        },
+      }),
+    } as any;
+  }
+
+  it("returns the cached OCR text for a single-stroke selection (ocrCacheKey([elementId]) hit)", async () => {
+    const key = ocrCacheKey(["p1"]);
+    const db = fakeOcrDb({ [`boards/b1/ocrCache/${key}`]: { text: "hi", confidence: 1, source: "vision", model: "m", createdAt: 0 } });
+
+    const result = await extractPath(db, "b1", "p1", { userId: "carol" });
+
+    expect(result).toEqual({
+      element: { id: "p1", elementType: "path", text: "hi" },
+      authorUid: "carol",
+    });
+  });
+
+  it("returns null when there is no cache entry for this single-stroke key (the common multi-stroke case)", async () => {
+    const db = fakeOcrDb({});
+    expect(await extractPath(db, "b1", "p1", { userId: "carol" })).toBeNull();
+  });
+
+  it("returns null when the cached OCR text is blank", async () => {
+    const key = ocrCacheKey(["p1"]);
+    const db = fakeOcrDb({ [`boards/b1/ocrCache/${key}`]: { text: "   ", confidence: 1, source: "vision", model: "m", createdAt: 0 } });
+    expect(await extractPath(db, "b1", "p1", { userId: "carol" })).toBeNull();
+  });
+});
+
+describe("extractShape / extractImage", () => {
+  it("always return null regardless of input — no text source exists for either today", async () => {
+    expect(await extractShape({} as any, "b1", "s1", { shape: "rect" })).toBeNull();
+    expect(await extractImage({} as any, "b1", "i1", { alt: "photo.png" })).toBeNull();
+  });
+});
+
+describe("EXTRACTORS — wiring, not just presence", () => {
+  it("maps each collection to its OWN extractor, not a swapped one", () => {
+    expect(EXTRACTORS.notes).toBe(extractNote);
+    expect(EXTRACTORS.textElements).toBe(extractTextElement);
+    expect(EXTRACTORS.paths).toBe(extractPath);
+    expect(EXTRACTORS.shapes).toBe(extractShape);
+    expect(EXTRACTORS.images).toBe(extractImage);
   });
 });
 
