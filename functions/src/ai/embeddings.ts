@@ -19,16 +19,18 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 // text and skipped whenever that hash is unchanged. UNLIKE ocrCache.ts, this
 // is not a request/response cache keyed by an arbitrary selection — it is a
 // standing per-element document that a debounced, write-triggered caller
-// (outside this file's scope; see the note below) keeps in sync with the
-// element's current content.
+// keeps in sync with the element's current content.
 //
 // SCOPE NOTE: this file is the memoized write itself — `embedElement` is
 // deliberately safe to call as often as a caller likes, since an unchanged
-// hash is a no-op. The trigger that watches canvas-content writes and calls
-// this on a settled edit, and the debounce window that coalesces a burst of
-// rapid edits into one call, are production wiring around this contract, not
-// something the contract itself needs in order to be correct or testable.
-// No such trigger is registered yet — see this task's report.
+// hash is a no-op. ROADMAP.md:1048 requires this be driven "via Cloud
+// Function trigger" — that trigger (five explicit bindings, one per canvas-
+// content subcollection), its own debounce window on top of this file's
+// hash-skip, and the rate-limit/plan-quota metering around each real embed
+// all live in `functions/src/triggers/embeddings.ts`, which wraps this file's
+// `embedElement` rather than folding any of that in here. This file stays
+// ignorant of debouncing, metering, and which collections exist — it only
+// knows how to memoize one element's embed.
 //
 // RULES NOTE: this collection has NO match block in firestore.rules at all —
 // mirroring flashcardCache.ts's precedent, not ocrCache.ts's. No client
@@ -41,16 +43,26 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 // so a rule that denied everyone everywhere couldn't slip through as a false
 // pass).
 
+/** One real embed call's result. `model`/`usage` are NOT persisted (the
+ *  Firestore contract below has no room for them) — they exist purely so a
+ *  caller can meter the call (`functions/src/triggers/embeddings.ts` records
+ *  them via `recordAiUsage`), mirroring `ChatResult`'s role in provider.ts. */
+export interface EmbedResult {
+  vector: number[];
+  model: string;
+  usage: { promptTokens: number; totalTokens: number };
+}
+
 /** The provider seam for turning text into a vector — mirrors `AIProvider`'s
  *  role in provider.ts, kept as its own narrow interface here since
- *  embedding is a different API shape (text in, vector out) than chat. */
+ *  embedding is a different API shape (text in, vector+usage out) than chat. */
 export interface EmbeddingProvider {
-  embed(text: string): Promise<number[]>;
+  embed(text: string): Promise<EmbedResult>;
 }
 
 /** The minimal shape `embedElement` needs from a canvas-content element —
- *  callers (paths/notes/textElements/shapes) adapt their own richer element
- *  types down to this before calling in. */
+ *  callers (the trigger's per-collection extractors) adapt their own richer
+ *  element types down to this before calling in. */
 export interface BoardElementInput {
   id: string;
   elementType: string;
@@ -82,6 +94,35 @@ export interface StoredEmbedding {
   schemaVersion: 1;
 }
 
+function embeddingRef(db: Firestore, boardId: string, elementId: string) {
+  return db.doc(`boards/${boardId}/embeddings/${elementId}`);
+}
+
+/** Reads back the stored embedding doc, or `null` if none exists yet. Shared
+ *  by `embedElement`'s own hash-check below and by the trigger's debounce
+ *  gate (`shouldSkipEmbedAttempt` in triggers/embeddings.ts), which needs the
+ *  same `contentHash`/`updatedAt` pair BEFORE deciding whether metering a
+ *  real provider call is even on the table — so both read through this one
+ *  implementation rather than each constructing the doc path separately. */
+export async function getStoredEmbedding(
+  db: Firestore,
+  boardId: string,
+  elementId: string
+): Promise<StoredEmbedding | null> {
+  const snap = await embeddingRef(db, boardId, elementId).get();
+  return snap.exists ? (snap.data() as StoredEmbedding) : null;
+}
+
+/** What happened on one `embedElement` call — `embedded: false` for a
+ *  hash-skip (no provider call, nothing to meter); `embedded: true` with the
+ *  model/usage a caller needs to record cost telemetry for the real call
+ *  that just happened. */
+export interface EmbedOutcome {
+  embedded: boolean;
+  model?: string;
+  usage?: { promptTokens: number; totalTokens: number };
+}
+
 /**
  * Embeds one board element's text and stores it, skipping the (paid)
  * provider call entirely when the content hash is unchanged from what's
@@ -96,10 +137,16 @@ export interface StoredEmbedding {
  *
  * Deliberately does NOT special-case an elementType change with an unchanged
  * text hash: the stored `elementType` would go stale until the text next
- * changes. That is an accepted, narrow metadata staleness (the id and text
- * stay correct, so retrieval still finds and cites the right content) rather
- * than a second write path that bypasses the hash-skip and undoes the exact
- * cost control this function exists to provide.
+ * changes. In the CURRENT schema this is unreachable, not just narrow: a
+ * `TextNote`/`TextElement` each carry only their own text (nothing else to
+ * change independently of it), a `ShapeElement` has no text field at all to
+ * begin with, and moving an element between kinds means a NEW document in a
+ * DIFFERENT subcollection — a new id, which is the deletion-cleanup trigger's
+ * territory (the old id's embedding gets deleted, not left stale), not a
+ * staleness case. The comment stays because the property is real: a future
+ * element kind that pairs a stable id + mutable type + unchanged text would
+ * hit it, and the answer would still be "accepted narrow staleness," not a
+ * bug — but nothing in today's schema can reach it.
  */
 export async function embedElement(
   db: Firestore,
@@ -107,31 +154,29 @@ export async function embedElement(
   element: BoardElementInput,
   provider: EmbeddingProvider,
   now: number = Date.now()
-): Promise<void> {
-  const ref = db.doc(`boards/${boardId}/embeddings/${element.id}`);
-  const snap = await ref.get();
-  const existing = snap.exists ? (snap.data() as Partial<StoredEmbedding> | undefined) : undefined;
+): Promise<EmbedOutcome> {
+  const existing = await getStoredEmbedding(db, boardId, element.id);
   const hash = contentHashFor(element.text);
 
   if (existing?.contentHash === hash) {
-    return; // skip: unchanged content — no provider call, no write.
+    return { embedded: false }; // skip: unchanged content — no provider call, no write.
   }
 
-  const vector = await provider.embed(element.text);
-  if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
+  const result = await provider.embed(element.text);
+  if (!Array.isArray(result.vector) || result.vector.length !== EMBEDDING_DIMENSIONS) {
     // Fail loud rather than silently writing a vector Firestore's KNN index
     // can't use (or, past the 2048 cap, can't even store) — a wrong-length
     // vector here means the provider or model config drifted from
     // text-embedding-3-small, which the retrieval path assumes throughout.
     throw new Error(
       `embedElement: provider returned ${
-        Array.isArray(vector) ? vector.length : typeof vector
+        Array.isArray(result.vector) ? result.vector.length : typeof result.vector
       }-dimension vector, expected ${EMBEDDING_DIMENSIONS}`
     );
   }
 
   const doc: StoredEmbedding = {
-    vector: FieldValue.vector(vector),
+    vector: FieldValue.vector(result.vector),
     text: element.text,
     elementType: element.elementType,
     contentHash: hash,
@@ -139,5 +184,7 @@ export async function embedElement(
     schemaVersion: 1,
   };
 
-  await ref.set(doc);
+  await embeddingRef(db, boardId, element.id).set(doc);
+
+  return { embedded: true, model: result.model, usage: result.usage };
 }

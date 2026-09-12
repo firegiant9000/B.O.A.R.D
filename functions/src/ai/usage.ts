@@ -24,6 +24,13 @@ interface ModelRate {
 const MODEL_RATES: Record<string, ModelRate> = {
   "gpt-3.5-turbo": { inputPerMillion: 0.5, outputPerMillion: 1.5 },
   "gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.6 },
+  // Month 6 — board Q&A embeddings. Input-only (an embed call has no
+  // completion tokens; the trigger that meters it always reports 0 for
+  // `completionTokens`), so `outputPerMillion` is never actually applied —
+  // kept at the real rate anyway rather than 0, so a future caller that DID
+  // pass a nonzero completionTokens by mistake gets a realistic estimate
+  // instead of a silent free ride.
+  "text-embedding-3-small": { inputPerMillion: 0.02, outputPerMillion: 0.02 },
 };
 
 // Unknown model → assume the pricier text model so an estimate never under-reports

@@ -119,3 +119,35 @@ export { onPollVoteWritten } from "./triggers/pollTally";
 // (anonymous or not) once the poll document itself is gone. See
 // functions/src/triggers/pollTally.ts's header for the full reasoning.
 export { onPollDeleted } from "./triggers/pollTally";
+
+// Month 6 — board Q&A embedding write path (ROADMAP.md:1048: "each element
+// gets an embedding on create/update via Cloud Function trigger"). Five
+// explicit bindings, one per canvas-content subcollection
+// (paths/notes/textElements/shapes/images — firestore.rules:888-914), NOT a
+// wildcard `boards/{boardId}/{collectionId}/{elementId}` binding — see
+// functions/src/triggers/embeddings.ts's header for the three reasons a
+// wildcard is wrong here (it would also fire on ocrCache/polls/comments/
+// aiUsage/... writes, AND on `embeddings` itself, a self-feedback loop).
+// Each embed is rate-limited, plan-quota-gated, debounced on top of the
+// content-hash skip, and metered under `feature: "embeddings"` — see that
+// file's header for the metering design and its known cooldown-vs-true-
+// debounce tradeoff.
+export {
+  onNoteWritten,
+  onTextElementWritten,
+  onPathWritten,
+  onShapeWritten,
+  onImageWritten,
+} from "./triggers/embeddings";
+
+// Deletion cleanup for the same feature. Board Q&A cites source element ids
+// so a user can click through and verify (ROADMAP.md) — a surviving
+// embedding for a deleted element is not clutter, it is a citation pointing
+// at nothing. Mirrors onPollDeleted's shape above.
+export {
+  onNoteDeleted,
+  onTextElementDeleted,
+  onPathDeleted,
+  onShapeDeleted,
+  onImageDeleted,
+} from "./triggers/embeddings";

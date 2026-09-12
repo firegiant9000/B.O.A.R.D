@@ -5,6 +5,7 @@ import type {
   ChatResult,
   ChatMessage,
 } from "./provider";
+import type { EmbeddingProvider, EmbedResult } from "./embeddings";
 
 // OpenAI adapter behind the AIProvider seam. The API key never leaves the
 // function runtime — it is read from the `OPENAI_API_KEY` secret and passed in by
@@ -64,6 +65,38 @@ export class OpenAIProvider implements AIProvider {
         promptTokens: usage?.prompt_tokens ?? 0,
         completionTokens: usage?.completion_tokens ?? 0,
         totalTokens: usage?.total_tokens ?? 0,
+      },
+    };
+  }
+}
+
+// Month 6 — board Q&A embedding write path (functions/src/ai/embeddings.ts,
+// functions/src/triggers/embeddings.ts). A separate class rather than a
+// second method on OpenAIProvider: embeddings are a different OpenAI API
+// surface entirely (`client.embeddings.create`, not `chat.completions`) with
+// a different request/response shape, and `EmbeddingProvider` is its own
+// narrow interface for exactly that reason — see embeddings.ts's header.
+const EMBEDDING_MODEL = "text-embedding-3-small";
+
+export class OpenAIEmbeddingProvider implements EmbeddingProvider {
+  private client: OpenAI;
+
+  constructor(apiKey: string) {
+    this.client = new OpenAI({ apiKey });
+  }
+
+  async embed(text: string): Promise<EmbedResult> {
+    const res = await this.client.embeddings.create({
+      model: EMBEDDING_MODEL,
+      input: text,
+    });
+
+    return {
+      vector: res.data?.[0]?.embedding ?? [],
+      model: res.model ?? EMBEDDING_MODEL,
+      usage: {
+        promptTokens: res.usage?.prompt_tokens ?? 0,
+        totalTokens: res.usage?.total_tokens ?? 0,
       },
     };
   }

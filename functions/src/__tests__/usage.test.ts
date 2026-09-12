@@ -50,6 +50,22 @@ describe("estimateCostUsd", () => {
     ).toBeCloseTo(0.0005, 6);
   });
 
+  // Month 6 — board Q&A embeddings (functions/src/triggers/embeddings.ts
+  // always reports `completionTokens: 0` for an embed call, so only the
+  // input rate is ever actually exercised in practice — priced at the real
+  // per-input-token rate anyway rather than falling into DEFAULT_RATE, which
+  // would over-report an embed's cost by 25x and skew the usage dashboard).
+  it("prices text-embedding-3-small at its own (much cheaper) rate, not the default", () => {
+    // 1000/1M * $0.02 = 0.00002
+    expect(
+      estimateCostUsd("text-embedding-3-small", {
+        promptTokens: 1000,
+        completionTokens: 0,
+        totalTokens: 1000,
+      })
+    ).toBeCloseTo(0.00002, 8);
+  });
+
   it("is zero when no tokens were used", () => {
     expect(
       estimateCostUsd("gpt-3.5-turbo", {

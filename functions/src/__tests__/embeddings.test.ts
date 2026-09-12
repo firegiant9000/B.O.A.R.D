@@ -12,9 +12,11 @@ jest.mock("firebase-admin/firestore", () => ({
 import type { Firestore } from "firebase-admin/firestore";
 import {
   embedElement,
+  getStoredEmbedding,
   contentHashFor,
   EMBEDDING_DIMENSIONS,
   type EmbeddingProvider,
+  type EmbedResult,
   type BoardElementInput,
 } from "../ai/embeddings";
 
@@ -38,8 +40,16 @@ function makeFakeDb() {
   return { db: db as unknown as Firestore, store };
 }
 
-function makeProvider(vector: number[] = makeVector()): EmbeddingProvider {
-  return { embed: jest.fn(async () => vector) };
+function makeEmbedResult(vector: number[] = makeVector()): EmbedResult {
+  return {
+    vector,
+    model: "text-embedding-3-small",
+    usage: { promptTokens: 12, totalTokens: 12 },
+  };
+}
+
+function makeProvider(result: EmbedResult = makeEmbedResult()): EmbeddingProvider {
+  return { embed: jest.fn(async () => result) };
 }
 
 describe("embedElement", () => {
@@ -82,7 +92,7 @@ describe("embedElement", () => {
   it("stores the full contract shape on a fresh embed", async () => {
     const { db, store } = makeFakeDb();
     const vector = makeVector(0.5);
-    const provider = makeProvider(vector);
+    const provider = makeProvider(makeEmbedResult(vector));
     const el: BoardElementInput = { id: "el1", elementType: "sticky", text: "hi" };
 
     await embedElement(db, "b1", el, provider, 12345);
@@ -112,10 +122,38 @@ describe("embedElement", () => {
 
   it("throws when the provider returns a vector of the wrong dimension", async () => {
     const { db } = makeFakeDb();
-    const provider = makeProvider([0.1, 0.2]); // deliberately wrong length
+    const provider = makeProvider(makeEmbedResult([0.1, 0.2])); // deliberately wrong length
     const el: BoardElementInput = { id: "el1", elementType: "note", text: "hi" };
 
     await expect(embedElement(db, "b1", el, provider)).rejects.toThrow(/dimension/);
+  });
+
+  describe("return value (what the trigger layer meters on)", () => {
+    it("returns embedded: false, with no model/usage, on a hash-skip", async () => {
+      const { db } = makeFakeDb();
+      const provider = makeProvider();
+      const el: BoardElementInput = { id: "el1", elementType: "note", text: "same" };
+
+      await embedElement(db, "b1", el, provider);
+      const second = await embedElement(db, "b1", el, provider);
+
+      expect(second).toEqual({ embedded: false });
+    });
+
+    it("returns embedded: true with the provider's model/usage on a real embed", async () => {
+      const { db } = makeFakeDb();
+      const result = makeEmbedResult();
+      const provider = makeProvider(result);
+      const el: BoardElementInput = { id: "el1", elementType: "note", text: "hi" };
+
+      const outcome = await embedElement(db, "b1", el, provider);
+
+      expect(outcome).toEqual({
+        embedded: true,
+        model: result.model,
+        usage: result.usage,
+      });
+    });
   });
 });
 
@@ -126,5 +164,23 @@ describe("contentHashFor", () => {
 
   it("differs for different text", () => {
     expect(contentHashFor("a")).not.toBe(contentHashFor("b"));
+  });
+});
+
+describe("getStoredEmbedding", () => {
+  it("returns null when no embedding has been written yet", async () => {
+    const { db } = makeFakeDb();
+    await expect(getStoredEmbedding(db, "b1", "missing")).resolves.toBeNull();
+  });
+
+  it("returns the stored doc once one exists", async () => {
+    const { db } = makeFakeDb();
+    const provider = makeProvider();
+    const el: BoardElementInput = { id: "el1", elementType: "note", text: "hi" };
+    await embedElement(db, "b1", el, provider, 999);
+
+    const stored = await getStoredEmbedding(db, "b1", "el1");
+    expect(stored?.contentHash).toBe(contentHashFor("hi"));
+    expect(stored?.updatedAt).toBe(999);
   });
 });
