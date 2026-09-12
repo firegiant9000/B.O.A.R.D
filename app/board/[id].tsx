@@ -472,10 +472,15 @@ export default function BoardScreen(
   // author this viewer has blocked, which reads as "deleted" here. That is the
   // right answer for this purpose: blocked content is content you have chosen
   // not to be shown, and pointing a citation at it would undo that choice.
+  //
+  // A `comment` citation is not a canvas element and has no box — it resolves
+  // against the live comment threads instead. Same question, different index.
   const isCitationLive = useCallback(
     (elementId: string, canvasKind: string) =>
-      elements.boxOfElement(elementId, canvasKind) !== null,
-    [elements]
+      canvasKind === "comment"
+        ? comments.comments.some((c) => c.id === elementId)
+        : elements.boxOfElement(elementId, canvasKind) !== null,
+    [comments, elements]
   );
 
   // Tapping a live citation selects it on the canvas, so it picks up the
@@ -484,11 +489,18 @@ export default function BoardScreen(
   // conversation.
   const handleSelectCitation = useCallback(
     (elementId: string, canvasKind: string) => {
+      // A comment citation opens its thread — there is nothing on the canvas to
+      // select, and the thread body is what was cited in the first place.
+      if (canvasKind === "comment") {
+        if (!comments.comments.some((c) => c.id === elementId)) return;
+        comments.openThread(elementId);
+        return;
+      }
       if (elements.boxOfElement(elementId, canvasKind) === null) return;
       tools.activateSelect();
       elements.selection.select(elementId);
     },
-    [elements, tools]
+    [comments, elements, tools]
   );
 
   const handleAddSwatch = (hex: string) => {

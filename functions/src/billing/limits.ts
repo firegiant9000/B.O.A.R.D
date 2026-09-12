@@ -8,7 +8,8 @@ export type LimitedResource =
   | "aiCallsPerPeriod"
   | "collaboratorsPerBoard"
   | "workspaces"
-  | "boardQaPerPeriod";
+  | "boardQaPerPeriod"
+  | "embeddingsPerPeriod";
 
 export type PlanLimits = Record<LimitedResource, number>;
 
@@ -35,6 +36,29 @@ export type PlanLimits = Record<LimitedResource, number>;
 //                student (every counter is per-workspace), so a per-student
 //                number cannot be expressed here. 100 per workspace is the
 //                conservative reading rather than the generous one.
+//
+// `embeddingsPerPeriod` is the same idea applied to the write half — the
+// element-embedding trigger — and it exists for a different reason from every
+// other row. This is AUTOMATED spend: it fires on writes, with nobody present,
+// so it has no human pacing it and until now its only ceiling was the shared
+// rate bucket (~30 burst refilling 1 per 30s, i.e. roughly 2,880 embeds per
+// workspace per DAY). That is a throttle, not a cost bound.
+//
+// The numbers are deliberately LOOSE, and that direction is the important one.
+// An embed denied by this cap is not an error a user sees — the trigger skips
+// and logs, and the index silently goes stale, so board Q&A would keep
+// answering from content that no longer matches the board. A cap that bites
+// during ordinary editing would be worse than no cap. These are sized to stop
+// a runaway, not to ration real use:
+//   - free 2,000   — a free workspace is capped at 5 boards, so this is ~400
+//                    re-embeds per board per month, far past any real editing
+//                    session. At ~250 tokens per element and $0.02/1M tokens
+//                    (text-embedding-3-small), that ceiling is about $0.01.
+//   - pro/edu 20,000 — 10x, since neither is capped on boards. About $0.10 at
+//                    the same rates, and still an order of magnitude under what
+//                    the rate bucket alone would have permitted.
+// Finite on every plan for the same reason `boardQaPerPeriod` is: unbounded
+// automated spend is exactly the thing with no natural stopping point.
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   free: {
     boards: 5,
@@ -43,6 +67,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 4,
     workspaces: 1,
     boardQaPerPeriod: 3,
+    embeddingsPerPeriod: 2000,
   },
   pro: {
     boards: UNLIMITED,
@@ -51,6 +76,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 25,
     workspaces: UNLIMITED,
     boardQaPerPeriod: 200,
+    embeddingsPerPeriod: 20000,
   },
   edu: {
     boards: UNLIMITED,
@@ -59,6 +85,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 100,
     workspaces: UNLIMITED,
     boardQaPerPeriod: 100,
+    embeddingsPerPeriod: 20000,
   },
 };
 

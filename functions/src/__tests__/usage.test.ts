@@ -131,6 +131,71 @@ describe("applyUsage", () => {
     expect(next.byFeature.ocr.calls).toBe(1);
     expect(next.calls).toBe(2);
   });
+
+  // Month 6 — `countsTowardAiCap: false`, the carve-out for AUTOMATED spend
+  // (the element-embedding trigger). `aiCallsPerPeriod` is what a USER spends
+  // by asking for something; counting embeds there let ordinary note-taking
+  // exhaust a free workspace's five calls, which made board Q&A's own displayed
+  // limit of 3 questions unreachable and stopped the index updating at the same
+  // moment.
+  describe("countsTowardAiCap: false", () => {
+    const prev: UsageDoc = {
+      calls: 2,
+      tokens: 3000,
+      promptTokens: 2000,
+      completionTokens: 1000,
+      costUsd: 0.0025,
+      byFeature: { summary: { calls: 2, tokens: 3000, costUsd: 0.0025 } },
+      updatedAt: 0,
+    };
+
+    it("holds back the top-level calls counter — the one checkAiQuota gates on", () => {
+      const next = applyUsage(
+        prev,
+        params({ feature: "embeddings", countsTowardAiCap: false }),
+        0.00125
+      );
+      expect(next.calls).toBe(2);
+    });
+
+    it("still reports the spend in full — this changes what is GATED, not what is shown", () => {
+      // If the dollars vanished too, carving this out would have traded an
+      // over-strict gate for invisible cost, which is the worse of the two.
+      const next = applyUsage(
+        prev,
+        params({ feature: "embeddings", countsTowardAiCap: false }),
+        0.00125
+      );
+      expect(next.tokens).toBe(4500);
+      expect(next.promptTokens).toBe(3000);
+      expect(next.completionTokens).toBe(1500);
+      expect(next.costUsd).toBeCloseTo(0.00375, 6);
+      expect(next.byFeature.embeddings).toEqual({
+        calls: 1,
+        tokens: 1500,
+        costUsd: 0.00125,
+      });
+    });
+
+    it("still counts the call in the FEATURE row — that is what embeddingsPerPeriod gates on", () => {
+      // The carve-out must not also disarm the trigger's own cap.
+      const withOne: UsageDoc = {
+        ...prev,
+        byFeature: { embeddings: { calls: 7, tokens: 10, costUsd: 0.1 } },
+      };
+      const next = applyUsage(
+        withOne,
+        params({ feature: "embeddings", countsTowardAiCap: false }),
+        0.001
+      );
+      expect(next.byFeature.embeddings.calls).toBe(8);
+    });
+
+    it("counts the call when the flag is absent or explicitly true (the default for every other caller)", () => {
+      expect(applyUsage(prev, params(), 0.001).calls).toBe(3);
+      expect(applyUsage(prev, params({ countsTowardAiCap: true }), 0.001).calls).toBe(3);
+    });
+  });
 });
 
 describe("recordAiUsage", () => {

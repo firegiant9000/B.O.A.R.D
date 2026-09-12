@@ -210,6 +210,40 @@ describe("BoardQaPanel — citations are checkable", () => {
     expect(isCitationLive).toHaveBeenCalledWith("n1", "note");
   });
 
+  it("offers a comment citation as tappable, with the comment kind", async () => {
+    // A comment thread is indexed and citable but is not a canvas element; the
+    // board screen opens the thread rather than selecting a shape. If this
+    // rendered as "can't open this", every answer drawn from a discussion would
+    // be uncheckable.
+    mockAskBoard.mockResolvedValueOnce({
+      answer: "You decided to descope it.",
+      citations: [{ elementId: "c1", elementType: "comment", excerpt: "no, descope it" }],
+      model: "gpt-4o-mini",
+    });
+    const utils = renderPanel({ isCitationLive: () => true });
+    await ask(utils, "What did we decide?");
+
+    const chip = await utils.findByTestId("board-qa-citation-c1");
+    expect(chip).not.toHaveTextContent(/can't open/i);
+    fireEvent.press(chip);
+    expect(utils.onSelectCitation).toHaveBeenCalledWith("c1", "comment");
+  });
+
+  it("marks a deleted comment thread deleted, same as a deleted element", async () => {
+    mockAskBoard.mockResolvedValueOnce({
+      answer: "You decided to descope it.",
+      citations: [{ elementId: "c1", elementType: "comment", excerpt: "no, descope it" }],
+      model: "gpt-4o-mini",
+    });
+    const utils = renderPanel({ isCitationLive: () => false });
+    await ask(utils, "What did we decide?");
+
+    const chip = await utils.findByTestId("board-qa-citation-c1");
+    expect(chip).toHaveTextContent(/deleted/i);
+    fireEvent.press(chip);
+    expect(utils.onSelectCitation).not.toHaveBeenCalled();
+  });
+
   it("won't offer a citation whose element kind it cannot place", async () => {
     mockAskBoard.mockResolvedValueOnce({
       answer: "From the recording.",

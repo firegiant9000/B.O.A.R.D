@@ -132,12 +132,25 @@ export { onPollDeleted } from "./triggers/pollTally";
 // under a synthetic `solo-${authorUid}` bucket, deliberately, even though it
 // has no plan to cap), and recorded under `feature: "embeddings"` — see that
 // file's header for the full metering design.
+// The sixth binding is `comments`: ROADMAP.md scopes board Q&A over "board
+// content + session history + comments", and a comment thread is indexed as one
+// unit (root body + every reply body, which live in an array on the same
+// document). Its text and author fields differ from an element's (`body`/
+// `authorId`, not `content`/`userId`) — pinned by tests against the real type.
+//
+// Each embed is rate-limited and gated on `embeddingsPerPeriod`, this
+// trigger's OWN plan row — not the workspace-wide `aiCallsPerPeriod` cap, which
+// its spend is deliberately carved out of (`countsTowardAiCap: false`). Dollars
+// and tokens still land on the usage page; what changed is that ordinary
+// note-taking can no longer consume a free workspace's five interactive AI
+// calls, which had made board Q&A's own displayed limit unreachable.
 export {
   onNoteWritten,
   onTextElementWritten,
   onPathWritten,
   onShapeWritten,
   onImageWritten,
+  onCommentWritten,
 } from "./triggers/embeddings";
 
 // Month 6 — board Q&A retrieval + chat, the READ half of the embeddings the
@@ -164,4 +177,5 @@ export {
   onPathDeleted,
   onShapeDeleted,
   onImageDeleted,
+  onCommentDeleted,
 } from "./triggers/embeddings";

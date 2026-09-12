@@ -348,7 +348,21 @@ describe("handleAskBoard — a stale embedding never becomes a citation", () => 
 
     expect(deps.provider.chat).not.toHaveBeenCalled();
     expect(res.citations).toEqual([]);
-    expect(res.answer).toMatch(/couldn't find anything on this board/i);
+    expect(res.answer).toMatch(/couldn't find anything/i);
+  });
+
+  it("names what it cannot see, so a session question isn't a silent dead end", async () => {
+    // ROADMAP.md scopes this chat over "board content + session history +
+    // comments"; session history is not indexed (see the callable's header).
+    // Someone who asks about something said in a session and gets a bare
+    // "nothing found" would reasonably conclude the feature is broken, or that
+    // the thing was never discussed.
+    const deps = makeDeps({ candidates: [] });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    expect(res.answer).toMatch(/session/i);
+    expect(res.answer).toMatch(/comment/i);
   });
 
   it("still meters the question embedding it already paid for on that path", async () => {
@@ -481,6 +495,14 @@ describe("collectionForElementType", () => {
     expect(collectionForElementType("image")).toBe("images");
   });
 
+  it("places a comment thread, which is indexed but is not a canvas element", () => {
+    // ROADMAP.md scopes this chat over "board content + session history +
+    // comments". If retrieval could not place a comment's type, every comment
+    // citation would fail the liveness check and drop — the text would be
+    // indexed, searched, matched, and then silently discarded.
+    expect(collectionForElementType("comment")).toBe("comments");
+  });
+
   it("fails closed on a type this build doesn't know", () => {
     // A future embeddable kind (audio transcripts are next) must be added here
     // to be citable. Guessing a path would put an unverifiable citation on a
@@ -608,6 +630,14 @@ describe("makeAskBoardDeps — the real path wiring", () => {
 
     await expect(deps.elementExists("board-1", "note", "n1")).resolves.toBe(true);
     expect(f.docPaths).toEqual(["boards/board-1/notes/n1"]);
+  });
+
+  it("reads comments for a comment thread", async () => {
+    const f = fakeDb({ docs: { "boards/board-1/comments/c1": { body: "we decided X" } } });
+    const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
+
+    await expect(deps.elementExists("board-1", "comment", "c1")).resolves.toBe(true);
+    expect(f.docPaths).toEqual(["boards/board-1/comments/c1"]);
   });
 
   it("reads textElements (not notes) for a text element", async () => {

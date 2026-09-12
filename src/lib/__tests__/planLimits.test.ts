@@ -84,6 +84,7 @@ describe("planLimits mirror", () => {
     // (`discoveredPlans.length > 0`) only proves the parse found some plan.
     for (const plan of Object.keys(functionsLimits)) {
       expect(Object.keys(functionsLimits[plan])).toContain("boardQaPerPeriod");
+      expect(Object.keys(functionsLimits[plan])).toContain("embeddingsPerPeriod");
     }
   });
 });
@@ -105,5 +106,24 @@ describe("board Q&A plan limit (client mirror)", () => {
     expect(limitFor("free", "boardQaPerPeriod")).toBeLessThan(
       limitFor("free", "aiCallsPerPeriod")
     );
+  });
+});
+
+// Month 6 — the client half of the write path's plan line. Automated spend, so
+// it is finite on every plan for the same reason board Q&A's is.
+describe("embeddings plan limit (client mirror)", () => {
+  it("is finite on every plan", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitFor(plan, "embeddingsPerPeriod")).not.toBe(UNLIMITED);
+      expect(Number.isFinite(limitFor(plan, "embeddingsPerPeriod"))).toBe(true);
+    }
+  });
+
+  it("stays far above the per-question cap — a denial on this row is silent to the user", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitFor(plan, "embeddingsPerPeriod")).toBeGreaterThan(
+        limitFor(plan, "boardQaPerPeriod") * 50
+      );
+    }
   });
 });

@@ -57,6 +57,16 @@ import type { EmbeddingProvider } from "../ai/embeddings";
 // field rather than guessing. src/services/boardQaService.ts does the same.
 //
 // CITATIONS ARE VERIFIED BEFORE THEY ARE OFFERED — see `liveChunks` below.
+//
+// SCOPE GAP, KNOWN AND ESCALATED. ROADMAP.md scopes this chat over "board
+// content + session history + comments". Board content and comment threads are
+// both indexed (the write trigger binds one extractor per source). SESSION
+// HISTORY IS NOT, and is not a small addition: sessions do not live under
+// `boards/`, so it needs a session → board resolution this codebase has no
+// place for yet, and a decision nobody has posed about whether the indexed unit
+// is a session summary or a raw transcript. Rather than guess at either, the
+// no-context answer below names what this can and cannot see, so a user asking
+// about a session gets told why instead of a bare "nothing found".
 
 /** Feature key for cost telemetry. The usage page groups `byFeature` off
  *  whatever keys it finds, so this name is all that is needed for board Q&A to
@@ -113,6 +123,10 @@ export const ELEMENT_COLLECTIONS: Record<string, string> = {
   path: "paths",
   shape: "shapes",
   image: "images",
+  // Not a canvas element — a comment thread, which ROADMAP.md's board Q&A
+  // scope names alongside board content. Its liveness read works identically:
+  // one document under the board, which either still exists or does not.
+  comment: "comments",
 };
 
 /** The subcollection for `elementType`, or `null` when it is one this build
@@ -180,11 +194,21 @@ export interface AskBoardDeps {
   }): Promise<void>;
 }
 
-/** What the user sees when retrieval comes back with nothing usable. Phrased as
- *  an answer, not an error: an empty or newly-created board genuinely has
- *  nothing to answer from, and that is not a failure. */
+/**
+ * What the user sees when retrieval comes back with nothing usable. Phrased as
+ * an answer, not an error: an empty or newly-created board genuinely has
+ * nothing to answer from, and that is not a failure.
+ *
+ * It names what is NOT searched, deliberately. ROADMAP.md scopes this chat over
+ * "board content + session history + comments"; notes, text, transcribed
+ * strokes and comment threads are indexed, session history is not (see this
+ * file's header note on that gap). Someone who asks about something said in a
+ * session and gets a bare "I couldn't find anything" would reasonably conclude
+ * the feature is broken, or worse, that the thing was never discussed. Saying
+ * which sources exist turns a dead end into a usable one.
+ */
 const NO_CONTEXT_ANSWER =
-  "I couldn't find anything on this board that answers that. Try adding some notes or text, or asking about something already on the canvas.";
+  "I couldn't find anything that answers that. I can read this board's notes, text, transcribed handwriting and comment threads — but not session recordings or session summaries. Try asking about something on the canvas or in the comments.";
 
 const MAX_EXCERPT_CHARS = 160;
 

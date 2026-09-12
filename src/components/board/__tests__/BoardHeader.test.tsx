@@ -133,4 +133,18 @@ describe("board Q&A is reachable from the board screen", () => {
     // deleted-chip state exists to surface.
     expect(screen).toMatch(/elements\.boxOfElement\(elementId, canvasKind\) !== null/);
   });
+
+  it("resolves a comment citation against the comment threads, not the canvas", () => {
+    // A comment thread has no box. Routing it through `boxOfElement` would
+    // report every comment citation as deleted — the answer would cite a
+    // discussion and then refuse to show it.
+    // Anchored to the LIVENESS ternary specifically, not just to the string
+    // appearing somewhere in the file — `handleSelectCitation` below contains
+    // the same comment lookup, so an unanchored match would stay green with
+    // `isCitationLive` re-pointed at the canvas.
+    expect(screen).toMatch(
+      /canvasKind === "comment"\s*\?\s*comments\.comments\.some\(\(c\) => c\.id === elementId\)/
+    );
+    expect(screen).toMatch(/comments\.openThread\(elementId\)/);
+  });
 });

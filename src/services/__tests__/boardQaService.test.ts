@@ -24,6 +24,7 @@ import {
   citationKind,
   isBoardQaConfigured,
   CITATION_KINDS,
+  CANVAS_CITATION_KINDS,
 } from "../boardQaService";
 import { resourceExhaustedReason } from "../quotaService";
 
@@ -169,6 +170,14 @@ describe("citationKind", () => {
     expect(citationKind("image")).toBe("image");
   });
 
+  it("places a comment thread, which is indexed but is not a canvas element", () => {
+    // ROADMAP.md scopes board Q&A over comments as well as board content. A
+    // comment citation opens its thread instead of selecting a shape, but it is
+    // still placeable and still tappable — returning null here would make every
+    // comment citation render as "can't open this".
+    expect(citationKind("comment")).toBe("comment");
+  });
+
   it("returns null for a kind this build can't place", () => {
     // Null means "don't offer this as clickable". Guessing would mean matching
     // the wrong element whenever two kinds happened to share an id.
@@ -176,15 +185,25 @@ describe("citationKind", () => {
     expect(citationKind("")).toBeNull();
   });
 
-  it("maps every indexed type to one of the canvas kinds boxOfElement knows", () => {
+  it("maps every CANVAS type to one of the kinds boxOfElement knows", () => {
     // `useBoardElements.boxOfElement` only branches on these five strings; a
     // sixth value here would resolve to null for every element and quietly
-    // mark every citation of that kind deleted.
-    const canvasKinds = ["path", "shape", "text", "image", "note"];
-    const mapped = Object.values(CITATION_KINDS);
+    // mark every citation of that kind deleted. `comment` is excluded on
+    // purpose — it is resolved against the comment threads, not the canvas.
+    const mapped = Object.values(CITATION_KINDS).filter((k) => k !== "comment");
     expect(mapped.length).toBeGreaterThan(0); // guard: a non-empty map
     for (const kind of mapped) {
-      expect(canvasKinds).toContain(kind);
+      expect(CANVAS_CITATION_KINDS).toContain(kind);
     }
+  });
+
+  it("keeps comment off the canvas-kind list — it has no box to resolve", () => {
+    // If it drifted onto that list, the board screen's canvas branch would try
+    // `boxOfElement` on a comment id, find nothing, and report every comment
+    // citation as deleted.
+    expect(CANVAS_CITATION_KINDS).not.toContain("comment");
+    expect(CANVAS_CITATION_KINDS).toEqual(
+      expect.arrayContaining(["path", "shape", "text", "image", "note"])
+    );
   });
 });

@@ -88,6 +88,31 @@ export interface RecordUsageParams {
    *  token, so they pass an explicit cost here instead of going through the
    *  token-rate table. When set, it overrides `estimateCostUsd`. */
   flatCostUsd?: number;
+  /**
+   * Whether this call counts against the workspace-wide `aiCallsPerPeriod` cap.
+   * Defaults to `true`; only automated, non-user-initiated spend passes `false`.
+   *
+   * Month 6 — the element-embedding trigger is the first caller to pass it, and
+   * the reason is concrete. `aiCallsPerPeriod` is what a USER spends by asking
+   * for something: a summary, an OCR, a question. The embedding trigger fires
+   * on writes with nobody present, so counting its calls there made a free
+   * workspace's five AI calls consumable by ordinary note-taking — roughly one
+   * session of editing exhausted the month, at which point `boardQaPerPeriod`
+   * (3) became unreachable AND the index stopped updating, so the answers would
+   * have been stale even if they had been askable. The product displays that
+   * limit of 3; it has to be able to honour it.
+   *
+   * `false` holds back ONLY the top-level `calls` counter. Tokens, prompt/
+   * completion splits, `costUsd` and the per-feature entry all still
+   * accumulate, so the spend stays fully visible on the usage page — this
+   * changes what is GATED, never what is reported.
+   *
+   * PAIRING RULE: a feature metered with `countsTowardAiCap: false` must be
+   * gated with `checkFeatureOnlyQuota`, never `checkFeatureQuota`. Gating it on
+   * a workspace-wide counter it deliberately does not contribute to would mean
+   * throttling it on other features' usage while its own growth was invisible.
+   */
+  countsTowardAiCap?: boolean;
 }
 
 function emptyUsage(now: number): UsageDoc {
@@ -117,7 +142,10 @@ export function applyUsage(
   };
 
   return {
-    calls: base.calls + 1,
+    // The ONLY field `countsTowardAiCap: false` holds back — this is the
+    // counter `checkAiQuota` gates on. Everything below still accumulates, so
+    // an opted-out call is gated differently but reported identically.
+    calls: base.calls + (params.countsTowardAiCap === false ? 0 : 1),
     tokens: base.tokens + params.usage.totalTokens,
     promptTokens: base.promptTokens + params.usage.promptTokens,
     completionTokens: base.completionTokens + params.usage.completionTokens,
@@ -332,31 +360,82 @@ export async function checkFeatureQuota(
   resource: LimitedResource,
   now: number
 ): Promise<boolean> {
+  const { plan, usageData, warnCorrupt } = await readQuotaState(db, workspaceId, feature, now);
+  const calls = readCounter(
+    (usageData as { calls?: unknown } | undefined)?.calls,
+    warnCorrupt("calls")
+  );
+  const featureCalls = readFeatureCalls(usageData, feature, warnCorrupt("byFeature"));
+  return (
+    isWithinAiQuota(plan, calls) && isWithinFeatureQuota(plan, resource, featureCalls)
+  );
+}
+
+/**
+ * Gate for a feature that is metered with `countsTowardAiCap: false` — it
+ * checks that feature's OWN plan row and nothing else.
+ *
+ * This is deliberately NOT `checkFeatureQuota` minus a clause; the two are a
+ * matched pair with the metering flag, and using the wrong one is the bug:
+ *
+ *  - A feature that DOES count toward `aiCallsPerPeriod` must be gated by it
+ *    too (`checkFeatureQuota`), or its own allowance becomes a route around the
+ *    workspace-wide cap.
+ *  - A feature that does NOT count toward it must NOT be gated by it (this
+ *    function), or it gets throttled by other features' spend while its own
+ *    growth contributes nothing to the counter doing the throttling — an
+ *    unrelated summary could stop a board from re-indexing.
+ *
+ * Month 6 — the element-embedding trigger is the only caller. See
+ * `RecordUsageParams.countsTowardAiCap` for why that trigger's spend was
+ * carved out of the interactive cap in the first place.
+ */
+export async function checkFeatureOnlyQuota(
+  db: Firestore,
+  workspaceId: string,
+  feature: string,
+  resource: LimitedResource,
+  now: number
+): Promise<boolean> {
+  const { plan, usageData, warnCorrupt } = await readQuotaState(db, workspaceId, feature, now);
+  // Only the feature's own counter is read — so a corrupt workspace-wide
+  // `calls` neither denies here nor logs a denial this gate is not making.
+  const featureCalls = readFeatureCalls(usageData, feature, warnCorrupt("byFeature"));
+  return isWithinFeatureQuota(plan, resource, featureCalls);
+}
+
+/** The plan and the raw period-usage document both gates above work from, in
+ *  one pair of reads, plus the shared corrupt-counter logger. Each gate reads
+ *  only the counters it actually uses — shared rather than copied for the same
+ *  reason `readCounter` is: two copies of a fail-closed read is how one of
+ *  them quietly loses its guard. */
+async function readQuotaState(
+  db: Firestore,
+  workspaceId: string,
+  feature: string,
+  now: number
+): Promise<{
+  plan: Plan | undefined;
+  usageData: unknown;
+  warnCorrupt: (field: string) => () => void;
+}> {
   const period = currentPeriod(now);
   const [usageSnap, workspaceSnap] = await Promise.all([
     db.doc(`workspaces/${workspaceId}/aiUsage/${period}`).get(),
     db.doc(`workspaces/${workspaceId}`).get(),
   ]);
 
-  const usageData = usageSnap.exists ? usageSnap.data() : undefined;
-  const warnCorrupt = (field: string) => () =>
-    // Hashed workspace id only, never the raw one (Global Constraint), and no
-    // counter value — a corrupt counter's own contents are not diagnostic.
-    logger.warn("checkFeatureQuota: corrupt usage counter, denying (fail closed)", {
-      workspaceHash: hashWorkspaceId(workspaceId),
-      period,
-      feature,
-      field,
-    });
-
-  const calls = readCounter(
-    (usageData as { calls?: unknown } | undefined)?.calls,
-    warnCorrupt("calls")
-  );
-  const featureCalls = readFeatureCalls(usageData, feature, warnCorrupt("byFeature"));
-  const plan = planOf(workspaceSnap);
-
-  return (
-    isWithinAiQuota(plan, calls) && isWithinFeatureQuota(plan, resource, featureCalls)
-  );
+  return {
+    plan: planOf(workspaceSnap),
+    usageData: usageSnap.exists ? usageSnap.data() : undefined,
+    warnCorrupt: (field: string) => () =>
+      // Hashed workspace id only, never the raw one (Global Constraint), and no
+      // counter value — a corrupt counter's own contents are not diagnostic.
+      logger.warn("checkFeatureQuota: corrupt usage counter, denying (fail closed)", {
+        workspaceHash: hashWorkspaceId(workspaceId),
+        period,
+        feature,
+        field,
+      }),
+  };
 }

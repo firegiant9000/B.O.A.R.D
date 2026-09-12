@@ -10,15 +10,17 @@ export type LimitedResource =
   | "aiCallsPerPeriod"
   | "collaboratorsPerBoard"
   | "workspaces"
-  | "boardQaPerPeriod";
+  | "boardQaPerPeriod"
+  | "embeddingsPerPeriod";
 
 export type PlanLimits = Record<LimitedResource, number>;
 
-// Month 6 — `boardQaPerPeriod` is finite on every plan (unlike every other row
-// here, where pro/edu are UNLIMITED). The reasoning for each number lives in
-// functions/src/billing/limits.ts, the source of truth this file mirrors; it is
-// deliberately NOT duplicated here, because a rationale that drifts is worse
-// than one that lives in one place. This side is display + advisory copy only.
+// Month 6 — `boardQaPerPeriod` and `embeddingsPerPeriod` are finite on every
+// plan (unlike every other row here, where pro/edu are UNLIMITED). The
+// reasoning for each number lives in functions/src/billing/limits.ts, the
+// source of truth this file mirrors; it is deliberately NOT duplicated here,
+// because a rationale that drifts is worse than one that lives in one place.
+// This side is display + advisory copy only.
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   free: {
     boards: 5,
@@ -27,6 +29,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 4,
     workspaces: 1,
     boardQaPerPeriod: 3,
+    embeddingsPerPeriod: 2000,
   },
   pro: {
     boards: UNLIMITED,
@@ -35,6 +38,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 25,
     workspaces: UNLIMITED,
     boardQaPerPeriod: 200,
+    embeddingsPerPeriod: 20000,
   },
   edu: {
     boards: UNLIMITED,
@@ -43,6 +47,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     collaboratorsPerBoard: 100,
     workspaces: UNLIMITED,
     boardQaPerPeriod: 100,
+    embeddingsPerPeriod: 20000,
   },
 };
 

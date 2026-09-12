@@ -31,6 +31,7 @@ describe("plan limits", () => {
         "collaboratorsPerBoard",
         "workspaces",
         "boardQaPerPeriod",
+        "embeddingsPerPeriod",
       ] as const) {
         expect(typeof PLAN_LIMITS[plan][r]).toBe("number");
       }
@@ -67,6 +68,48 @@ describe("board Q&A plan limit", () => {
   it("treats an unknown plan's Q&A cap as the free one (fail closed)", () => {
     expect(limitFor("nonsense" as never, "boardQaPerPeriod")).toBe(
       limitFor("free", "boardQaPerPeriod")
+    );
+  });
+});
+
+// Month 6 — the write half's own plan line. The element-embedding trigger is
+// AUTOMATED spend: it fires on writes with nobody present, so until this row
+// existed its only ceiling was the shared rate bucket (~2,880 embeds per
+// workspace per day), which is a throttle rather than a cost bound.
+describe("embeddings plan limit", () => {
+  it("caps automated embedding spend on EVERY plan", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      const limit = limitFor(plan, "embeddingsPerPeriod");
+      expect(Number.isFinite(limit)).toBe(true);
+      expect(limit).toBeGreaterThan(0);
+    }
+  });
+
+  it("is far looser than the interactive caps — a denial here is SILENT", () => {
+    // An embed denied by this cap is not an error anyone sees: the trigger
+    // skips and logs, and the index goes stale while board Q&A keeps answering
+    // from content that no longer matches the board. A cap that bit during
+    // ordinary editing would be worse than no cap, so this row must stay orders
+    // of magnitude above the per-question one, not merely above it.
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitFor(plan, "embeddingsPerPeriod")).toBeGreaterThan(
+        limitFor(plan, "boardQaPerPeriod") * 50
+      );
+    }
+  });
+
+  it("gives the paid plans more headroom than free, which is board-capped anyway", () => {
+    expect(limitFor("pro", "embeddingsPerPeriod")).toBeGreaterThan(
+      limitFor("free", "embeddingsPerPeriod")
+    );
+    expect(limitFor("edu", "embeddingsPerPeriod")).toBeGreaterThan(
+      limitFor("free", "embeddingsPerPeriod")
+    );
+  });
+
+  it("treats an unknown plan's embedding cap as the free one (fail closed)", () => {
+    expect(limitFor("nonsense" as never, "embeddingsPerPeriod")).toBe(
+      limitFor("free", "embeddingsPerPeriod")
     );
   });
 });

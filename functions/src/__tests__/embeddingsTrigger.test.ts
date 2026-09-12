@@ -1,23 +1,36 @@
 // Unit tests for the board Q&A embedding TRIGGER (Month 6) — the
 // unchanged-content gate, the metering-gated pure handler (including legacy-
 // board telemetry and the write/delete race guard), deletion cleanup, the
-// per-collection extractors, and the actual registered shape of all ten
+// per-collection extractors, and the actual registered shape of all twelve
 // bindings. No emulator, no Functions runtime: mirrors pollTally.test.ts's
 // split between pure-logic tests (deps injected directly) and "__endpoint"
 // metadata tests that pin the real registered event type/path without ever
 // invoking a handler through a fake CloudEvent.
 
-// Only `recordAiUsage` is swapped out (real `checkAiQuota`/`hashWorkspaceId`/
-// `estimateCostUsd` stay live via `requireActual`) — needed so the
-// "makeDeps — real Firestore path wiring" tests below can assert on the
-// `feature`/`completionTokens` fields `deps.recordUsage` passes THROUGH to
-// it, without also having to simulate `recordAiUsage`'s own transactional
-// read-modify-write against a fake Firestore. Every other test in this file
-// injects `EmbeddingTriggerDeps` by hand and never reaches this module at
-// all, so this mock changes nothing about them.
+// `../ai/usage` is PARTIALLY mocked: the pure maths (`hashWorkspaceId`,
+// `estimateCostUsd`, `isWithinFeatureQuota`) stays live via `requireActual`,
+// and only the four Firestore-touching entry points are swapped out.
+//
+// `recordAiUsage` so the "makeDeps — real Firestore path wiring" tests below
+// can assert on the `feature`/`completionTokens`/`countsTowardAiCap` fields
+// `deps.recordUsage` passes THROUGH to it, without also having to simulate its
+// transactional read-modify-write against a fake Firestore.
+//
+// The three quota entry points so those same tests can see WHICH of them the
+// trigger's gate is bound to. That choice is load-bearing and invisible
+// everywhere else: `checkFeatureOnlyQuota` is the correct one here, paired with
+// `countsTowardAiCap: false` (see `RecordUsageParams`' pairing rule), and every
+// test of the pure handler injects its own `checkQuota` so it would stay green
+// against any of the three.
+//
+// Every other test in this file injects `EmbeddingTriggerDeps` by hand and
+// never reaches this module at all, so these mocks change nothing about them.
 jest.mock("../ai/usage", () => ({
   ...jest.requireActual("../ai/usage"),
   recordAiUsage: jest.fn(async () => ({ period: "2026-06", costUsd: 0 })),
+  checkAiQuota: jest.fn(async () => true),
+  checkFeatureQuota: jest.fn(async () => true),
+  checkFeatureOnlyQuota: jest.fn(async () => true),
 }));
 
 import type { Firestore } from "firebase-admin/firestore";
@@ -31,6 +44,7 @@ import {
   extractPath,
   extractShape,
   extractImage,
+  extractComment,
   EXTRACTORS,
   makeDeps,
   onNoteWritten,
@@ -38,20 +52,31 @@ import {
   onPathWritten,
   onShapeWritten,
   onImageWritten,
+  onCommentWritten,
   onNoteDeleted,
   onTextElementDeleted,
   onPathDeleted,
   onShapeDeleted,
   onImageDeleted,
+  onCommentDeleted,
   type EmbeddingTriggerDeps,
   type CleanupDeps,
   type ExtractedElement,
 } from "../triggers/embeddings";
 import { contentHashFor, type StoredEmbedding, type EmbedOutcome, type EmbeddingProvider } from "../ai/embeddings";
 import { ocrCacheKey } from "../ai/ocrCache";
-import { recordAiUsage } from "../ai/usage";
+import {
+  recordAiUsage,
+  checkAiQuota,
+  checkFeatureQuota,
+  checkFeatureOnlyQuota,
+} from "../ai/usage";
 
 const recordAiUsageMock = recordAiUsage as jest.Mock;
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 function makeStored(overrides: Partial<StoredEmbedding> = {}): StoredEmbedding {
   return {
@@ -90,7 +115,7 @@ describe("handleElementWrite", () => {
       getBoardWorkspaceId: jest.fn(async () => "wsA"),
       getStoredEmbedding: jest.fn(async () => null),
       consumeToken: jest.fn(async () => true),
-      checkAiQuota: jest.fn(async () => true),
+      checkQuota: jest.fn(async () => true),
       embed: jest.fn(async (): Promise<EmbedOutcome> => ({
         embedded: true,
         model: "text-embedding-3-small",
@@ -151,7 +176,7 @@ describe("handleElementWrite", () => {
 
   // The check the coordinator explicitly asked to see RED-checked.
   it("does NOT call the provider when the workspace is over its AI quota", async () => {
-    const deps = makeTestDeps({ checkAiQuota: jest.fn(async () => false) });
+    const deps = makeTestDeps({ checkQuota: jest.fn(async () => false) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.embed).not.toHaveBeenCalled();
@@ -166,7 +191,7 @@ describe("handleElementWrite", () => {
     await handleElementWrite("legacyBoard", extracted("hello", "author-9"), deps, 1_000_000);
 
     expect(deps.consumeToken).toHaveBeenCalledWith("solo-author-9", 1_000_000);
-    expect(deps.checkAiQuota).not.toHaveBeenCalled();
+    expect(deps.checkQuota).not.toHaveBeenCalled();
     expect(deps.embed).toHaveBeenCalled();
     expect(deps.recordUsage).toHaveBeenCalledWith({
       workspaceId: "solo-author-9",
@@ -315,7 +340,56 @@ describe("makeDeps — real Firestore path wiring", () => {
       model: "text-embedding-3-small",
       usage: { promptTokens: 5, completionTokens: 0, totalTokens: 5 },
       now: 123,
+      countsTowardAiCap: false,
     });
+  });
+
+  // The metering flag and the gate below are a MATCHED PAIR, and mismatching
+  // them is the bug this file can actually catch. Both live in `makeDeps`, so
+  // neither is visible to any test of the pure handler — which sees only the
+  // injected functions and would stay green either way.
+  it("meters this trigger's spend OUT of the interactive AI cap", async () => {
+    // `aiCallsPerPeriod` is what a USER spends by asking for something. Counting
+    // embeds there let ordinary note-taking exhaust a free workspace's five
+    // calls, which made board Q&A's own displayed limit of 3 unreachable AND
+    // stopped the index updating at the same moment.
+    const { db } = fakePathDb();
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+
+    await deps.recordUsage({
+      workspaceId: "wsA",
+      uid: "u1",
+      model: "text-embedding-3-small",
+      usage: { promptTokens: 5, totalTokens: 5 },
+      now: 123,
+    });
+
+    const params = recordAiUsageMock.mock.calls[0][1];
+    expect(params.countsTowardAiCap).toBe(false);
+    // Reported in full regardless — this changes what is GATED, never what is
+    // shown on the usage page.
+    expect(params.feature).toBe("embeddings");
+    expect(params.usage.totalTokens).toBe(5);
+  });
+
+  it("gates on embeddingsPerPeriod alone, not on the workspace-wide AI cap", async () => {
+    // The other half of the pair. Gating on a counter this trigger deliberately
+    // does not feed would let an unrelated summary stop a board re-indexing.
+    const { db } = fakePathDb();
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+    (checkFeatureOnlyQuota as jest.Mock).mockResolvedValue(true);
+
+    await deps.checkQuota("wsA", 123);
+
+    expect(checkFeatureOnlyQuota).toHaveBeenCalledWith(
+      db,
+      "wsA",
+      "embeddings",
+      "embeddingsPerPeriod",
+      123
+    );
+    expect(checkAiQuota).not.toHaveBeenCalled();
+    expect(checkFeatureQuota).not.toHaveBeenCalled();
   });
 });
 
@@ -416,6 +490,109 @@ describe("extractShape / extractImage", () => {
   });
 });
 
+// The sixth source. ROADMAP.md scopes board Q&A over "board content + session
+// history + comments"; until this extractor existed, a question about what was
+// decided in the comments could only ever get the no-context answer.
+//
+// Fixtures set ONLY the real `Comment` field names (src/types/index.ts —
+// `body`, `authorId`, `replies[].body`), never the element vocabulary, so an
+// extractor that read `content`/`text`/`userId` returns null or "unknown" here
+// and these fail. That is the point: a silent field-name mismatch means the
+// feature indexes nothing, with no error anywhere to notice it by.
+describe("extractComment", () => {
+  it("extracts the thread body from `body`, NOT `content` or `text`", async () => {
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "we should cut the LTI work",
+      authorId: "alice",
+      replies: [],
+    });
+
+    expect(result?.element).toEqual({
+      id: "c1",
+      elementType: "comment",
+      text: "we should cut the LTI work",
+    });
+  });
+
+  it("reads the author from `authorId`, NOT `userId`", async () => {
+    // `authorOf` (used by every element extractor) reads `userId`, which a
+    // comment does not have. Falling through to it would log this spend under
+    // "unknown" and, on a legacy board, bucket every comment author's rate
+    // limit under one shared synthetic key.
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "hello",
+      authorId: "alice",
+    });
+
+    expect(result?.authorUid).toBe("alice");
+  });
+
+  it("does NOT fall back to userId when authorId is absent", async () => {
+    // A comment document has no `userId`; if one somehow appeared, reading it
+    // would mean the extractor was using the element field names after all.
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "hello",
+      userId: "bob",
+    });
+
+    expect(result?.authorUid).toBe("unknown");
+  });
+
+  it("indexes the whole thread — root plus every reply body", async () => {
+    // A thread lives in ONE document (commentService keeps replies in an array
+    // on the comment), and the decision a question reaches for is as likely to
+    // be in a reply as in the root.
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "should we ship the scanner?",
+      authorId: "alice",
+      replies: [
+        { id: "r1", authorId: "bob", authorName: "Bob", body: "no, descope it", createdAtMs: 2 },
+        { id: "r2", authorId: "cat", authorName: "Cat", body: "agreed, M7", createdAtMs: 3 },
+      ],
+    });
+
+    expect(result?.element.text).toContain("should we ship the scanner?");
+    expect(result?.element.text).toContain("no, descope it");
+    expect(result?.element.text).toContain("agreed, M7");
+  });
+
+  it("survives a malformed replies array without dropping the root", async () => {
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "root text",
+      authorId: "alice",
+      replies: [null, "nope", { body: 7 }, { body: "   " }, { body: "real reply" }],
+    });
+
+    expect(result?.element.text).toBe("root text\nreal reply");
+  });
+
+  it("tolerates replies being absent or not an array", async () => {
+    expect(
+      (await extractComment({} as any, "b1", "c1", { body: "just a root", authorId: "a" }))?.element.text
+    ).toBe("just a root");
+    expect(
+      (await extractComment({} as any, "b1", "c1", { body: "just a root", authorId: "a", replies: "x" }))
+        ?.element.text
+    ).toBe("just a root");
+  });
+
+  it("returns null for a thread with nothing embeddable in it", async () => {
+    expect(await extractComment({} as any, "b1", "c1", { body: "   ", authorId: "a" })).toBeNull();
+    expect(await extractComment({} as any, "b1", "c1", { authorId: "a" })).toBeNull();
+  });
+
+  it("indexes a reply-only thread rather than dropping it", async () => {
+    // A blank root with real replies is still a conversation worth retrieving.
+    const result = await extractComment({} as any, "b1", "c1", {
+      body: "",
+      authorId: "a",
+      replies: [{ body: "the actual decision" }],
+    });
+
+    expect(result?.element.text).toBe("the actual decision");
+  });
+});
+
 describe("EXTRACTORS — wiring, not just presence", () => {
   it("maps each collection to its OWN extractor, not a swapped one", () => {
     expect(EXTRACTORS.notes).toBe(extractNote);
@@ -423,6 +600,7 @@ describe("EXTRACTORS — wiring, not just presence", () => {
     expect(EXTRACTORS.paths).toBe(extractPath);
     expect(EXTRACTORS.shapes).toBe(extractShape);
     expect(EXTRACTORS.images).toBe(extractImage);
+    expect(EXTRACTORS.comments).toBe(extractComment);
   });
 });
 
@@ -444,13 +622,14 @@ function endpointOf(fn: unknown): Endpoint {
   return (fn as { __endpoint: Endpoint }).__endpoint;
 }
 
-describe("write bindings — five explicit paths, not a wildcard", () => {
+describe("write bindings — six explicit paths, not a wildcard", () => {
   const cases: Array<[string, unknown, string]> = [
     ["notes", onNoteWritten, "boards/{boardId}/notes/{elementId}"],
     ["textElements", onTextElementWritten, "boards/{boardId}/textElements/{elementId}"],
     ["paths", onPathWritten, "boards/{boardId}/paths/{elementId}"],
     ["shapes", onShapeWritten, "boards/{boardId}/shapes/{elementId}"],
     ["images", onImageWritten, "boards/{boardId}/images/{elementId}"],
+    ["comments", onCommentWritten, "boards/{boardId}/comments/{elementId}"],
   ];
 
   it.each(cases)("%s is bound to its own literal path, on the 'written' event, with the OpenAI secret attached", (_name, fn, path) => {
@@ -460,10 +639,18 @@ describe("write bindings — five explicit paths, not a wildcard", () => {
     expect(endpoint.secretEnvironmentVariables).toEqual([{ key: "OPENAI_API_KEY" }]);
   });
 
-  it("is NOT a single wildcard binding — five distinct literal document patterns, one per collection", () => {
+  it("is NOT a single wildcard binding — six distinct literal document patterns, one per collection", () => {
     const patterns = cases.map(([, fn]) => endpointOf(fn).eventTrigger.eventFilterPathPatterns?.document);
-    expect(new Set(patterns).size).toBe(5);
+    expect(new Set(patterns).size).toBe(6);
     expect(patterns.some((p) => p?.includes("{collectionId}"))).toBe(false);
+  });
+
+  it("binds every collection EXTRACTORS knows about — a source with no binding indexes nothing", () => {
+    // An extractor added without its binding is dead code that looks live: the
+    // map has an entry, the tests for the extractor itself pass, and not one
+    // document is ever indexed.
+    const bound = cases.map(([name]) => name).sort();
+    expect(bound).toEqual(Object.keys(EXTRACTORS).sort());
   });
 });
 
@@ -474,6 +661,7 @@ describe("deletion-cleanup bindings — one per collection, on the 'deleted' eve
     ["paths", onPathDeleted, "boards/{boardId}/paths/{elementId}"],
     ["shapes", onShapeDeleted, "boards/{boardId}/shapes/{elementId}"],
     ["images", onImageDeleted, "boards/{boardId}/images/{elementId}"],
+    ["comments", onCommentDeleted, "boards/{boardId}/comments/{elementId}"],
   ];
 
   it.each(cases)("%s is bound to its own literal path, on the 'deleted' event", (_name, fn, path) => {

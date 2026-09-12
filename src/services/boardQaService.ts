@@ -60,7 +60,18 @@ export const CITATION_KINDS: Record<string, string> = {
   path: "path",
   shape: "shape",
   image: "image",
+  // Not a canvas element. A comment citation opens its thread rather than
+  // selecting a shape, so the board screen branches on this kind — but it is
+  // still a placeable, tappable citation, which is what matters here.
+  comment: "comment",
 };
+
+/** The citation kinds that name a canvas element (so `boxOfElement` can resolve
+ *  them). `"comment"` is deliberately absent: a comment thread is real and
+ *  citable, but it is not on the canvas and must be resolved a different way.
+ *  Exported so the board screen and the tests agree on which is which instead
+ *  of each keeping its own list. */
+export const CANVAS_CITATION_KINDS = ["path", "shape", "text", "image", "note"];
 
 /** The canvas kind for a citation, or `null` for a kind this build cannot
  *  place. Null means "don't offer this as clickable" — never "try them all",

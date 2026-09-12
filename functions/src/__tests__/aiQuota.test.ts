@@ -6,6 +6,7 @@ import {
   readCounter,
   readFeatureCalls,
   checkFeatureQuota,
+  checkFeatureOnlyQuota,
 } from "../ai/usage";
 import { limitFor } from "../billing/limits";
 
@@ -399,5 +400,123 @@ describe("checkFeatureQuota", () => {
       "workspaces/ws1": { plan: "pro" },
     });
     await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+  });
+});
+
+// Month 6 — the gate for a feature metered with `countsTowardAiCap: false`.
+// It is a MATCHED PAIR with that flag, not a convenience variant: a feature
+// that does not feed the workspace-wide counter must not be gated by it, or
+// an unrelated summary could stop a board from re-indexing.
+describe("checkFeatureOnlyQuota", () => {
+  let warnSpy: jest.SpiedFunction<typeof logger.warn>;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("allows a workspace under its own feature cap", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: 0, byFeature: { embeddings: { calls: 5 } } },
+      "workspaces/ws1": { plan: "free" },
+    });
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(true);
+  });
+
+  it("denies at the feature cap", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: 0,
+        byFeature: { embeddings: { calls: limitFor("free", "embeddingsPerPeriod") } },
+      },
+      "workspaces/ws1": { plan: "free" },
+    });
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(false);
+  });
+
+  it("IGNORES the workspace-wide AI cap — the distinguishing behaviour", async () => {
+    // This is the whole point of the function existing. `checkFeatureQuota`
+    // with the same documents denies (that is the next assertion); this one
+    // must not, because the feature it gates deliberately contributes nothing
+    // to the counter that is exhausted.
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: limitFor("free", "aiCallsPerPeriod") + 100,
+        byFeature: { embeddings: { calls: 1 } },
+      },
+      "workspaces/ws1": { plan: "free" },
+    });
+
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(true);
+    // The contrast, on the very same data — without this the assertion above
+    // could pass simply because the fixture was under every cap.
+    await expect(
+      checkFeatureQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(false);
+  });
+
+  it("does not log a denial it is not making when the workspace-wide counter is corrupt", async () => {
+    // It never reads that counter, so a corrupt `calls` must neither deny here
+    // nor produce a "denying (fail closed)" line about a decision not taken.
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: NaN, byFeature: { embeddings: { calls: 1 } } },
+      "workspaces/ws1": { plan: "free" },
+    });
+
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("still fails closed on a corrupt FEATURE counter, and logs it", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: 0, byFeature: { embeddings: { calls: NaN } } },
+      "workspaces/ws1": { plan: "pro" },
+    });
+
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warnSpy.mock.calls[0][1])).not.toContain("ws1");
+  });
+
+  it("caps a pro workspace too, and treats an unknown plan as free (fail closed)", async () => {
+    const proAtCap = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        byFeature: { embeddings: { calls: limitFor("pro", "embeddingsPerPeriod") } },
+      },
+      "workspaces/ws1": { plan: "pro" },
+    });
+    await expect(
+      checkFeatureOnlyQuota(proAtCap, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(false);
+
+    const unknownPlan = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        byFeature: { embeddings: { calls: limitFor("free", "embeddingsPerPeriod") } },
+      },
+      "workspaces/ws1": { plan: "some-future-plan" },
+    });
+    await expect(
+      checkFeatureOnlyQuota(unknownPlan, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(false);
+  });
+
+  it("allows a workspace with no usage doc at all", async () => {
+    const db = fakeDbWithDocs({ "workspaces/ws1": { plan: "free" } });
+    await expect(
+      checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
+    ).resolves.toBe(true);
   });
 });

@@ -12,7 +12,7 @@ import {
 } from "../ai/embeddings";
 import { OpenAIEmbeddingProvider } from "../ai/openai";
 import { consumeToken } from "../ai/rateLimit";
-import { checkAiQuota, recordAiUsage, hashWorkspaceId } from "../ai/usage";
+import { checkFeatureOnlyQuota, recordAiUsage, hashWorkspaceId } from "../ai/usage";
 import { ocrCacheKey, getCachedOcr } from "../ai/ocrCache";
 import { OPENAI_API_KEY } from "../config";
 
@@ -39,8 +39,25 @@ import { OPENAI_API_KEY } from "../config";
 //
 // METERING. Every real embed is a paid OpenAI call, and this is the feature
 // ROADMAP.md itself flags as the one where "one enthusiastic free-tier user
-// outspends a paying one." Two things make a TRIGGER different from a
-// callable (generateFlashcards.ts, the pattern this mirrors):
+// outspends a paying one."
+//
+// THIS TRIGGER'S SPEND IS CARVED OUT OF THE INTERACTIVE AI CAP, and gated on a
+// row of its own (`embeddingsPerPeriod`) instead. `aiCallsPerPeriod` is what a
+// USER spends by asking for something — a summary, an OCR, a question. Counting
+// embeds there made a free workspace's five AI calls consumable by ordinary
+// note-taking: roughly one editing session exhausted the month, after which
+// board Q&A's own displayed limit of 3 questions was unreachable AND this
+// trigger's gate denied too, so the index stopped updating — the answers would
+// have been stale even if they had been askable. So: `recordUsage` passes
+// `countsTowardAiCap: false` (dollars and tokens still accumulate and still
+// show on the usage page; only the gated `calls` counter is held back), and the
+// gate below is `checkFeatureOnlyQuota`, NOT `checkFeatureQuota`. Those two go
+// together — see `RecordUsageParams.countsTowardAiCap` for the pairing rule and
+// why gating on a counter this trigger deliberately does not feed would let an
+// unrelated summary stop a board from re-indexing.
+//
+// Two more things make a TRIGGER different from a callable
+// (generateFlashcards.ts, the pattern this mirrors):
 //   - No auth context. There is no caller to resolve a workspace from, so the
 //     workspace is resolved from the BOARD document instead. A legacy board
 //     (no workspaceId) buckets its rate limit AND its cost telemetry under
@@ -174,7 +191,55 @@ export const extractPath: ElementExtractor = async (db, boardId, elementId, data
 export const extractShape: ElementExtractor = async () => null;
 export const extractImage: ElementExtractor = async () => null;
 
-type Collection = "notes" | "textElements" | "paths" | "shapes" | "images";
+/**
+ * Comments — the SIXTH source, and the first that is not a canvas element.
+ *
+ * ROADMAP.md's board Q&A scope is "board content + session history +
+ * comments", and until this extractor existed a question like "what did we
+ * decide in the comments?" could only ever get the no-context answer: the
+ * text was never indexed, so retrieval could not reach it.
+ *
+ * TWO FIELD NAMES DIVERGE from every extractor above, and both are load-bearing
+ * enough to be pinned against the real `Comment` type (src/types/index.ts) by
+ * tests rather than assumed:
+ *   - the text is `body`, not `content` (notes) or `text` (text elements);
+ *   - the author is `authorId`, not `userId` — so `authorOf` (which reads
+ *     `userId`) would return "unknown" here, which would misattribute this
+ *     spend in the usage log and, on a legacy board, bucket every comment's
+ *     rate limit under one synthetic `solo-unknown` key shared by every author.
+ *
+ * A thread is embedded as ONE unit: the root body plus every reply's body. The
+ * replies live in an array ON the comment document (commentService.ts keeps a
+ * thread in one doc), so there is no separate document to bind to — and the
+ * decision a question is usually reaching for is as likely to be in a reply as
+ * in the root. Adding or editing a reply changes the joined text, so the
+ * content hash changes and the thread re-embeds; resolving or unresolving one
+ * does not, so it stays a free hash-skip.
+ */
+export const extractComment: ElementExtractor = async (_db, _boardId, elementId, data) => {
+  const root = typeof data.body === "string" ? data.body : "";
+  const replies = Array.isArray(data.replies)
+    ? data.replies
+        .map((r: unknown) =>
+          r && typeof r === "object" && typeof (r as { body?: unknown }).body === "string"
+            ? ((r as { body: string }).body)
+            : ""
+        )
+        .filter((b: string) => b.trim().length > 0)
+    : [];
+
+  const text = [root, ...replies].filter((t) => t.trim().length > 0).join("\n");
+  if (!text.trim()) return null;
+
+  return {
+    element: { id: elementId, elementType: "comment", text },
+    // NOT `authorOf` — a comment's author field is `authorId`, not `userId`.
+    authorUid:
+      typeof data.authorId === "string" && data.authorId ? data.authorId : "unknown",
+  };
+};
+
+type Collection = "notes" | "textElements" | "paths" | "shapes" | "images" | "comments";
 
 export const EXTRACTORS: Record<Collection, ElementExtractor> = {
   notes: extractNote,
@@ -182,6 +247,7 @@ export const EXTRACTORS: Record<Collection, ElementExtractor> = {
   paths: extractPath,
   shapes: extractShape,
   images: extractImage,
+  comments: extractComment,
 };
 
 /**
@@ -194,7 +260,9 @@ export interface EmbeddingTriggerDeps {
   getBoardWorkspaceId(boardId: string): Promise<string | null>;
   getStoredEmbedding(boardId: string, elementId: string): Promise<StoredEmbedding | null>;
   consumeToken(bucketKey: string, now: number): Promise<boolean>;
-  checkAiQuota(workspaceId: string, now: number): Promise<boolean>;
+  /** `checkFeatureOnlyQuota` over `embeddingsPerPeriod` — this trigger's own
+   *  plan row, NOT the workspace-wide AI cap. See this file's header. */
+  checkQuota(workspaceId: string, now: number): Promise<boolean>;
   embed(boardId: string, element: BoardElementInput, now: number): Promise<EmbedOutcome>;
   recordUsage(params: {
     workspaceId: string;
@@ -271,12 +339,19 @@ export async function handleElementWrite(
   // Plan quota gate — only meaningful for a real workspace; a legacy board
   // has no plan to cap (same carve-out as generateFlashcards.ts). Telemetry
   // below is NOT carved out the same way — see this file's header.
+  //
+  // This is `embeddingsPerPeriod`, this trigger's own row, NOT the
+  // workspace-wide AI cap — and the numbers there are deliberately loose,
+  // because a denial here is SILENT to the user: the embed is skipped, the
+  // index goes stale, and board Q&A keeps answering from content that no
+  // longer matches the board. That makes a cap that bites during ordinary
+  // editing worse than no cap; this one exists to stop a runaway.
   if (workspaceId) {
-    const withinQuota = await deps.checkAiQuota(workspaceId, now);
+    const withinQuota = await deps.checkQuota(workspaceId, now);
     if (!withinQuota) {
       // Same "skip + log, never throw" direction as the rate limiter above.
       // Hashed workspace id only, never raw (Global Constraint).
-      logger.warn("embeddings trigger: over AI quota, skipping embed", {
+      logger.warn("embeddings trigger: over embedding quota, skipping embed", {
         workspaceHash: hashWorkspaceId(workspaceId),
         boardId,
         elementId: element.id,
@@ -395,7 +470,8 @@ export function makeDeps(
     },
     getStoredEmbedding: (bId, elId) => getStoredEmbedding(db, bId, elId),
     consumeToken: (bucketKey, now) => consumeToken(db, bucketKey, now),
-    checkAiQuota: (workspaceId, now) => checkAiQuota(db, workspaceId, now),
+    checkQuota: (workspaceId, now) =>
+      checkFeatureOnlyQuota(db, workspaceId, "embeddings", "embeddingsPerPeriod", now),
     embed: (bId, element, now) => embedElement(db, bId, element, provider, now),
     recordUsage: ({ workspaceId, uid, model, usage, now }) =>
       recordAiUsage(db, {
@@ -405,6 +481,10 @@ export function makeDeps(
         model,
         usage: { promptTokens: usage.promptTokens, completionTokens: 0, totalTokens: usage.totalTokens },
         now,
+        // Automated spend: reported in full, but not charged against the
+        // interactive `aiCallsPerPeriod` cap. Paired with `checkQuota` above —
+        // see this file's header and `RecordUsageParams.countsTowardAiCap`.
+        countsTowardAiCap: false,
       }).then(() => undefined),
     elementStillExists: async () => {
       const snap = await db.doc(`boards/${boardId}/${collection}/${elementId}`).get();
@@ -446,6 +526,10 @@ export const onTextElementWritten = makeWriteTrigger("textElements");
 export const onPathWritten = makeWriteTrigger("paths");
 export const onShapeWritten = makeWriteTrigger("shapes");
 export const onImageWritten = makeWriteTrigger("images");
+// The sixth source — comments, which ROADMAP.md's board Q&A scope names
+// explicitly alongside board content. Same explicit-binding discipline as the
+// five above, for the same reasons (see this file's header).
+export const onCommentWritten = makeWriteTrigger("comments");
 
 // ─────────────────────────────────────────────────────────────────────────
 // Deletion cleanup. Board Q&A cites source element ids so a user can click
@@ -489,3 +573,6 @@ export const onTextElementDeleted = makeDeleteTrigger("textElements");
 export const onPathDeleted = makeDeleteTrigger("paths");
 export const onShapeDeleted = makeDeleteTrigger("shapes");
 export const onImageDeleted = makeDeleteTrigger("images");
+// A deleted comment thread is a citation pointing at nothing exactly like a
+// deleted element is — the same reason every binding above has a paired one.
+export const onCommentDeleted = makeDeleteTrigger("comments");
