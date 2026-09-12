@@ -360,7 +360,13 @@ export async function checkFeatureQuota(
   resource: LimitedResource,
   now: number
 ): Promise<boolean> {
-  const { plan, usageData, warnCorrupt } = await readQuotaState(db, workspaceId, feature, now);
+  const { plan, usageData, warnCorrupt } = await readQuotaState(
+    db,
+    workspaceId,
+    feature,
+    now,
+    "checkFeatureQuota"
+  );
   const calls = readCounter(
     (usageData as { calls?: unknown } | undefined)?.calls,
     warnCorrupt("calls")
@@ -397,7 +403,13 @@ export async function checkFeatureOnlyQuota(
   resource: LimitedResource,
   now: number
 ): Promise<boolean> {
-  const { plan, usageData, warnCorrupt } = await readQuotaState(db, workspaceId, feature, now);
+  const { plan, usageData, warnCorrupt } = await readQuotaState(
+    db,
+    workspaceId,
+    feature,
+    now,
+    "checkFeatureOnlyQuota"
+  );
   // Only the feature's own counter is read — so a corrupt workspace-wide
   // `calls` neither denies here nor logs a denial this gate is not making.
   const featureCalls = readFeatureCalls(usageData, feature, warnCorrupt("byFeature"));
@@ -413,7 +425,12 @@ async function readQuotaState(
   db: Firestore,
   workspaceId: string,
   feature: string,
-  now: number
+  now: number,
+  /** The gate calling in. Named in the log line so a denial is attributable to
+   *  the function that actually made it — the two gates behave differently on
+   *  the same data, so "which one denied" is the first thing anyone reading
+   *  the line needs to know. */
+  caller: string
 ): Promise<{
   plan: Plan | undefined;
   usageData: unknown;
@@ -431,7 +448,7 @@ async function readQuotaState(
     warnCorrupt: (field: string) => () =>
       // Hashed workspace id only, never the raw one (Global Constraint), and no
       // counter value — a corrupt counter's own contents are not diagnostic.
-      logger.warn("checkFeatureQuota: corrupt usage counter, denying (fail closed)", {
+      logger.warn(`${caller}: corrupt usage counter, denying (fail closed)`, {
         workspaceHash: hashWorkspaceId(workspaceId),
         period,
         feature,

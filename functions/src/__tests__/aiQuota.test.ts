@@ -388,7 +388,12 @@ describe("checkFeatureQuota", () => {
     await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
 
     expect(warnSpy).toHaveBeenCalled();
-    const [, meta] = warnSpy.mock.calls[0];
+    const [message, meta] = warnSpy.mock.calls[0];
+    // The line must name the gate that actually denied. The two gates behave
+    // DIFFERENTLY on the same data, so a shared logger hardcoding one name
+    // would attribute the other's denials to the wrong function — and "which
+    // gate denied" is the first thing anyone reading the line needs.
+    expect(message).toEqual(expect.stringContaining("checkFeatureQuota"));
     expect(meta).toMatchObject({ period: "2026-09", feature: "boardQa" });
     expect(meta?.workspaceHash).toMatch(/^[0-9a-f]{16}$/);
     expect(JSON.stringify(meta)).not.toContain("ws1");
@@ -488,6 +493,12 @@ describe("checkFeatureOnlyQuota", () => {
       checkFeatureOnlyQuota(db, "ws1", "embeddings", "embeddingsPerPeriod", T)
     ).resolves.toBe(false);
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    // Attributed to THIS gate, not to `checkFeatureQuota` — the two share a
+    // reader, and a hardcoded name there would send anyone debugging an
+    // embedding denial to read the wrong function.
+    expect(warnSpy.mock.calls[0][0]).toEqual(
+      expect.stringContaining("checkFeatureOnlyQuota")
+    );
     expect(JSON.stringify(warnSpy.mock.calls[0][1])).not.toContain("ws1");
   });
 

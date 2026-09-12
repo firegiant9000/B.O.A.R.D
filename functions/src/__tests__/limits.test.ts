@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { PLAN_LIMITS, limitFor, UNLIMITED, type Plan } from "../billing/limits";
+import { DEFAULT_BUCKET } from "../ai/rateLimit";
 
 describe("plan limits", () => {
   it("caps the free tier per the spec", () => {
@@ -95,6 +96,19 @@ describe("embeddings plan limit", () => {
       expect(limitFor(plan, "embeddingsPerPeriod")).toBeGreaterThan(
         limitFor(plan, "boardQaPerPeriod") * 50
       );
+    }
+  });
+
+  it("stays BELOW what the shared rate bucket alone already permits", () => {
+    // Without a ceiling the looseness test above passes at 10,000,000, at which
+    // point this row is not a cost bound at all — it is a number that never
+    // fires, and the only real limit is the bucket it was added to improve on.
+    // Derived from DEFAULT_BUCKET rather than hardcoded, so it tracks the
+    // bucket instead of quietly going stale if the bucket is ever retuned.
+    const bucketPerMonth = DEFAULT_BUCKET.refillPerSec * 60 * 60 * 24 * 30;
+    expect(bucketPerMonth).toBeGreaterThan(0); // guard: a real derived figure
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitFor(plan, "embeddingsPerPeriod")).toBeLessThan(bucketPerMonth);
     }
   });
 

@@ -57,6 +57,15 @@ export type PlanLimits = Record<LimitedResource, number>;
 //   - pro/edu 20,000 — 10x, since neither is capped on boards. About $0.10 at
 //                    the same rates, and still an order of magnitude under what
 //                    the rate bucket alone would have permitted.
+// (Both dollar figures are UNDERSTATED for a comment-heavy workspace, and
+// honestly so: this row counts CALLS, while the ~250-tokens-per-element
+// assumption behind those figures is a canvas element's size. A comment thread
+// is embedded whole on every reply, so a long discussion's later embeds carry
+// far more tokens than a note does — bounded at the top by
+// `MAX_EMBEDDING_INPUT_CHARS`, which caps any single embed at ~2,000 tokens,
+// i.e. at most ~8x the assumed size. The ceilings stay cents either way, which
+// is why this row counts calls rather than tokens; the arithmetic above is a
+// floor, not a bound.)
 // Finite on every plan for the same reason `boardQaPerPeriod` is: unbounded
 // automated spend is exactly the thing with no natural stopping point.
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {

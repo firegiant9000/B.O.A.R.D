@@ -71,6 +71,49 @@ export interface BoardElementInput {
 /** `text-embedding-3-small`'s dimension. Firestore's vector cap is 2048. */
 export const EMBEDDING_DIMENSIONS = 1536;
 
+/**
+ * Longest input this file will send to the embedding provider, in CHARACTERS.
+ *
+ * `text-embedding-3-small` rejects input over 8,191 TOKENS. There is no token
+ * counter in this package and adding a tokenizer dependency for one bound is
+ * not worth it, so this is a character bound chosen to be safe under the worst
+ * realistic characters-per-token ratio rather than the average one: English
+ * runs ~4 chars/token, but CJK and many non-Latin scripts approach 1, and at
+ * that ratio anything over ~8,191 characters is rejected outright. 8,000 sits
+ * just under that floor, so no input this file sends can exceed the model's
+ * ceiling regardless of script.
+ *
+ * WHY TRUNCATE RATHER THAN FAIL. Exceeding the ceiling throws inside the
+ * provider call, which propagates out of the trigger's handler. `retry: false`
+ * means no loop — but it also means that document is never indexed again,
+ * silently, because a log line is the trigger's only failure surface. Worse,
+ * the rate-limit token is spent BEFORE the embed, so every subsequent write to
+ * that document burns a token from the bucket every other element in the
+ * workspace draws from: one over-long document would degrade indexing
+ * workspace-wide, invisibly. A truncated embedding is a far better outcome than
+ * a permanently missing one.
+ *
+ * WHAT TRUNCATION COSTS, honestly: the tail past this bound is not searchable.
+ * A question whose answer lives only in the 300th reply of a thread, or at the
+ * bottom of a pasted essay, will not retrieve it. That cost is smaller than it
+ * looks — a single 1536-dimension vector standing for 8,000 characters is
+ * already a poor retrieval unit (embedding quality degrades with length; RAG
+ * chunks are conventionally a few hundred tokens), so the tail was contributing
+ * little to a useful match even before it was cut. If that ever stops being
+ * true the answer is chunking one document into several embeddings, not a
+ * bigger number here — and that changes the citation model, so it is a design
+ * change rather than a constant edit.
+ */
+export const MAX_EMBEDDING_INPUT_CHARS = 8000;
+
+/** `text` cut to `MAX_EMBEDDING_INPUT_CHARS`. Exported so the bound is testable
+ *  on its own and so a caller can tell whether its content will be cut. */
+export function truncateForEmbedding(text: string): string {
+  return text.length > MAX_EMBEDDING_INPUT_CHARS
+    ? text.slice(0, MAX_EMBEDDING_INPUT_CHARS)
+    : text;
+}
+
 /** Stable content-addressed key for a piece of text, hashed. Same
  *  construction as `ocrCacheKey`/`flashcardCacheKey` — see those files'
  *  comments for why a hash (not a version counter) needs no invalidation
@@ -156,13 +199,27 @@ export async function embedElement(
   now: number = Date.now()
 ): Promise<EmbedOutcome> {
   const existing = await getStoredEmbedding(db, boardId, element.id);
+  // Hashed over the FULL text, deliberately, while the provider below sees only
+  // the truncated prefix. The asymmetry is load-bearing in both directions and
+  // is the kind of thing a later reader would "tidy" into a bug:
+  //   - hashing the full text means an edit PAST the truncation point still
+  //     invalidates and re-embeds. Hashing the prefix instead would make every
+  //     edit beyond character 8,000 a silent no-op — the memoization would
+  //     confidently report "unchanged" for a document that changed.
+  //   - `isContentUnchanged` in the trigger compares this hash against a hash
+  //     of the full extracted text, so the two must be computed the same way.
   const hash = contentHashFor(element.text);
 
   if (existing?.contentHash === hash) {
     return { embedded: false }; // skip: unchanged content — no provider call, no write.
   }
 
-  const result = await provider.embed(element.text);
+  // See `MAX_EMBEDDING_INPUT_CHARS` for why this is a truncation and not a
+  // rejection. Applied HERE, centrally, rather than in any one caller's
+  // extractor, so it covers every source at once — a pasted mega-note as much
+  // as a comment thread that grew a reply at a time.
+  const input = truncateForEmbedding(element.text);
+  const result = await provider.embed(input);
   if (!Array.isArray(result.vector) || result.vector.length !== EMBEDDING_DIMENSIONS) {
     // Fail loud rather than silently writing a vector Firestore's KNN index
     // can't use (or, past the 2048 cap, can't even store) — a wrong-length
@@ -177,7 +234,13 @@ export async function embedElement(
 
   const doc: StoredEmbedding = {
     vector: FieldValue.vector(result.vector),
-    text: element.text,
+    // The TRUNCATED text, not the original: this field is what the retrieval
+    // path hands the model as the chunk this vector matched, and a chunk that
+    // included text the vector never saw would be quoting content the match was
+    // not actually made on. It also keeps this document bounded. Note the
+    // consequence for readers: `contentHashFor(doc.text)` does NOT equal
+    // `doc.contentHash` for a truncated document — see the hash comment above.
+    text: input,
     elementType: element.elementType,
     contentHash: hash,
     updatedAt: now,

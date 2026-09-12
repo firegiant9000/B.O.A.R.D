@@ -14,7 +14,9 @@ import {
   embedElement,
   getStoredEmbedding,
   contentHashFor,
+  truncateForEmbedding,
   EMBEDDING_DIMENSIONS,
+  MAX_EMBEDDING_INPUT_CHARS,
   type EmbeddingProvider,
   type EmbedResult,
   type BoardElementInput,
@@ -182,5 +184,110 @@ describe("getStoredEmbedding", () => {
     const stored = await getStoredEmbedding(db, "b1", "el1");
     expect(stored?.contentHash).toBe(contentHashFor("hi"));
     expect(stored?.updatedAt).toBe(999);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Input length. `text-embedding-3-small` rejects input over 8,191 tokens, and
+// nothing upstream of here bounds an element's text: not firestore.rules, not
+// commentService, not the UI. A comment thread is embedded whole on every
+// reply, so this is reachable by ordinary accumulation — 200 replies of 160
+// characters is a semester of classroom discussion, not an attack.
+//
+// The failure it prevents is the expensive one: an over-long input throws
+// inside the provider call, the trigger has no catch and does not retry, so
+// that document is never indexed again and nobody is told — AND the rate-limit
+// token is spent BEFORE the embed, so every later write to it burns a token
+// from the bucket every other element in the workspace shares. One long thread
+// would degrade indexing workspace-wide, invisibly.
+
+describe("truncateForEmbedding", () => {
+  it("leaves ordinary text alone", () => {
+    expect(truncateForEmbedding("a short note")).toBe("a short note");
+  });
+
+  it("leaves text exactly at the bound alone", () => {
+    const exact = "x".repeat(MAX_EMBEDDING_INPUT_CHARS);
+    expect(truncateForEmbedding(exact)).toBe(exact);
+  });
+
+  it("cuts anything longer to the bound", () => {
+    const over = "x".repeat(MAX_EMBEDDING_INPUT_CHARS + 5000);
+    expect(truncateForEmbedding(over)).toHaveLength(MAX_EMBEDDING_INPUT_CHARS);
+  });
+
+  it("stays under the model's token ceiling even at one token per character", () => {
+    // The bound is in CHARACTERS but the model's limit is in TOKENS (8,191).
+    // English runs ~4 chars/token, but CJK and several other scripts approach
+    // 1, so the only safe choice is one that holds at that worst ratio — a
+    // bound tuned to the English average would still throw on a Chinese board.
+    expect(MAX_EMBEDDING_INPUT_CHARS).toBeLessThan(8191);
+  });
+});
+
+describe("embedElement — input length", () => {
+  it("never sends the provider more than the model accepts", async () => {
+    const { db } = makeFakeDb();
+    const provider = makeProvider();
+    const huge = "y".repeat(MAX_EMBEDDING_INPUT_CHARS * 3);
+
+    await embedElement(db, "b1", { id: "c1", elementType: "comment", text: huge }, provider, 1);
+
+    const sent = (provider.embed as jest.Mock).mock.calls[0][0] as string;
+    expect(sent).toHaveLength(MAX_EMBEDDING_INPUT_CHARS);
+  });
+
+  it("stores the text the vector was actually made from, not the original", async () => {
+    // The retrieval path hands this field to the model as the chunk this vector
+    // matched. Storing text the vector never saw would quote content the match
+    // was not made on.
+    const { db, store } = makeFakeDb();
+    const huge = "y".repeat(MAX_EMBEDDING_INPUT_CHARS * 3);
+
+    await embedElement(db, "b1", { id: "c1", elementType: "comment", text: huge }, makeProvider(), 1);
+
+    const stored = store.get("boards/b1/embeddings/c1") as { text: string };
+    expect(stored.text).toHaveLength(MAX_EMBEDDING_INPUT_CHARS);
+  });
+
+  it("still re-embeds when the text changes ONLY past the truncation point", async () => {
+    // The subtle one, and the reason the hash is taken over the FULL text while
+    // the provider sees the prefix. Hashing the truncated input instead would
+    // make every edit beyond the bound a silent no-op: the memoization would
+    // report "unchanged" for a document that changed, and a thread past the cap
+    // would freeze at whatever it said the day it crossed it.
+    const { db } = makeFakeDb();
+    const provider = makeProvider();
+    const head = "y".repeat(MAX_EMBEDDING_INPUT_CHARS);
+
+    await embedElement(db, "b1", { id: "c1", elementType: "comment", text: `${head}first tail` }, provider, 1);
+    expect(provider.embed).toHaveBeenCalledTimes(1);
+
+    const second = await embedElement(
+      db,
+      "b1",
+      { id: "c1", elementType: "comment", text: `${head}second tail` },
+      provider,
+      2
+    );
+
+    expect(second.embedded).toBe(true);
+    expect(provider.embed).toHaveBeenCalledTimes(2);
+  });
+
+  it("still hash-skips when an over-long text is unchanged", async () => {
+    // The positive control for the case above: re-embedding on every write to
+    // any long document would satisfy that test just as well, and would be its
+    // own cost bug.
+    const { db } = makeFakeDb();
+    const provider = makeProvider();
+    const huge = "y".repeat(MAX_EMBEDDING_INPUT_CHARS * 2);
+    const el: BoardElementInput = { id: "c1", elementType: "comment", text: huge };
+
+    await embedElement(db, "b1", el, provider, 1);
+    const second = await embedElement(db, "b1", el, provider, 2);
+
+    expect(second.embedded).toBe(false);
+    expect(provider.embed).toHaveBeenCalledTimes(1);
   });
 });

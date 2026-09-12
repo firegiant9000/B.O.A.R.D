@@ -669,4 +669,15 @@ describe("deletion-cleanup bindings — one per collection, on the 'deleted' eve
     expect(endpoint.eventTrigger.eventType).toBe("google.cloud.firestore.document.v1.deleted");
     expect(endpoint.eventTrigger.eventFilterPathPatterns?.document).toBe(path);
   });
+
+  it("pairs EVERY write binding with a delete binding — an unpaired source leaves citations pointing at nothing", () => {
+    // A source with a write binding and no delete binding indexes fine and
+    // cleans up never: its embeddings outlive their documents, and board Q&A
+    // cites ids that resolve to nothing — the exact failure these triggers
+    // exist to prevent, shipped with the whole suite green. Compared against
+    // EXTRACTORS (the same set the write bindings are checked against) so the
+    // two sides cannot drift apart in either direction.
+    const bound = cases.map(([name]) => name).sort();
+    expect(bound).toEqual(Object.keys(EXTRACTORS).sort());
+  });
 });

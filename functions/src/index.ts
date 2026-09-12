@@ -121,29 +121,32 @@ export { onPollVoteWritten } from "./triggers/pollTally";
 export { onPollDeleted } from "./triggers/pollTally";
 
 // Month 6 — board Q&A embedding write path (ROADMAP.md:1048: "each element
-// gets an embedding on create/update via Cloud Function trigger"). Five
-// explicit bindings, one per canvas-content subcollection
-// (paths/notes/textElements/shapes/images — firestore.rules:888-914), NOT a
-// wildcard `boards/{boardId}/{collectionId}/{elementId}` binding — see
+// gets an embedding on create/update via Cloud Function trigger"). SIX
+// explicit bindings, NOT a wildcard
+// `boards/{boardId}/{collectionId}/{elementId}` binding — see
 // functions/src/triggers/embeddings.ts's header for the three reasons a
-// wildcard is wrong here (it would also fire on ocrCache/polls/comments/
+// wildcard is wrong here (it would also fire on ocrCache/polls/reactions/
 // aiUsage/... writes, AND on `embeddings` itself, a self-feedback loop).
-// Each embed is rate-limited, plan-quota-gated (a legacy board still METERS
-// under a synthetic `solo-${authorUid}` bucket, deliberately, even though it
-// has no plan to cap), and recorded under `feature: "embeddings"` — see that
-// file's header for the full metering design.
-// The sixth binding is `comments`: ROADMAP.md scopes board Q&A over "board
-// content + session history + comments", and a comment thread is indexed as one
-// unit (root body + every reply body, which live in an array on the same
-// document). Its text and author fields differ from an element's (`body`/
-// `authorId`, not `content`/`userId`) — pinned by tests against the real type.
+//
+// Five are the canvas-content subcollections firestore.rules names
+// (paths/notes/textElements/shapes/images — firestore.rules:888-914). The
+// sixth is `comments`: ROADMAP.md scopes board Q&A over "board content +
+// session history + comments", and a comment thread is indexed as one unit
+// (root body + every reply body, which live in an array on the same document).
+// Its text and author fields differ from an element's (`body`/`authorId`, not
+// `content`/`userId`) — pinned by tests against the real type. Comment bodies
+// therefore reach OpenAI's embedding endpoint, as note and text content
+// already did.
 //
 // Each embed is rate-limited and gated on `embeddingsPerPeriod`, this
 // trigger's OWN plan row — not the workspace-wide `aiCallsPerPeriod` cap, which
 // its spend is deliberately carved out of (`countsTowardAiCap: false`). Dollars
 // and tokens still land on the usage page; what changed is that ordinary
 // note-taking can no longer consume a free workspace's five interactive AI
-// calls, which had made board Q&A's own displayed limit unreachable.
+// calls, which had made board Q&A's own displayed limit unreachable. A legacy
+// board still METERS under a synthetic `solo-${authorUid}` bucket,
+// deliberately, even though it has no plan to cap — see that file's header for
+// the full metering design.
 export {
   onNoteWritten,
   onTextElementWritten,

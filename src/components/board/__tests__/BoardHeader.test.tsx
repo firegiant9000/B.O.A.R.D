@@ -134,16 +134,26 @@ describe("board Q&A is reachable from the board screen", () => {
     expect(screen).toMatch(/elements\.boxOfElement\(elementId, canvasKind\) !== null/);
   });
 
+  it("routes canvas kinds by the shared allow-list, not by a not-a-comment negation", () => {
+    // An allow-list makes an unrecognized future kind fall through to "can't
+    // resolve"; a negation would hand it to `boxOfElement`, which finds nothing
+    // and reports it deleted. Both call sites use the same list, so the two
+    // cannot disagree about what lives on the canvas.
+    expect(screen).toMatch(/CANVAS_CITATION_KINDS/);
+    expect(screen.match(/CANVAS_CITATION_KINDS\.includes\(canvasKind\)/g)).toHaveLength(2);
+  });
+
   it("resolves a comment citation against the comment threads, not the canvas", () => {
     // A comment thread has no box. Routing it through `boxOfElement` would
     // report every comment citation as deleted — the answer would cite a
     // discussion and then refuse to show it.
-    // Anchored to the LIVENESS ternary specifically, not just to the string
-    // appearing somewhere in the file — `handleSelectCitation` below contains
-    // the same comment lookup, so an unanchored match would stay green with
-    // `isCitationLive` re-pointed at the canvas.
+    //
+    // Anchored to the LIVENESS branch specifically, not just to the string
+    // appearing somewhere in the file — `handleSelectCitation` contains the
+    // same comment lookup, so an unanchored match stayed green once already
+    // with `isCitationLive` re-pointed at the canvas.
     expect(screen).toMatch(
-      /canvasKind === "comment"\s*\?\s*comments\.comments\.some\(\(c\) => c\.id === elementId\)/
+      /if \(canvasKind === "comment"\) \{\s*return comments\.comments\.some\(\(c\) => c\.id === elementId\);/
     );
     expect(screen).toMatch(/comments\.openThread\(elementId\)/);
   });

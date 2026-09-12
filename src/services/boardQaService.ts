@@ -69,8 +69,12 @@ export const CITATION_KINDS: Record<string, string> = {
 /** The citation kinds that name a canvas element (so `boxOfElement` can resolve
  *  them). `"comment"` is deliberately absent: a comment thread is real and
  *  citable, but it is not on the canvas and must be resolved a different way.
- *  Exported so the board screen and the tests agree on which is which instead
- *  of each keeping its own list. */
+ *
+ *  The board screen branches on this list rather than on a literal, so a kind
+ *  it cannot place falls through to an explicit "can't resolve" instead of
+ *  being handed to `boxOfElement`, which would report it deleted. That makes
+ *  this constant load-bearing rather than documentation — if `"comment"` ever
+ *  drifted onto it, every comment citation would read as deleted. */
 export const CANVAS_CITATION_KINDS = ["path", "shape", "text", "image", "note"];
 
 /** The canvas kind for a citation, or `null` for a kind this build cannot

@@ -21,21 +21,29 @@ import { OPENAI_API_KEY } from "../config";
 // explicit and binding: "each element gets an embedding on create/update
 // VIA CLOUD FUNCTION TRIGGER" — this file is that trigger.
 //
-// FIVE EXPLICIT BINDINGS, NOT A WILDCARD. A single
+// SIX EXPLICIT BINDINGS, NOT A WILDCARD. A single
 // `boards/{boardId}/{collectionId}/{elementId}` binding looks tempting but is
 // wrong on three counts: (a) it fires on every OTHER subcollection under a
-// board too — ocrCache, flashcardCache, polls/*/votes, comments, reactions,
-// aiUsage, aiLog, snapshots, audio, presence, cursors — needing an allowlist
-// inside the handler anyway, so the wildcard buys nothing; (b) it fires on
-// `embeddings` ITSELF, re-invoking this same trigger against a document
-// shaped nothing like an element — a self-feedback loop; (c) it bills an
-// invocation for every vote/comment/reaction/tally write on the board, pure
-// waste against the spec's own "first unbounded AI feature" warning
-// (ROADMAP.md's board Q&A section). So: one binding per canvas-content
-// subcollection firestore.rules names (paths/notes/textElements/shapes/
-// images — firestore.rules:888-914), built from a shared factory so a SIXTH
-// source (Whisper transcripts on audio notes, expected next per the
-// roadmap) is a one-line addition, not a rewrite.
+// board too — ocrCache, flashcardCache, polls/*/votes, reactions, aiUsage,
+// aiLog, snapshots, audio, presence, cursors — needing an allowlist inside the
+// handler anyway, so the wildcard buys nothing; (b) it fires on `embeddings`
+// ITSELF, re-invoking this same trigger against a document shaped nothing like
+// an element — a self-feedback loop; (c) it bills an invocation for every
+// vote/reaction/tally write on the board, pure waste against the spec's own
+// "first unbounded AI feature" warning (ROADMAP.md's board Q&A section). So:
+// one binding per source that actually carries embeddable text — the five
+// canvas-content subcollections firestore.rules names (paths/notes/
+// textElements/shapes/images — firestore.rules:888-914) plus `comments`, which
+// ROADMAP.md's board Q&A scope ("board content + session history + comments")
+// names explicitly. All six are built from a shared factory, so a SEVENTH
+// source (Whisper transcripts on audio notes, expected next per the roadmap)
+// is a one-line addition, not a rewrite.
+//
+// Note what changed and what did not: `comments` moved from example (a)'s list
+// of things a wildcard would WRONGLY catch into a deliberate binding of its
+// own. The wildcard argument is unaffected — the objection was never "comments
+// are uninteresting", it was that a wildcard catches everything indiscriminately
+// and cannot tell a comment from a cursor position.
 //
 // METERING. Every real embed is a paid OpenAI call, and this is the feature
 // ROADMAP.md itself flags as the one where "one enthusiastic free-tier user
@@ -183,21 +191,29 @@ export const extractPath: ElementExtractor = async (db, boardId, elementId, data
 // No OCR or captioning runs against a whole SHAPE or IMAGE element today
 // (OCR runs only against a user-selected STROKE region — useBoardAI.ts —
 // never a shape or an image). Explicit no-op extractors (not simply omitted
-// bindings) so the five bindings below stay exactly the element-subcollection
+// bindings) so the canvas bindings below stay exactly the element-subcollection
 // set firestore.rules names, ready to gain a real extractor the moment one
 // of these sources gains embeddable text. Audio transcripts (Whisper,
-// ROADMAP.md) are expected to join this set NEXT, as a SIXTH binding — this
-// list is not written to calcify as exhaustive.
+// ROADMAP.md) are expected to join the binding set NEXT, as a SEVENTH binding
+// alongside the five canvas ones and `comments` — this list is not written to
+// calcify as exhaustive.
 export const extractShape: ElementExtractor = async () => null;
 export const extractImage: ElementExtractor = async () => null;
 
 /**
- * Comments — the SIXTH source, and the first that is not a canvas element.
+ * Comments — the sixth source, and the first that is not a canvas element.
  *
  * ROADMAP.md's board Q&A scope is "board content + session history +
  * comments", and until this extractor existed a question like "what did we
  * decide in the comments?" could only ever get the no-context answer: the
  * text was never indexed, so retrieval could not reach it.
+ *
+ * WHAT THIS CHANGES ABOUT WHERE BOARD DATA GOES: comment bodies and reply
+ * bodies are now sent to OpenAI's embedding endpoint, as note and text-element
+ * content already were. That is not a new class of data leaving the product,
+ * but it is a wider and more candid surface — comments are where people write
+ * about each other's work, not just about the subject — so it is stated here
+ * rather than left to be inferred from the binding list.
  *
  * TWO FIELD NAMES DIVERGE from every extractor above, and both are load-bearing
  * enough to be pinned against the real `Comment` type (src/types/index.ts) by

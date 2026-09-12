@@ -35,7 +35,10 @@ import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
 import * as workspaceService from "../../src/services/workspaceService";
-import { isBoardQaConfigured } from "../../src/services/boardQaService";
+import {
+  isBoardQaConfigured,
+  CANVAS_CITATION_KINDS,
+} from "../../src/services/boardQaService";
 import type { UpsellResource } from "../../src/components/upsellCopy";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
@@ -475,11 +478,20 @@ export default function BoardScreen(
   //
   // A `comment` citation is not a canvas element and has no box — it resolves
   // against the live comment threads instead. Same question, different index.
+  // The canvas branch is an ALLOW-LIST (`CANVAS_CITATION_KINDS`), not a
+  // not-a-comment negation: a future citation kind this screen has never heard
+  // of must fall through to "can't resolve" rather than being handed to
+  // `boxOfElement`, which would find nothing and report it deleted.
   const isCitationLive = useCallback(
-    (elementId: string, canvasKind: string) =>
-      canvasKind === "comment"
-        ? comments.comments.some((c) => c.id === elementId)
-        : elements.boxOfElement(elementId, canvasKind) !== null,
+    (elementId: string, canvasKind: string) => {
+      if (CANVAS_CITATION_KINDS.includes(canvasKind)) {
+        return elements.boxOfElement(elementId, canvasKind) !== null;
+      }
+      if (canvasKind === "comment") {
+        return comments.comments.some((c) => c.id === elementId);
+      }
+      return false;
+    },
     [comments, elements]
   );
 
@@ -489,16 +501,19 @@ export default function BoardScreen(
   // conversation.
   const handleSelectCitation = useCallback(
     (elementId: string, canvasKind: string) => {
-      // A comment citation opens its thread — there is nothing on the canvas to
-      // select, and the thread body is what was cited in the first place.
-      if (canvasKind === "comment") {
-        if (!comments.comments.some((c) => c.id === elementId)) return;
-        comments.openThread(elementId);
+      // Same allow-list shape as `isCitationLive` above, for the same reason:
+      // an unrecognized kind does nothing rather than selecting the wrong thing.
+      if (CANVAS_CITATION_KINDS.includes(canvasKind)) {
+        if (elements.boxOfElement(elementId, canvasKind) === null) return;
+        tools.activateSelect();
+        elements.selection.select(elementId);
         return;
       }
-      if (elements.boxOfElement(elementId, canvasKind) === null) return;
-      tools.activateSelect();
-      elements.selection.select(elementId);
+      // A comment citation opens its thread — there is nothing on the canvas to
+      // select, and the thread body is what was cited in the first place.
+      if (canvasKind === "comment" && comments.comments.some((c) => c.id === elementId)) {
+        comments.openThread(elementId);
+      }
     },
     [comments, elements, tools]
   );
