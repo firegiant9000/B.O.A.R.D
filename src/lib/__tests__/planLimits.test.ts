@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { PLAN_LIMITS, PlanLimits } from "../planLimits";
+import { PLAN_LIMITS, PlanLimits, UNLIMITED, limitFor } from "../planLimits";
 
 // The two tables are physically separate (one ships in the bundle, one in the
 // function runtime) so this test is what keeps them honest.
@@ -75,5 +75,35 @@ describe("planLimits mirror", () => {
         expect(functionsValue).toBe(clientValueStr);
       }
     }
+
+    // Month 6 — board Q&A's own plan line. The bidirectional comparison above
+    // would already fail if this row existed on only one side, but it would
+    // fail as an opaque array diff. Naming the key here means a one-sided edit
+    // says which row drifted, and it also re-proves the PARSE saw a row this
+    // test knows the functions file contains — the guard above
+    // (`discoveredPlans.length > 0`) only proves the parse found some plan.
+    for (const plan of Object.keys(functionsLimits)) {
+      expect(Object.keys(functionsLimits[plan])).toContain("boardQaPerPeriod");
+    }
+  });
+});
+
+// Month 6 — the client half of board Q&A's plan line. This table is display +
+// advisory copy only (see this module's own header); the real gate is the
+// retrieval callable's, server-side. These pin the same property the functions
+// suite pins, so a one-sided "make it unlimited like its neighbours" edit fails
+// on BOTH sides rather than only where the author happened to be looking.
+describe("board Q&A plan limit (client mirror)", () => {
+  it("is finite on every plan, including the two with unlimited AI", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitFor(plan, "boardQaPerPeriod")).not.toBe(UNLIMITED);
+      expect(Number.isFinite(limitFor(plan, "boardQaPerPeriod"))).toBe(true);
+    }
+  });
+
+  it("keeps the free tier's Q&A cap strictly under its whole AI allowance", () => {
+    expect(limitFor("free", "boardQaPerPeriod")).toBeLessThan(
+      limitFor("free", "aiCallsPerPeriod")
+    );
   });
 });

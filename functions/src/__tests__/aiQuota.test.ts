@@ -1,5 +1,13 @@
 import { logger } from "firebase-functions/v2";
-import { isWithinAiQuota, checkAiQuota } from "../ai/usage";
+import {
+  isWithinAiQuota,
+  checkAiQuota,
+  isWithinFeatureQuota,
+  readCounter,
+  readFeatureCalls,
+  checkFeatureQuota,
+} from "../ai/usage";
+import { limitFor } from "../billing/limits";
 
 const T = Date.UTC(2026, 8, 9, 12, 0, 0); // 2026-09-09 -> period "2026-09"
 
@@ -168,5 +176,228 @@ describe("checkAiQuota", () => {
       "workspaces/ws1": { plan: "some-future-plan" },
     });
     await expect(checkAiQuota(db, "ws1", T)).resolves.toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Month 6 — per-feature quota. Board Q&A is the first feature carrying a plan
+// row of its own on top of the workspace-wide AI cap, because a question fires
+// as often as someone types one while a summary fires once per session.
+
+describe("readCounter", () => {
+  it("reads a real count", () => {
+    expect(readCounter(7, () => undefined)).toBe(7);
+  });
+
+  it("reads an absent or explicitly null counter as zero, not as corrupt", () => {
+    // Order matters: a workspace's FIRST call has no counter yet, and reading
+    // that as corrupt would deny every workspace its first call forever.
+    const onCorrupt = jest.fn();
+    expect(readCounter(undefined, onCorrupt)).toBe(0);
+    expect(readCounter(null, onCorrupt)).toBe(0);
+    expect(onCorrupt).not.toHaveBeenCalled();
+  });
+
+  it("fails closed to Infinity on NaN, and says so", () => {
+    // `typeof NaN === "number"` and NaN is a legal Firestore double, so a naive
+    // type guard passes it straight through — and `NaN < 5` is false, which
+    // reads as "denied" only by accident. Coercing to Infinity makes the denial
+    // deliberate rather than incidental, and survives a plan with no cap.
+    const onCorrupt = jest.fn();
+    expect(readCounter(NaN, onCorrupt)).toBe(Number.POSITIVE_INFINITY);
+    expect(onCorrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on a non-finite or non-numeric value", () => {
+    const onCorrupt = jest.fn();
+    expect(readCounter("12", onCorrupt)).toBe(Number.POSITIVE_INFINITY);
+    expect(readCounter(Infinity, onCorrupt)).toBe(Number.POSITIVE_INFINITY);
+    expect(onCorrupt).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("readFeatureCalls", () => {
+  it("reads a feature's own call count", () => {
+    const doc = { calls: 9, byFeature: { boardQa: { calls: 2 } } };
+    expect(readFeatureCalls(doc, "boardQa", () => undefined)).toBe(2);
+  });
+
+  it("reads a workspace that has never used the feature as zero", () => {
+    const onCorrupt = jest.fn();
+    expect(
+      readFeatureCalls({ calls: 9, byFeature: { summary: { calls: 9 } } }, "boardQa", onCorrupt)
+    ).toBe(0);
+    expect(readFeatureCalls({ calls: 0 }, "boardQa", onCorrupt)).toBe(0);
+    expect(readFeatureCalls(undefined, "boardQa", onCorrupt)).toBe(0);
+    expect(onCorrupt).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the feature entry exists but isn't an object", () => {
+    // `(5)?.calls` is `undefined`, which a tolerant reader would happily call
+    // zero — handing out a fresh allowance off the back of a corrupt write.
+    const onCorrupt = jest.fn();
+    expect(readFeatureCalls({ byFeature: { boardQa: 5 } }, "boardQa", onCorrupt)).toBe(
+      Number.POSITIVE_INFINITY
+    );
+    expect(onCorrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when byFeature itself isn't a map", () => {
+    const onCorrupt = jest.fn();
+    expect(readFeatureCalls({ byFeature: "oops" }, "boardQa", onCorrupt)).toBe(
+      Number.POSITIVE_INFINITY
+    );
+    expect(onCorrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on a corrupt count inside a well-shaped entry", () => {
+    const onCorrupt = jest.fn();
+    expect(
+      readFeatureCalls({ byFeature: { boardQa: { calls: NaN } } }, "boardQa", onCorrupt)
+    ).toBe(Number.POSITIVE_INFINITY);
+    expect(onCorrupt).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isWithinFeatureQuota", () => {
+  it("allows a free workspace under its Q&A cap", () => {
+    expect(
+      isWithinFeatureQuota("free", "boardQaPerPeriod", limitFor("free", "boardQaPerPeriod") - 1)
+    ).toBe(true);
+  });
+
+  it("blocks a free workspace AT its Q&A cap", () => {
+    expect(
+      isWithinFeatureQuota("free", "boardQaPerPeriod", limitFor("free", "boardQaPerPeriod"))
+    ).toBe(false);
+  });
+
+  it("blocks pro and edu too — this row is finite on every plan", () => {
+    // The distinguishing property of this limit. `aiCallsPerPeriod` is
+    // UNLIMITED on both, so a gate that quietly reused it would leave the one
+    // feature the roadmap calls unbounded running uncapped on the paying tiers.
+    expect(
+      isWithinFeatureQuota("pro", "boardQaPerPeriod", limitFor("pro", "boardQaPerPeriod"))
+    ).toBe(false);
+    expect(
+      isWithinFeatureQuota("edu", "boardQaPerPeriod", limitFor("edu", "boardQaPerPeriod"))
+    ).toBe(false);
+  });
+
+  it("treats a missing or unrecognized plan as free (fail closed)", () => {
+    const freeCap = limitFor("free", "boardQaPerPeriod");
+    expect(isWithinFeatureQuota(undefined, "boardQaPerPeriod", freeCap)).toBe(false);
+    expect(isWithinFeatureQuota("future-tier" as never, "boardQaPerPeriod", freeCap)).toBe(false);
+  });
+
+  it("denies a corrupt (Infinity) counter regardless of plan", () => {
+    expect(isWithinFeatureQuota("pro", "boardQaPerPeriod", Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+describe("checkFeatureQuota", () => {
+  let warnSpy: jest.SpiedFunction<typeof logger.warn>;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("allows a free workspace under both caps", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: 1, byFeature: { boardQa: { calls: 1 } } },
+      "workspaces/ws1": { plan: "free" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(true);
+  });
+
+  it("denies once the FEATURE cap is reached, even with AI calls left over", async () => {
+    // free's Q&A cap is strictly under its aiCallsPerPeriod, so this is the
+    // case the feature row exists for: Q&A stops before it has eaten the whole
+    // workspace's AI allowance and left summaries/OCR with nothing.
+    const qaCap = limitFor("free", "boardQaPerPeriod");
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: qaCap, byFeature: { boardQa: { calls: qaCap } } },
+      "workspaces/ws1": { plan: "free" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+  });
+
+  it("denies once the workspace-wide AI cap is reached, even with the feature cap untouched", async () => {
+    // The other direction: a per-feature allowance must never become a way
+    // around the cap every other AI callable honours.
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: limitFor("free", "aiCallsPerPeriod"),
+        byFeature: { boardQa: { calls: 0 } },
+      },
+      "workspaces/ws1": { plan: "free" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+  });
+
+  it("caps a pro workspace on this feature despite its unlimited AI calls", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: 100000,
+        byFeature: { boardQa: { calls: limitFor("pro", "boardQaPerPeriod") } },
+      },
+      "workspaces/ws1": { plan: "pro" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+  });
+
+  it("lets a pro workspace under the feature cap through", async () => {
+    // The positive control for the case above: without it, a gate that denied
+    // every pro workspace outright would look identical.
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: 100000,
+        byFeature: { boardQa: { calls: limitFor("pro", "boardQaPerPeriod") - 1 } },
+      },
+      "workspaces/ws1": { plan: "pro" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(true);
+  });
+
+  it("allows a workspace with no usage doc at all (genuinely no usage yet)", async () => {
+    const db = fakeDbWithDocs({ "workspaces/ws1": { plan: "free" } });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(true);
+  });
+
+  it("treats a missing workspace doc as free (fail closed)", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": {
+        calls: 0,
+        byFeature: { boardQa: { calls: limitFor("free", "boardQaPerPeriod") } },
+      },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+  });
+
+  it("fails closed on a corrupt feature counter, and logs a hashed workspace id", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: 0, byFeature: { boardQa: { calls: NaN } } },
+      "workspaces/ws1": { plan: "pro" },
+    });
+
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
+
+    expect(warnSpy).toHaveBeenCalled();
+    const [, meta] = warnSpy.mock.calls[0];
+    expect(meta).toMatchObject({ period: "2026-09", feature: "boardQa" });
+    expect(meta?.workspaceHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(meta)).not.toContain("ws1");
+  });
+
+  it("fails closed on a corrupt workspace-wide counter too", async () => {
+    const db = fakeDbWithDocs({
+      "workspaces/ws1/aiUsage/2026-09": { calls: NaN, byFeature: { boardQa: { calls: 0 } } },
+      "workspaces/ws1": { plan: "pro" },
+    });
+    await expect(checkFeatureQuota(db, "ws1", "boardQa", "boardQaPerPeriod", T)).resolves.toBe(false);
   });
 });

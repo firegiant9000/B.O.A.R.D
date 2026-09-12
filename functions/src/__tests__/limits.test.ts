@@ -24,10 +24,50 @@ describe("plan limits", () => {
 
   it("defines every resource for every plan", () => {
     for (const plan of ["free", "pro", "edu"] as const) {
-      for (const r of ["boards", "sessionsPerPeriod", "aiCallsPerPeriod", "collaboratorsPerBoard", "workspaces"] as const) {
+      for (const r of [
+        "boards",
+        "sessionsPerPeriod",
+        "aiCallsPerPeriod",
+        "collaboratorsPerBoard",
+        "workspaces",
+        "boardQaPerPeriod",
+      ] as const) {
         expect(typeof PLAN_LIMITS[plan][r]).toBe("number");
       }
     }
+  });
+});
+
+// Month 6 — board Q&A's own plan line. The retrieval callable
+// (functions/src/callable/askBoard.ts) gates on this INSTEAD of leaning only
+// on `aiCallsPerPeriod`, because chat fires as often as someone types while a
+// summary fires once per session.
+describe("board Q&A plan limit", () => {
+  it("caps board Q&A on EVERY plan, including the two with unlimited AI", () => {
+    // The property worth pinning is not the three numbers — it is that none of
+    // them is UNLIMITED. `aiCallsPerPeriod` is unlimited on pro and edu, so a
+    // future edit that "helpfully" made this row match its neighbours would
+    // re-open exactly the unbounded-spend hole this row exists to close, and
+    // would do it silently.
+    for (const plan of ["free", "pro", "edu"] as const) {
+      const limit = limitFor(plan, "boardQaPerPeriod");
+      expect(Number.isFinite(limit)).toBe(true);
+      expect(limit).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the free tier's Q&A cap strictly under its whole AI allowance", () => {
+    // Q&A must not be able to consume a free workspace's entire monthly AI
+    // budget: summaries, OCR, explain and diagram have to keep some of it.
+    expect(limitFor("free", "boardQaPerPeriod")).toBeLessThan(
+      limitFor("free", "aiCallsPerPeriod")
+    );
+  });
+
+  it("treats an unknown plan's Q&A cap as the free one (fail closed)", () => {
+    expect(limitFor("nonsense" as never, "boardQaPerPeriod")).toBe(
+      limitFor("free", "boardQaPerPeriod")
+    );
   });
 });
 

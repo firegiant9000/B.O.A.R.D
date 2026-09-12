@@ -64,3 +64,20 @@ export const DIAGRAM_ENABLED =
 export const FLASHCARDS_ENABLED =
   process.env.EXPO_PUBLIC_FLASHCARDS === "1" ||
   process.env.EXPO_PUBLIC_FLASHCARDS === "true";
+
+/**
+ * Month 6 — board Q&A (chat with your board).
+ *
+ * Gates the sidebar chat affordance and the `askBoard` callable. Default OFF
+ * until the function is deployed; flip to "1" via the build env to expose it.
+ * Rides the Cloud Function gateway like every other AI feature, so it is only
+ * meaningful once `AI_GATEWAY_ENABLED` is also on.
+ *
+ * This flag hides the ENTRY POINT, nothing more — like every other flag here it
+ * is inlined into the client bundle and therefore public and patchable. The
+ * things that actually stop an unauthorized or over-quota question are the
+ * callable's own membership check, rate bucket and plan gate, all server-side.
+ */
+export const BOARD_QA_ENABLED =
+  process.env.EXPO_PUBLIC_BOARD_QA === "1" ||
+  process.env.EXPO_PUBLIC_BOARD_QA === "true";

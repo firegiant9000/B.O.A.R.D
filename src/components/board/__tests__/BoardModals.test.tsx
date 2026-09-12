@@ -45,6 +45,17 @@ jest.mock("../PollComposer", () => ({
   },
 }));
 
+let mockBoardQaProps: any = null;
+let mockBoardQaRenders = 0;
+jest.mock("../../BoardQaPanel", () => ({
+  __esModule: true,
+  default: (props: any) => {
+    mockBoardQaProps = props;
+    mockBoardQaRenders += 1;
+    return null;
+  },
+}));
+
 import React from "react";
 import { Animated } from "react-native";
 import { render } from "@testing-library/react-native";
@@ -150,6 +161,11 @@ function renderModals(opts: {
   onAddSwatch?: jest.Mock;
   onRequestPaletteUpgrade?: jest.Mock;
   pollComposerVisible?: boolean;
+  boardQaEnabled?: boolean;
+  boardQaVisible?: boolean;
+  isCitationLive?: jest.Mock;
+  onSelectCitation?: jest.Mock;
+  onBoardQaQuotaExceeded?: jest.Mock;
 }) {
   const doc = makeDoc();
   const comments = makeComments();
@@ -159,6 +175,10 @@ function renderModals(opts: {
   const onRequestPaletteUpgrade = opts.onRequestPaletteUpgrade ?? jest.fn();
   const onClosePollComposer = jest.fn();
   const onCreatePoll = jest.fn();
+  const onCloseBoardQa = jest.fn();
+  const isCitationLive = opts.isCitationLive ?? jest.fn(() => true);
+  const onSelectCitation = opts.onSelectCitation ?? jest.fn();
+  const onBoardQaQuotaExceeded = opts.onBoardQaQuotaExceeded ?? jest.fn();
 
   render(
     <BoardModals
@@ -208,10 +228,28 @@ function renderModals(opts: {
       pollComposerVisible={opts.pollComposerVisible ?? false}
       onClosePollComposer={onClosePollComposer}
       onCreatePoll={onCreatePoll}
+      boardQaEnabled={opts.boardQaEnabled ?? true}
+      boardQaVisible={opts.boardQaVisible ?? false}
+      onCloseBoardQa={onCloseBoardQa}
+      isCitationLive={isCitationLive}
+      onSelectCitation={onSelectCitation}
+      onBoardQaQuotaExceeded={onBoardQaQuotaExceeded}
     />
   );
 
-  return { doc, comments, ai, onAddSwatch, onRequestPaletteUpgrade, onClosePollComposer, onCreatePoll };
+  return {
+    doc,
+    comments,
+    ai,
+    onAddSwatch,
+    onRequestPaletteUpgrade,
+    onClosePollComposer,
+    onCreatePoll,
+    onCloseBoardQa,
+    isCitationLive,
+    onSelectCitation,
+    onBoardQaQuotaExceeded,
+  };
 }
 
 beforeEach(() => {
@@ -219,6 +257,8 @@ beforeEach(() => {
   mockColorPickerProps = null;
   mockStrokeWidthProps = null;
   mockPollComposerProps = null;
+  mockBoardQaProps = null;
+  mockBoardQaRenders = 0;
 });
 
 describe("BoardModals — diagram-generate gate while presenting", () => {
@@ -297,5 +337,70 @@ describe("BoardModals — poll composer wiring (Month 6)", () => {
     const input = { question: "Q?", options: ["A", "B"], anonymous: false, mode: "single" as const };
     mockPollComposerProps.onSubmit(input);
     expect(onCreatePoll).toHaveBeenCalledWith(input);
+  });
+});
+
+// Month 6 — the board Q&A chat panel. This layer is where it is actually
+// reachable from: the header's button flips the screen state, and this renders
+// the panel with it. Four tasks on this branch shipped a component nothing
+// mounted, so the mounting is what these pin, not the panel's own behaviour
+// (BoardQaPanel.test.tsx covers that).
+describe("BoardModals — board Q&A wiring (Month 6)", () => {
+  it("mounts the panel and passes its visibility through", () => {
+    renderModals({ presenterLocksContentCreation: false, boardQaVisible: true });
+    expect(mockBoardQaProps.visible).toBe(true);
+
+    renderModals({ presenterLocksContentCreation: false, boardQaVisible: false });
+    expect(mockBoardQaProps.visible).toBe(false);
+  });
+
+  it("does not mount the panel at all when the feature is off", () => {
+    // A build with the flag off should not be carrying the panel's callable
+    // wiring around at runtime, the same shape as the diagram prompt's gate.
+    renderModals({ presenterLocksContentCreation: false, boardQaEnabled: false });
+    expect(mockBoardQaRenders).toBe(0);
+    expect(mockBoardQaProps).toBeNull();
+  });
+
+  it("gives the panel THIS board's id — an answer must be about the board you're on", () => {
+    renderModals({ presenterLocksContentCreation: false, boardQaVisible: true });
+    expect(mockBoardQaProps.boardId).toBe("board1");
+  });
+
+  it("wires the citation-liveness resolver straight through, not a stub", () => {
+    // The panel cannot tell a deleted element from a live one by itself; the
+    // screen's element sets are the only source. A `() => true` default
+    // silently substituted here would make every citation claim to be live.
+    const isCitationLive = jest.fn(() => false);
+    renderModals({ presenterLocksContentCreation: false, boardQaVisible: true, isCitationLive });
+
+    expect(mockBoardQaProps.isCitationLive("el1", "note")).toBe(false);
+    expect(isCitationLive).toHaveBeenCalledWith("el1", "note");
+  });
+
+  it("wires citation taps and the quota denial to the caller's handlers", () => {
+    const onSelectCitation = jest.fn();
+    const onBoardQaQuotaExceeded = jest.fn();
+    const { onCloseBoardQa } = renderModals({
+      presenterLocksContentCreation: false,
+      boardQaVisible: true,
+      onSelectCitation,
+      onBoardQaQuotaExceeded,
+    });
+
+    mockBoardQaProps.onSelectCitation("el1", "text");
+    expect(onSelectCitation).toHaveBeenCalledWith("el1", "text");
+
+    mockBoardQaProps.onQuotaExceeded();
+    expect(onBoardQaQuotaExceeded).toHaveBeenCalledTimes(1);
+
+    mockBoardQaProps.onClose();
+    expect(onCloseBoardQa).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not gated by the presenter lock — asking a question creates no content", () => {
+    renderModals({ presenterLocksContentCreation: true, boardQaVisible: true });
+    expect(mockBoardQaProps.visible).toBe(true);
+    expect(typeof mockBoardQaProps.onQuotaExceeded).toBe("function");
   });
 });

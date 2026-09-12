@@ -35,6 +35,7 @@ import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
 import * as workspaceService from "../../src/services/workspaceService";
+import { isBoardQaConfigured } from "../../src/services/boardQaService";
 import type { UpsellResource } from "../../src/components/upsellCopy";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
@@ -152,6 +153,9 @@ export default function BoardScreen(
   // Month 6 — polls, quiz sequencing, dot voting. Opened from Toolbar's
   // "Insert poll" button, same convention as the pickers above.
   const [pollComposerVisible, setPollComposerVisible] = useState(false);
+  // Month 6 — board Q&A chat, opened from the header's "ask this board"
+  // button. Same screen-owned visibility convention as every dialog above.
+  const [boardQaVisible, setBoardQaVisible] = useState(false);
   // The plan-limit upsell shown instead of a generic error when session
   // create or an AI affordance is denied for being over its cap.
   const [upsellResource, setUpsellResource] = useState<UpsellResource | null>(null);
@@ -461,6 +465,32 @@ export default function BoardScreen(
   // optimistic add would then silently revert on the next
   // `doc.boardWorkspace` refresh, which is an acceptable failure mode for a
   // rare race, not a user-facing error path worth building here.
+  // Month 6 — board Q&A citations. A cited element id only means something if
+  // the reader can go and look at it, so the panel asks the screen (which owns
+  // the live element sets) whether each one is still there. `boxOfElement`
+  // returns null for an element that no longer exists — and also for one whose
+  // author this viewer has blocked, which reads as "deleted" here. That is the
+  // right answer for this purpose: blocked content is content you have chosen
+  // not to be shown, and pointing a citation at it would undo that choice.
+  const isCitationLive = useCallback(
+    (elementId: string, canvasKind: string) =>
+      elements.boxOfElement(elementId, canvasKind) !== null,
+    [elements]
+  );
+
+  // Tapping a live citation selects it on the canvas, so it picks up the
+  // selection overlay and the reader can see which element the answer came
+  // from. The panel stays open — checking a citation should not cost you the
+  // conversation.
+  const handleSelectCitation = useCallback(
+    (elementId: string, canvasKind: string) => {
+      if (elements.boxOfElement(elementId, canvasKind) === null) return;
+      tools.activateSelect();
+      elements.selection.select(elementId);
+    },
+    [elements, tools]
+  );
+
   const handleAddSwatch = (hex: string) => {
     setWorkspaceSwatches((prev) => (prev.includes(hex) ? prev : [...prev, hex]));
     const workspaceId = doc.board?.workspaceId;
@@ -583,6 +613,8 @@ export default function BoardScreen(
           onOpenHistory={() => setHistoryVisible(true)}
           diagramEnabled={ai.diagramEnabled}
           onOpenDiagram={collab.presenterLocksContentCreation ? undefined : ai.openDiagram}
+          boardQaEnabled={isBoardQaConfigured()}
+          onOpenBoardQa={() => setBoardQaVisible(true)}
           onShare={() => setShareBoardModalVisible(true)}
           isAdmin={doc.isAdmin}
           hasActiveSession={!!doc.activeSession}
@@ -820,6 +852,15 @@ export default function BoardScreen(
         pollComposerVisible={pollComposerVisible}
         onClosePollComposer={() => setPollComposerVisible(false)}
         onCreatePoll={handleCreatePoll}
+        boardQaEnabled={isBoardQaConfigured()}
+        boardQaVisible={boardQaVisible}
+        onCloseBoardQa={() => setBoardQaVisible(false)}
+        isCitationLive={isCitationLive}
+        onSelectCitation={handleSelectCitation}
+        onBoardQaQuotaExceeded={() => {
+          setBoardQaVisible(false);
+          setUpsellResource("boardQa");
+        }}
       />
     </KeyboardAvoidingView>
   );

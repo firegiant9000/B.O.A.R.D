@@ -25,6 +25,11 @@ const MODEL_MAP: Record<string, string> = {
   // Month 6 — flashcard generation (ROADMAP.md's model table). One tier for
   // both text-only and vision selections, like explain-vision.
   "flashcards": "gpt-4o-mini",
+  // Month 6 — board Q&A generation over retrieved element excerpts
+  // (ROADMAP.md's model table pairs text-embedding-3-small with this model for
+  // the RAG path). Text-only: the retrieved context is already text, so there
+  // is nothing for a vision tier to look at.
+  "board-qa": "gpt-4o-mini",
 };
 
 export function resolveModel(tier: string): string {

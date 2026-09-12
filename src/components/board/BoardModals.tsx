@@ -5,6 +5,7 @@ import BoardHistoryPanel from "../BoardHistoryPanel";
 import ShortcutsCheatSheet from "../ShortcutsCheatSheet";
 import BackgroundPicker from "../BackgroundPicker";
 import CommentThreadPanel from "../CommentThreadPanel";
+import BoardQaPanel from "../BoardQaPanel";
 import StartSessionModal from "../StartSessionModal";
 import DiagramPromptModal from "../DiagramPromptModal";
 import UpsellModal from "../UpsellModal";
@@ -128,6 +129,22 @@ interface BoardModalsProps {
   onClosePollComposer: () => void;
   onCreatePoll: (input: NewPollInput) => void;
 
+  // Month 6 — board Q&A chat panel (BoardHeader's "ask this board" button
+  // opens it). Only rendered when the feature is configured, the same shape as
+  // the diagram prompt above.
+  boardQaEnabled: boolean;
+  boardQaVisible: boolean;
+  onCloseBoardQa: () => void;
+  /** Whether a cited element is still on the board — the board screen's live
+   *  element sets answer this. Receives the CANVAS kind (`text`, not
+   *  `textElement`); the panel does that translation. */
+  isCitationLive: (elementId: string, canvasKind: string) => boolean;
+  /** Tapping a live citation: the screen selects that element on the canvas. */
+  onSelectCitation: (elementId: string, canvasKind: string) => void;
+  /** The workspace is out of board questions — the server said so via
+   *  `details.reason`. Routes to the same upsell as every other quota denial. */
+  onBoardQaQuotaExceeded: () => void;
+
   /**
    * Month 5 — true while an active, unpaused presenter locks out everyone
    * else's new content creation (`useBoardCollab`'s
@@ -193,6 +210,12 @@ export default function BoardModals({
   pollComposerVisible,
   onClosePollComposer,
   onCreatePoll,
+  boardQaEnabled,
+  boardQaVisible,
+  onCloseBoardQa,
+  isCitationLive,
+  onSelectCitation,
+  onBoardQaQuotaExceeded,
 }: BoardModalsProps) {
   const activeComment = comments.activeComment;
   const activeCommentDetached =
@@ -329,6 +352,19 @@ export default function BoardModals({
         onCancel={onClosePollComposer}
         onSubmit={onCreatePoll}
       />
+
+      {/* Month 6 — board Q&A chat. Mounted only when configured, so a build
+          with the feature off never loads the panel's callable wiring at all. */}
+      {boardQaEnabled && (
+        <BoardQaPanel
+          visible={boardQaVisible}
+          boardId={boardId}
+          onClose={onCloseBoardQa}
+          isCitationLive={isCitationLive}
+          onSelectCitation={onSelectCitation}
+          onQuotaExceeded={onBoardQaQuotaExceeded}
+        />
+      )}
 
       {/* Plan-limit upsell, for session create (above) and the three AI
           affordances (`ai`, via useBoardAI's onQuotaExceeded bridge callback),

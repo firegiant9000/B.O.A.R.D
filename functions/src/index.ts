@@ -140,6 +140,20 @@ export {
   onImageWritten,
 } from "./triggers/embeddings";
 
+// Month 6 — board Q&A retrieval + chat, the READ half of the embeddings the
+// triggers below maintain. Runs `findNearest` over the asking board's own
+// `embeddings` subcollection, verifies each candidate's element still exists
+// before it can become context or a citation, and answers from the survivors
+// with gpt-4o-mini. The `embeddings` collection stays denied to clients by
+// firestore.rules' default deny — a vector never leaves the function; what
+// goes back is an answer plus the element ids behind it. Has its OWN rate
+// bucket (tighter than the shared one, under its own key) and its OWN plan row
+// (`boardQaPerPeriod`), because chat fires as often as someone types while a
+// summary fires once per session. Both `resource-exhausted` throw sites carry
+// `details: { reason }`, like generateFlashcards above and unlike the four M4
+// callables.
+export { askBoard } from "./callable/askBoard";
+
 // Deletion cleanup for the same feature. Board Q&A cites source element ids
 // so a user can click through and verify (ROADMAP.md) — a surviving
 // embedding for a deleted element is not clutter, it is a citation pointing

@@ -41,6 +41,11 @@ interface BoardHeaderProps {
    *  prompt is the entry point to `generateDiagram`, which writes a batch of
    *  new elements and spends AI quota. */
   onOpenDiagram?: () => void;
+  /** Month 6 — `isBoardQaConfigured()` gates the "ask this board" button.
+   *  Advisory: the callable enforces membership, the rate bucket and the plan
+   *  cap regardless of whether this button was ever drawn. */
+  boardQaEnabled?: boolean;
+  onOpenBoardQa?: () => void;
   onShare: () => void;
 
   // Admin-only session controls
@@ -81,6 +86,8 @@ export default function BoardHeader({
   onOpenHistory,
   diagramEnabled,
   onOpenDiagram,
+  boardQaEnabled = false,
+  onOpenBoardQa,
   onShare,
   isAdmin,
   hasActiveSession,
@@ -150,6 +157,22 @@ export default function BoardHeader({
             hitSlop={8}
           >
             <Ionicons name="git-network-outline" size={20} color="#2563eb" />
+          </TouchableOpacity>
+        )}
+        {/* Month 6 — board Q&A. Opens the chat panel. Unlike the diagram
+            button this is NOT presenter-locked: asking a question reads the
+            board, it creates no content, so there is nothing for a presenter
+            lock to protect. */}
+        {boardQaEnabled && onOpenBoardQa && (
+          <TouchableOpacity
+            onPress={onOpenBoardQa}
+            style={styles.iconBtn}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Ask this board"
+            testID="board-header-qa"
+          >
+            <Ionicons name="sparkles-outline" size={20} color="#2563eb" />
           </TouchableOpacity>
         )}
         <TouchableOpacity

@@ -2,7 +2,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { logger } from "firebase-functions/v2";
 import { createHash } from "node:crypto";
 import type { ChatUsage } from "./provider";
-import { limitFor, type Plan } from "../billing/limits";
+import { limitFor, type LimitedResource, type Plan } from "../billing/limits";
 
 // AI cost telemetry (Month 4, Phase 2). The function writes two things after every
 // provider call: a per-period `aiUsage` counter (calls / tokens / $ estimate, plus a
@@ -217,14 +217,7 @@ export async function checkAiQuota(
   ]);
 
   const rawCalls = usageSnap.exists ? usageSnap.data()?.calls : undefined;
-  let calls: number;
-  if (rawCalls == null) {
-    // Absent doc, absent field, or explicit null all read as "no usage yet".
-    calls = 0;
-  } else if (typeof rawCalls === "number" && Number.isFinite(rawCalls)) {
-    calls = rawCalls;
-  } else {
-    calls = Number.POSITIVE_INFINITY;
+  const calls = readCounter(rawCalls, () =>
     // Fail-closed is silent by default; without a log line, a pro customer
     // whose counter corrupts just sees "quota exceeded" with no lead for
     // support to chase. No raw workspace id or usage value, per the
@@ -233,11 +226,137 @@ export async function checkAiQuota(
       workspaceHash: hashWorkspaceId(workspaceId),
       period,
       rawCallsType: typeof rawCalls,
-    });
+    })
+  );
+
+  return isWithinAiQuota(planOf(workspaceSnap), calls);
+}
+
+/**
+ * Reads one stored call counter, fail-closed.
+ *
+ * Extracted from `checkAiQuota` (whose behaviour it reproduces exactly) so the
+ * per-feature gate below cannot drift from it — two copies of a fail-closed
+ * numeric guard is precisely how one of them ends up with a plain
+ * `typeof x === "number"` check and silently starts granting on `NaN`.
+ *
+ * The ORDER is load-bearing, same as it always was: an absent doc/field, or an
+ * explicit `null` that a partial write left behind, genuinely means "zero calls
+ * so far" and must be recognised BEFORE the type guard, or every workspace's
+ * first-ever call would be denied. Anything that exists but is not a finite
+ * number is untrustworthy, not zero — `typeof NaN === "number"` and `NaN` is a
+ * legal Firestore double — so it reads as `Infinity` and is denied by every
+ * `used < limit` comparison, without this function needing to know the plan.
+ */
+export function readCounter(raw: unknown, onCorrupt: () => void): number {
+  if (raw == null) return 0;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  onCorrupt();
+  return Number.POSITIVE_INFINITY;
+}
+
+/** The workspace doc's `plan`, or `undefined` when it is missing or isn't even
+ *  a string — `limitFor` maps both to the free tier (fail closed). */
+function planOf(workspaceSnap: { exists: boolean; data(): unknown }): Plan | undefined {
+  const raw = workspaceSnap.exists
+    ? (workspaceSnap.data() as { plan?: unknown } | undefined)?.plan
+    : undefined;
+  return typeof raw === "string" ? (raw as Plan) : undefined;
+}
+
+/**
+ * Pure per-feature quota comparison — the same "deny unless provably under"
+ * shape as `isWithinAiQuota`, against one feature's own row in the plan table
+ * rather than the workspace-wide AI cap. Written `featureCalls < limit`, never
+ * `featureCalls >= limit`: `limitFor` falls back to the free plan for an
+ * unrecognised plan string, and a `>=` phrasing would GRANT on an `undefined`
+ * limit rather than deny.
+ */
+export function isWithinFeatureQuota(
+  plan: Plan | undefined,
+  resource: LimitedResource,
+  featureCalls: number
+): boolean {
+  return featureCalls < limitFor((plan ?? "free") as Plan, resource);
+}
+
+/**
+ * Reads `byFeature[feature].calls` out of a period usage doc, fail-closed.
+ *
+ * Three cases have to stay distinct, and only the first is "no usage":
+ *  - no `byFeature` map at all, or no entry for this feature — the honest
+ *    "this workspace has never used this feature" case, so 0.
+ *  - an entry that exists but isn't an object — a corrupt shape, not a zero.
+ *  - an entry whose `calls` isn't a finite number — same, via `readCounter`.
+ * The last two both fail closed to `Infinity`. Exported so the gate they feed
+ * can be unit-tested on its own rather than only through a Firestore fake.
+ */
+export function readFeatureCalls(
+  usageData: unknown,
+  feature: string,
+  onCorrupt: () => void
+): number {
+  const byFeature = (usageData as { byFeature?: unknown } | undefined)?.byFeature;
+  if (byFeature == null) return 0;
+  if (typeof byFeature !== "object") {
+    onCorrupt();
+    return Number.POSITIVE_INFINITY;
   }
+  const entry = (byFeature as Record<string, unknown>)[feature];
+  if (entry == null) return 0;
+  if (typeof entry !== "object") {
+    onCorrupt();
+    return Number.POSITIVE_INFINITY;
+  }
+  return readCounter((entry as { calls?: unknown }).calls, onCorrupt);
+}
 
-  const rawPlan = workspaceSnap.exists ? workspaceSnap.data()?.plan : undefined;
-  const plan = typeof rawPlan === "string" ? (rawPlan as Plan) : undefined;
+/**
+ * Function-side gate for a feature that carries its OWN plan row on top of the
+ * workspace-wide AI cap (Month 6 — board Q&A is the first; see
+ * `functions/src/callable/askBoard.ts`).
+ *
+ * Checks BOTH, and grants only if both grant:
+ *  - the workspace-wide `aiCallsPerPeriod` cap, so a per-feature allowance can
+ *    never be a way around the cap every other AI callable honours; and
+ *  - the feature's own `resource` row, counted from this period's
+ *    `byFeature[feature].calls`.
+ *
+ * One pair of reads serves both, rather than calling `checkAiQuota` and then
+ * re-reading the same two documents for the feature counter.
+ */
+export async function checkFeatureQuota(
+  db: Firestore,
+  workspaceId: string,
+  feature: string,
+  resource: LimitedResource,
+  now: number
+): Promise<boolean> {
+  const period = currentPeriod(now);
+  const [usageSnap, workspaceSnap] = await Promise.all([
+    db.doc(`workspaces/${workspaceId}/aiUsage/${period}`).get(),
+    db.doc(`workspaces/${workspaceId}`).get(),
+  ]);
 
-  return isWithinAiQuota(plan, calls);
+  const usageData = usageSnap.exists ? usageSnap.data() : undefined;
+  const warnCorrupt = (field: string) => () =>
+    // Hashed workspace id only, never the raw one (Global Constraint), and no
+    // counter value — a corrupt counter's own contents are not diagnostic.
+    logger.warn("checkFeatureQuota: corrupt usage counter, denying (fail closed)", {
+      workspaceHash: hashWorkspaceId(workspaceId),
+      period,
+      feature,
+      field,
+    });
+
+  const calls = readCounter(
+    (usageData as { calls?: unknown } | undefined)?.calls,
+    warnCorrupt("calls")
+  );
+  const featureCalls = readFeatureCalls(usageData, feature, warnCorrupt("byFeature"));
+  const plan = planOf(workspaceSnap);
+
+  return (
+    isWithinAiQuota(plan, calls) && isWithinFeatureQuota(plan, resource, featureCalls)
+  );
 }

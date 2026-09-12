@@ -25,8 +25,18 @@ import type { Plan } from "../types";
  * feature with no server enforcement at all. Handled here instead, as a
  * sibling type `isPlanCapped`/`limitMessage` special-case before ever
  * touching `RESOURCE_TO_LIMIT`/`limitFor`.
+ *
+ * `"boardQa"` (Month 6) is a sibling for a different reason. It IS a countable
+ * quota with a real mirrored row (`boardQaPerPeriod`) and a real server-side
+ * gate — but it is not a `QuotaResource`, because that type is the set of
+ * resources `quotaService`'s ADVISORY PRE-FLIGHT can predict, and this one it
+ * cannot: the count lives in the period usage doc's `byFeature` map, which most
+ * board members cannot read. There is no pre-flight for board Q&A at all; the
+ * panel simply asks and handles the server's answer. It also breaks the
+ * assumption `unlockPhrase` is built on — `boardQaPerPeriod` is FINITE on every
+ * plan, so "unlimited" would be a false claim about what upgrading buys.
  */
-export type UpsellResource = QuotaResource | "customPalette";
+export type UpsellResource = QuotaResource | "customPalette" | "boardQa";
 
 /**
  * The one props contract BOTH platform variants implement. `tsc` has no
@@ -61,7 +71,13 @@ export const RESOURCE_LABEL: Record<UpsellResource, string> = {
   aiSummary: "AI calls per month",
   aiCall: "AI calls per month",
   customPalette: "custom colour swatches",
+  boardQa: "board questions per month",
 };
+
+/** The plan row board Q&A is capped by. Named here rather than inlined at the
+ *  three use sites below so the copy and the gate cannot drift onto different
+ *  rows — the functions-side callable reads this same key. */
+const BOARD_QA_LIMIT = "boardQaPerPeriod" as const;
 
 /**
  * Whether `resource` even CAN be a plan-cap denial on `plan`. The four AI
@@ -83,6 +99,12 @@ export const RESOURCE_LABEL: Record<UpsellResource, string> = {
  */
 export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
   if (resource === "customPalette") return plan === "free";
+  // Board Q&A is capped on EVERY plan (the one row in the limits table that is
+  // finite everywhere), so this is always true for it — but it is read from the
+  // table rather than hardcoded `true`, so a future decision to uncap a tier
+  // changes the copy along with the limit instead of leaving a paywall claim
+  // standing for a plan that no longer has a cap.
+  if (resource === "boardQa") return limitFor(plan, BOARD_QA_LIMIT) !== UNLIMITED;
   return limitFor(plan, RESOURCE_TO_LIMIT[resource]) !== UNLIMITED;
 }
 
@@ -90,6 +112,12 @@ export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
 export function limitMessage(resource: UpsellResource, plan: Plan): string {
   if (resource === "customPalette") {
     return "Custom colour swatches are a Pro feature.";
+  }
+  if (resource === "boardQa") {
+    return `You've reached the ${plan} plan's limit of ${limitFor(
+      plan,
+      BOARD_QA_LIMIT
+    )} ${RESOURCE_LABEL.boardQa}.`;
   }
   const limit = limitFor(plan, RESOURCE_TO_LIMIT[resource]);
   return `You've reached the ${plan} plan's limit of ${limit} ${RESOURCE_LABEL[resource]}.`;
@@ -114,5 +142,9 @@ export const THROTTLE_MESSAGE =
  */
 export function unlockPhrase(resource: UpsellResource): string {
   if (resource === "customPalette") return "the custom colour swatch palette";
+  // `"boardQa"` is capped on Pro too — generously, but really — so the generic
+  // "unlimited …" template would be a false claim about what upgrading buys.
+  // Upgrading buys a much bigger allowance, and that is what this says.
+  if (resource === "boardQa") return `a far larger monthly allowance of ${RESOURCE_LABEL.boardQa}`;
   return `unlimited ${RESOURCE_LABEL[resource]}`;
 }

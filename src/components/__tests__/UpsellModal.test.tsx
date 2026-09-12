@@ -21,6 +21,8 @@ import React from "react";
 import { render, fireEvent, waitFor } from "@testing-library/react-native";
 import { Linking } from "react-native";
 import type { UpsellResource } from "../upsellCopy";
+import { isPlanCapped, limitMessage, unlockPhrase } from "../upsellCopy";
+import { limitFor } from "../../lib/planLimits";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../../services/billingService";
 
 // The load-bearing part of this file: two SEPARATE physical modules, not one
@@ -54,7 +56,14 @@ const WebUpsellModal: React.ComponentType<
 const mockStartCheckout = startCheckout as jest.Mock;
 const mockOpenBillingPortal = openBillingPortal as jest.Mock;
 
-const RESOURCES: UpsellResource[] = ["board", "session", "aiSummary", "aiCall", "customPalette"];
+const RESOURCES: UpsellResource[] = [
+  "board",
+  "session",
+  "aiSummary",
+  "aiCall",
+  "customPalette",
+  "boardQa",
+];
 
 // The store-compliance guard's strongest layer: read every file the native
 // bundle actually pulls in, as SOURCE TEXT, rather than only rendered
@@ -181,6 +190,61 @@ describe("UpsellModal.native.tsx (rendered)", () => {
     );
     expect(getByText(/sending requests a little fast/i)).toBeTruthy();
     expect(queryByText(/pro feature/i)).toBeNull();
+  });
+
+  // Month 6 — board Q&A is the one resource this modal covers that is capped on
+  // EVERY plan, so it is the one that breaks the "Pro is unlimited, therefore a
+  // denial on Pro must be the throttle" arithmetic the other resources rely on.
+  it("boardQa on pro: names the plan's real cap instead of the transient note", () => {
+    // Without a branch of its own, `isPlanCapped` would read
+    // `aiCallsPerPeriod` (UNLIMITED on pro), decide the denial could only be a
+    // throttle, and tell a Pro customer who is genuinely out of questions to
+    // "wait a few seconds" — forever.
+    const { getByText, queryByText } = render(
+      <NativeUpsellModal visible resource="boardQa" plan="pro" onDismiss={() => {}} />
+    );
+    expect(getByText(/pro plan's limit/i)).toBeTruthy();
+    expect(queryByText(/sending requests a little fast/i)).toBeNull();
+  });
+
+  it("boardQa on free: names the free plan's own smaller cap", () => {
+    const { getByText } = render(
+      <NativeUpsellModal visible resource="boardQa" plan="free" onDismiss={() => {}} />
+    );
+    const freeCap = limitFor("free", "boardQaPerPeriod");
+    expect(getByText(new RegExp(`free plan's limit of ${freeCap} board questions`, "i"))).toBeTruthy();
+  });
+});
+
+describe("upsellCopy — board Q&A (Month 6)", () => {
+  it("treats board Q&A as plan-capped on every plan", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(isPlanCapped(plan, "boardQa")).toBe(true);
+    }
+  });
+
+  it("still treats the unlimited resources as uncapped on pro — this isn't a blanket change", () => {
+    // The positive control. Without it, an `isPlanCapped` that simply returned
+    // true for everything would satisfy the assertion above.
+    expect(isPlanCapped("pro", "aiCall")).toBe(false);
+    expect(isPlanCapped("pro", "board")).toBe(false);
+  });
+
+  it("quotes each plan's own board Q&A number", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitMessage("boardQa", plan)).toContain(
+        String(limitFor(plan, "boardQaPerPeriod"))
+      );
+    }
+  });
+
+  it("never promises 'unlimited' board questions — upgrading buys a bigger cap, not no cap", () => {
+    // Pro's allowance is generous but finite, so the generic "unlimited …"
+    // template would be a false claim about what the money buys.
+    expect(unlockPhrase("boardQa")).not.toMatch(/unlimited/i);
+    expect(unlockPhrase("boardQa")).toMatch(/board questions/i);
+    // And the generic template is still in use for the resources it is true of.
+    expect(unlockPhrase("aiCall")).toMatch(/unlimited/i);
   });
 });
 
