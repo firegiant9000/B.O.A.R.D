@@ -18,19 +18,18 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 // waste, so the result is keyed by a hash of the element's own extracted
 // text and skipped whenever that hash is unchanged. UNLIKE ocrCache.ts, this
 // is not a request/response cache keyed by an arbitrary selection — it is a
-// standing per-element document that a debounced, write-triggered caller
-// keeps in sync with the element's current content.
+// standing per-element document that a write-triggered caller keeps in sync
+// with the element's current content.
 //
 // SCOPE NOTE: this file is the memoized write itself — `embedElement` is
 // deliberately safe to call as often as a caller likes, since an unchanged
 // hash is a no-op. ROADMAP.md:1048 requires this be driven "via Cloud
 // Function trigger" — that trigger (five explicit bindings, one per canvas-
-// content subcollection), its own debounce window on top of this file's
-// hash-skip, and the rate-limit/plan-quota metering around each real embed
-// all live in `functions/src/triggers/embeddings.ts`, which wraps this file's
-// `embedElement` rather than folding any of that in here. This file stays
-// ignorant of debouncing, metering, and which collections exist — it only
-// knows how to memoize one element's embed.
+// content subcollection) and the rate-limit/plan-quota metering around each
+// real embed all live in `functions/src/triggers/embeddings.ts`, which wraps
+// this file's `embedElement` rather than folding any of that in here. This
+// file stays ignorant of debouncing, metering, and which collections exist —
+// it only knows how to memoize one element's embed.
 //
 // RULES NOTE: this collection has NO match block in firestore.rules at all —
 // mirroring flashcardCache.ts's precedent, not ocrCache.ts's. No client

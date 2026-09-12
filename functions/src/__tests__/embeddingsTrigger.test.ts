@@ -7,6 +7,20 @@
 // metadata tests that pin the real registered event type/path without ever
 // invoking a handler through a fake CloudEvent.
 
+// Only `recordAiUsage` is swapped out (real `checkAiQuota`/`hashWorkspaceId`/
+// `estimateCostUsd` stay live via `requireActual`) — needed so the
+// "makeDeps — real Firestore path wiring" tests below can assert on the
+// `feature`/`completionTokens` fields `deps.recordUsage` passes THROUGH to
+// it, without also having to simulate `recordAiUsage`'s own transactional
+// read-modify-write against a fake Firestore. Every other test in this file
+// injects `EmbeddingTriggerDeps` by hand and never reaches this module at
+// all, so this mock changes nothing about them.
+jest.mock("../ai/usage", () => ({
+  ...jest.requireActual("../ai/usage"),
+  recordAiUsage: jest.fn(async () => ({ period: "2026-06", costUsd: 0 })),
+}));
+
+import type { Firestore } from "firebase-admin/firestore";
 import {
   isContentUnchanged,
   handleElementWrite,
@@ -18,6 +32,7 @@ import {
   extractShape,
   extractImage,
   EXTRACTORS,
+  makeDeps,
   onNoteWritten,
   onTextElementWritten,
   onPathWritten,
@@ -32,8 +47,11 @@ import {
   type CleanupDeps,
   type ExtractedElement,
 } from "../triggers/embeddings";
-import { contentHashFor, type StoredEmbedding, type EmbedOutcome } from "../ai/embeddings";
+import { contentHashFor, type StoredEmbedding, type EmbedOutcome, type EmbeddingProvider } from "../ai/embeddings";
 import { ocrCacheKey } from "../ai/ocrCache";
+import { recordAiUsage } from "../ai/usage";
+
+const recordAiUsageMock = recordAiUsage as jest.Mock;
 
 function makeStored(overrides: Partial<StoredEmbedding> = {}): StoredEmbedding {
   return {
@@ -64,7 +82,10 @@ describe("isContentUnchanged", () => {
 });
 
 describe("handleElementWrite", () => {
-  function makeDeps(overrides: Partial<EmbeddingTriggerDeps> = {}): EmbeddingTriggerDeps {
+  // Named distinctly from the module's own exported `makeDeps` (real
+  // Firestore path wiring, tested separately below) — this one builds a
+  // hand-injected fixture, never touching Firestore at all.
+  function makeTestDeps(overrides: Partial<EmbeddingTriggerDeps> = {}): EmbeddingTriggerDeps {
     return {
       getBoardWorkspaceId: jest.fn(async () => "wsA"),
       getStoredEmbedding: jest.fn(async () => null),
@@ -87,7 +108,7 @@ describe("handleElementWrite", () => {
   }
 
   it("embeds and meters on the happy path, and does not touch the race guard's delete", async () => {
-    const deps = makeDeps();
+    const deps = makeTestDeps();
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.embed).toHaveBeenCalledWith("b1", extracted().element, 1_000_000);
@@ -104,7 +125,7 @@ describe("handleElementWrite", () => {
 
   it("skips the embed (no board read, no rate-limit consume) when the content hash is unchanged", async () => {
     const stored = makeStored({ contentHash: contentHashFor("hello") });
-    const deps = makeDeps({ getStoredEmbedding: jest.fn(async () => stored) });
+    const deps = makeTestDeps({ getStoredEmbedding: jest.fn(async () => stored) });
     await handleElementWrite("b1", extracted("hello"), deps, 999_999_999);
 
     expect(deps.getBoardWorkspaceId).not.toHaveBeenCalled();
@@ -113,7 +134,7 @@ describe("handleElementWrite", () => {
   });
 
   it("skips everything (no rate-limit consume, no embed) when the board doc is missing", async () => {
-    const deps = makeDeps({ getBoardWorkspaceId: jest.fn(async () => null) });
+    const deps = makeTestDeps({ getBoardWorkspaceId: jest.fn(async () => null) });
     await handleElementWrite("gone", extracted(), deps, 1_000_000);
 
     expect(deps.consumeToken).not.toHaveBeenCalled();
@@ -121,7 +142,7 @@ describe("handleElementWrite", () => {
   });
 
   it("does NOT call the provider when the rate limiter denies", async () => {
-    const deps = makeDeps({ consumeToken: jest.fn(async () => false) });
+    const deps = makeTestDeps({ consumeToken: jest.fn(async () => false) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.embed).not.toHaveBeenCalled();
@@ -130,17 +151,18 @@ describe("handleElementWrite", () => {
 
   // The check the coordinator explicitly asked to see RED-checked.
   it("does NOT call the provider when the workspace is over its AI quota", async () => {
-    const deps = makeDeps({ checkAiQuota: jest.fn(async () => false) });
+    const deps = makeTestDeps({ checkAiQuota: jest.fn(async () => false) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.embed).not.toHaveBeenCalled();
     expect(deps.recordUsage).not.toHaveBeenCalled();
   });
 
-  // The money item from fix round 2: a legacy board's spend must be
-  // visible, even though there is still no plan to cap it against.
+  // Legacy boards have no workspace to meter a plan quota against, but the
+  // spend still happened — recorded under a synthetic bucket so it is
+  // visible rather than silently unaccounted for.
   it("a legacy (no-workspace) board buckets the rate limit AND meters usage under the synthetic solo-author bucket, but skips the quota check", async () => {
-    const deps = makeDeps({ getBoardWorkspaceId: jest.fn(async () => "") });
+    const deps = makeTestDeps({ getBoardWorkspaceId: jest.fn(async () => "") });
     await handleElementWrite("legacyBoard", extracted("hello", "author-9"), deps, 1_000_000);
 
     expect(deps.consumeToken).toHaveBeenCalledWith("solo-author-9", 1_000_000);
@@ -156,7 +178,7 @@ describe("handleElementWrite", () => {
   });
 
   it("does not meter or check the race guard when embedElement itself reports a hash-skip (a narrow race with another invocation)", async () => {
-    const deps = makeDeps({ embed: jest.fn(async () => ({ embedded: false })) });
+    const deps = makeTestDeps({ embed: jest.fn(async () => ({ embedded: false })) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.recordUsage).not.toHaveBeenCalled();
@@ -165,13 +187,14 @@ describe("handleElementWrite", () => {
   });
 
   it("swallows a usage-telemetry write failure without throwing (a paid embed must not be undone by a logging failure)", async () => {
-    const deps = makeDeps({ recordUsage: jest.fn(async () => { throw new Error("firestore down"); }) });
+    const deps = makeTestDeps({ recordUsage: jest.fn(async () => { throw new Error("firestore down"); }) });
     await expect(handleElementWrite("b1", extracted(), deps, 1_000_000)).resolves.toBeUndefined();
   });
 
-  // The write/delete race from fix round 2, item 2.
+  // A multi-second embed call leaves a window where the element can be
+  // deleted before the write that started it lands.
   it("deletes the just-written embedding when the element was deleted during the (multi-second) embed call, while still recording the spend that already happened", async () => {
-    const deps = makeDeps({ elementStillExists: jest.fn(async () => false) });
+    const deps = makeTestDeps({ elementStillExists: jest.fn(async () => false) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.recordUsage).toHaveBeenCalled(); // the OpenAI call already happened and was paid for
@@ -180,10 +203,23 @@ describe("handleElementWrite", () => {
   });
 
   it("does not delete the embedding when the element still exists (the ordinary case)", async () => {
-    const deps = makeDeps({ elementStillExists: jest.fn(async () => true) });
+    const deps = makeTestDeps({ elementStillExists: jest.fn(async () => true) });
     await handleElementWrite("b1", extracted(), deps, 1_000_000);
 
     expect(deps.deleteEmbedding).not.toHaveBeenCalled();
+  });
+
+  // Without this catch, a throw here would reject the whole handler —
+  // `onDocumentWritten` defaults to `retry: false`, so the resurrected
+  // embedding would stand permanently and silently, exactly what the race
+  // guard exists to prevent.
+  it("swallows a compensating-delete failure without throwing (mirrors the usage-telemetry catch above it)", async () => {
+    const deps = makeTestDeps({
+      elementStillExists: jest.fn(async () => false),
+      deleteEmbedding: jest.fn(async () => { throw new Error("firestore down"); }),
+    });
+
+    await expect(handleElementWrite("b1", extracted(), deps, 1_000_000)).resolves.toBeUndefined();
   });
 });
 
@@ -200,7 +236,91 @@ describe("handleElementDeleted", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Extractors — fix round 2, item 5. Each tested against the REAL element
+// makeDeps — the REAL Firestore path wiring, not the pure handler above.
+// `handleElementWrite`'s own tests inject `EmbeddingTriggerDeps` by hand, so
+// they cannot catch `elementStillExists`/`deleteEmbedding` pointing at the
+// WRONG collection: if `elementStillExists` read `boards/{b}/embeddings/
+// {el}` instead of the element's own collection, the document would ALWAYS
+// exist (the embed handler just wrote it), so the race guard would silently
+// never fire — and every one of those hand-injected-deps tests would still
+// pass, because they never exercise this wiring at all. These tests do.
+function fakePathDb() {
+  const gets: string[] = [];
+  const deletes: string[] = [];
+  const store = new Map<string, boolean>(); // path -> exists
+  const db = {
+    doc: (path: string) => ({
+      get: async () => {
+        gets.push(path);
+        return { exists: store.get(path) ?? false };
+      },
+      delete: async () => {
+        deletes.push(path);
+      },
+    }),
+  };
+  return { db: db as unknown as Firestore, gets, deletes, store };
+}
+
+const dummyProvider = { embed: jest.fn() } as unknown as EmbeddingProvider;
+
+describe("makeDeps — real Firestore path wiring", () => {
+  beforeEach(() => {
+    recordAiUsageMock.mockClear();
+  });
+
+  it("elementStillExists reads the ELEMENT's own collection path, not the embeddings collection", async () => {
+    const { db, gets, store } = fakePathDb();
+    store.set("boards/b1/notes/el1", true);
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+
+    const exists = await deps.elementStillExists();
+
+    expect(gets).toEqual(["boards/b1/notes/el1"]);
+    expect(exists).toBe(true);
+  });
+
+  it("elementStillExists is false when nothing is at the element's own path — the exact case the write/delete race guard depends on", async () => {
+    const { db } = fakePathDb(); // nothing seeded anywhere
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+
+    expect(await deps.elementStillExists()).toBe(false);
+  });
+
+  it("deleteEmbedding deletes the EMBEDDINGS doc for the given board/element, never the element's own doc", async () => {
+    const { db, deletes } = fakePathDb();
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+
+    await deps.deleteEmbedding("b1", "el1");
+
+    expect(deletes).toEqual(["boards/b1/embeddings/el1"]);
+  });
+
+  it("recordUsage passes feature: 'embeddings' and completionTokens: 0 through to recordAiUsage", async () => {
+    const { db } = fakePathDb();
+    const deps = makeDeps(db, dummyProvider, "b1", "notes", "el1");
+
+    await deps.recordUsage({
+      workspaceId: "wsA",
+      uid: "u1",
+      model: "text-embedding-3-small",
+      usage: { promptTokens: 5, totalTokens: 5 },
+      now: 123,
+    });
+
+    expect(recordAiUsageMock).toHaveBeenCalledWith(db, {
+      workspaceId: "wsA",
+      uid: "u1",
+      feature: "embeddings",
+      model: "text-embedding-3-small",
+      usage: { promptTokens: 5, completionTokens: 0, totalTokens: 5 },
+      now: 123,
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Extractors, each tested against the REAL element
 // field names (src/types/index.ts:342-367: TextNote.content,
 // TextElement.text), not just imported and trusted: if `extractNote` read
 // `data.text` instead of `data.content`, these fixtures (which set only

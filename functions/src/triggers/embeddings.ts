@@ -324,21 +324,62 @@ export async function handleElementWrite(
   // embedding doc) after the embed catches that: if it's gone, delete the
   // embedding we just wrote.
   //
-  // NOT AIRTIGHT — stated honestly, not implied otherwise: this is a
-  // read-then-maybe-delete, not a transaction spanning the element's
-  // collection and `embeddings` together. A delete landing in the gap
-  // between THIS existence check and the compensating delete below would
-  // still be missed, vanishingly rare as that narrower window is. Closing
-  // it fully would need a transaction; this narrows the exposure from "the
-  // full duration of a paid embed call" to one more Firestore round trip,
-  // not to zero.
+  // CLOSED for the single-invocation case, with strongly-consistent Admin
+  // SDK reads: either this check finds the element gone and deletes right
+  // here, or it finds the element present and a delete arriving AFTER this
+  // point removes an embedding that now genuinely exists — `onXDeleted`
+  // cleans that up normally. There is no ordering of one write and one
+  // delete that resurrects anything.
+  //
+  // Also not reachable: delete-then-recreate at the SAME id (e.g. an
+  // undo/redo of a delete). Recreating an element is a fresh `create` in
+  // this app, which lands as a NEW document id — never the deleted one — so
+  // there is no live element whose embedding this compensating delete could
+  // ever strip out from under it.
+  //
+  // The REAL residuals, honestly named rather than a wrong-but-cautious
+  // one: (1) the compensating delete below itself fails (network blip,
+  // permission drift) — caught and logged just below, not silently eaten;
+  // (2) `onXDeleted`'s own delete fails for the same reasons — that
+  // trigger's own retry semantics are its concern, not this file's; (3) this
+  // Cloud Function instance dies (crash, timeout, forced restart) between
+  // `embedElement` returning and this check running — nothing runs the
+  // compensating delete at all, and nothing re-triggers one later, since the
+  // element write itself does not fire again. None of these three are
+  // ORDERING races the way the resurrection scenario was; they are plain
+  // failure/liveness gaps, the same kind every fire-and-forget cleanup in
+  // this codebase already accepts.
   const stillExists = await deps.elementStillExists();
   if (!stillExists) {
-    await deps.deleteEmbedding(boardId, element.id);
+    try {
+      await deps.deleteEmbedding(boardId, element.id);
+    } catch (err) {
+      // Residual (1) above, made concrete: without this catch, a throw here
+      // rejects the whole handler — `onDocumentWritten` defaults to
+      // `retry: false`, so the resurrected embedding would stand
+      // permanently and silently, exactly the outcome this guard exists to
+      // prevent. A retry would not even help (a retried run sees a matching
+      // contentHash and returns early at `isContentUnchanged` above,
+      // never reaching this code again) — log and swallow instead, mirroring
+      // the usage-telemetry catch just above.
+      logger.error("embeddings trigger: compensating delete failed after a write/delete race", {
+        boardId,
+        elementId: element.id,
+        err,
+      });
+    }
   }
 }
 
-function makeDeps(
+/**
+ * Exported (not just used internally by `makeWriteTrigger` below) so its
+ * real Firestore path wiring — `elementStillExists`/`deleteEmbedding` must
+ * read/write EXACTLY the right collections, not each other's, or the write/
+ * delete race guard silently never fires — is pinned by a test against a
+ * fake Firestore, the same way the extractors' field names are pinned
+ * against real element shapes.
+ */
+export function makeDeps(
   db: Firestore,
   provider: EmbeddingProvider,
   boardId: string,
