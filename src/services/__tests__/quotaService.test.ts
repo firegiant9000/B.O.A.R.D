@@ -5,6 +5,7 @@ import {
   QuotaResource,
   isResourceExhausted,
   isQuotaDenial,
+  resourceExhaustedReason,
   RESOURCE_EXHAUSTED_CODE,
 } from "../quotaService";
 
@@ -139,5 +140,54 @@ describe("isQuotaDenial", () => {
   it("does not throw on non-object / null input", () => {
     expect(isQuotaDenial(null)).toBe(false);
     expect(isQuotaDenial(undefined)).toBe(false);
+  });
+});
+
+// EG-16 — generateFlashcards is the first AI callable to attach `details` to a
+// resource-exhausted rejection; its client (flashcardService.ts) must route on
+// THIS, never re-infer the reason the way the four M4 callables' callers do.
+describe("resourceExhaustedReason", () => {
+  it("reads 'plan-quota' off a resource-exhausted rejection's details", () => {
+    const err = Object.assign(new Error("over quota"), {
+      code: RESOURCE_EXHAUSTED_CODE,
+      details: { reason: "plan-quota" },
+    });
+    expect(resourceExhaustedReason(err)).toBe("plan-quota");
+  });
+
+  it("reads 'rate-limit' off a resource-exhausted rejection's details", () => {
+    const err = Object.assign(new Error("slow down"), {
+      code: RESOURCE_EXHAUSTED_CODE,
+      details: { reason: "rate-limit" },
+    });
+    expect(resourceExhaustedReason(err)).toBe("rate-limit");
+  });
+
+  it("returns null for a resource-exhausted rejection with no details — the four M4 callables' shape", () => {
+    const err = Object.assign(new Error("Too many AI requests right now."), {
+      code: RESOURCE_EXHAUSTED_CODE,
+    });
+    expect(resourceExhaustedReason(err)).toBeNull();
+  });
+
+  it("returns null for a resource-exhausted rejection with an unrecognized reason string", () => {
+    const err = Object.assign(new Error("x"), {
+      code: RESOURCE_EXHAUSTED_CODE,
+      details: { reason: "something-new" },
+    });
+    expect(resourceExhaustedReason(err)).toBeNull();
+  });
+
+  it("returns null for an error that isn't resource-exhausted at all, even with a details-shaped payload", () => {
+    const err = Object.assign(new Error("x"), {
+      code: "functions/failed-precondition",
+      details: { reason: "plan-quota" },
+    });
+    expect(resourceExhaustedReason(err)).toBeNull();
+  });
+
+  it("does not throw on non-object / null input", () => {
+    expect(resourceExhaustedReason(null)).toBeNull();
+    expect(resourceExhaustedReason(undefined)).toBeNull();
   });
 });

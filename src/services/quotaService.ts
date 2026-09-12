@@ -179,3 +179,30 @@ export function isResourceExhausted(err: unknown): boolean {
 export function isQuotaDenial(err: unknown): boolean {
   return isResourceExhausted(err) || err instanceof QuotaExceededError;
 }
+
+// ── Month 6 — routing on the server's OWN distinction, not an inference ────────
+// The four M4 AI callables (above) attach no `details` to a resource-exhausted
+// rejection, which is exactly why `isPlanCapped`'s plan-arithmetic inference
+// exists — it's the best a client can do after the fact. `generateFlashcards`
+// (functions/src/callable/generateFlashcards.ts) is the first AI callable
+// built AFTER that gap was named, and it attaches
+// `details: { reason: "rate-limit" | "plan-quota" }` at every throw site from
+// the start, so its own client (flashcardService.ts) can route on the
+// server's real reason instead of guessing from the workspace's plan. Do NOT
+// use this on the four M4 callables' errors — they carry no such field, and
+// `resourceExhaustedReason` correctly returns null for them (see below).
+
+export type ResourceExhaustedReason = "rate-limit" | "plan-quota";
+
+/** The `details.reason` a resource-exhausted rejection carries, or `null` when
+ *  `err` isn't a resource-exhausted rejection at all, or is one that (like
+ *  every M4 AI callable) attaches no such detail. Never throws on a malformed
+ *  `details` shape — a caller that can't determine the reason should treat
+ *  that exactly like "reason unknown", not crash. */
+export function resourceExhaustedReason(err: unknown): ResourceExhaustedReason | null {
+  if (!isResourceExhausted(err)) return null;
+  const details = (err as { details?: unknown }).details;
+  if (!details || typeof details !== "object") return null;
+  const reason = (details as { reason?: unknown }).reason;
+  return reason === "rate-limit" || reason === "plan-quota" ? reason : null;
+}

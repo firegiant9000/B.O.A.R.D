@@ -43,6 +43,14 @@ interface AiSelectionActionsProps {
    *  the prompt itself and "Discard" stay available either way. */
   onAcceptOcr?: () => void;
   onDismissOcr: () => void;
+  /** `isFlashcardsConfigured()` — FLASHCARDS_ENABLED && AI_GATEWAY_ENABLED
+   *  (Month 6). */
+  flashcardsEnabled: boolean;
+  flashcardsBusy: boolean;
+  /** Undefined suppresses the "Make flashcards" button (Month 5 presenter
+   *  lock) — it saves to the caller's own deck, never the canvas, but is
+   *  still content creation the same way OCR/explain are. */
+  onMakeFlashcards?: () => void;
 }
 
 export default function AiSelectionActions({
@@ -58,6 +66,9 @@ export default function AiSelectionActions({
   ocrCandidate,
   onAcceptOcr,
   onDismissOcr,
+  flashcardsEnabled,
+  flashcardsBusy,
+  onMakeFlashcards,
 }: AiSelectionActionsProps) {
   return (
     <>
@@ -131,6 +142,44 @@ export default function AiSelectionActions({
                 )}
                 <Text style={styles.explainButtonText}>
                   {explainBusy ? "Thinking…" : "Explain this"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
+      {/* Month 6 — "Make flashcards" affordance. Stacks below OCR/Explain
+          (whichever are visible) below the selection; tapping it generates
+          front/back cards from the selection and saves them into the
+          caller's own per-board deck — never the canvas. */}
+      {flashcardsEnabled &&
+        onMakeFlashcards &&
+        selectionActionable &&
+        selectionUnion &&
+        (() => {
+          const u = selectionUnion;
+          const anchor = boardToScreen(viewport, {
+            x: (u.minX + u.maxX) / 2,
+            y: u.maxY,
+          });
+          const dy = (ocrEnabled ? 52 : 0) + (explainEnabled ? 52 : 0) + 10;
+          return (
+            <View
+              style={[styles.flashcardsButton, { left: anchor.x - 74, top: anchor.y + dy }]}
+              pointerEvents="box-none"
+            >
+              <TouchableOpacity
+                style={styles.flashcardsButtonInner}
+                onPress={onMakeFlashcards}
+                disabled={flashcardsBusy}
+                activeOpacity={0.85}
+              >
+                {flashcardsBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="albums-outline" size={15} color="#fff" />
+                )}
+                <Text style={styles.flashcardsButtonText}>
+                  {flashcardsBusy ? "Generating…" : "Make flashcards"}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -218,6 +267,29 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   explainButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  flashcardsButton: {
+    position: "absolute",
+    zIndex: 130,
+  },
+  flashcardsButtonInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#0d9488",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  flashcardsButtonText: {
     fontSize: 13,
     fontWeight: "600",
     color: "#fff",

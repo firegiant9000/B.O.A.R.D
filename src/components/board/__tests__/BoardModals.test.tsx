@@ -134,6 +134,9 @@ function makeAi(overrides: Partial<BoardAI> = {}): BoardAI {
     setDiagramPrompt: jest.fn(),
     diagramBusy: false,
     generateDiagram: jest.fn().mockResolvedValue(undefined),
+    flashcardsEnabled: false,
+    flashcardsBusy: false,
+    makeFlashcards: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

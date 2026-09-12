@@ -773,3 +773,42 @@ export interface Subscription {
   stripeSubscriptionId: string;
   currentPeriodEndMs: number;
 }
+
+// Month 6 — flashcard generation + review (task 30). Scheduling is PER-USER
+// (`users/{uid}/decks/{deckId}/cards/{cardId}`), never board-scoped: two
+// students studying the same board have different SM-2 schedules. See
+// src/lib/sm2.ts for the scheduling algorithm and src/services/
+// flashcardService.ts for the read/write surface over these two shapes.
+export interface FlashcardDeck {
+  id: string;
+  schemaVersion: 1;
+  name: string;
+  /** The board this deck's cards were generated from, if any — informational
+   *  only (e.g. "generated from Biology 101"); a deck is never re-scoped to a
+   *  board the way a Board/Session is scoped to a workspace. */
+  boardId?: string;
+  createdAt: Date;
+}
+
+/** One card's content + its SM-2 schedule, flattened into a single document
+ *  (rather than {content} + a nested `sm2.Card`) so a review write is one
+ *  `updateDoc` of the four schedule fields, not a nested-object merge.
+ *
+ *  The four schedule fields mirror `sm2.Card` exactly — see that interface's
+ *  own comment: `review()` does not validate them, so a caller that loads one
+ *  of these from Firestore MUST validate all four are finite numbers before
+ *  ever passing it to `review()`. `flashcardService.reviewCard` does this and
+ *  fails closed (throws rather than scheduling from corrupt data) on a
+ *  violation; see that function's own comment. */
+export interface FlashcardCard {
+  id: string;
+  schemaVersion: 1;
+  front: string;
+  back: string;
+  /** The board this card was generated from, if any. */
+  boardId?: string;
+  repetitions: number;
+  intervalDays: number;
+  easeFactor: number;
+  dueAtMs: number;
+}

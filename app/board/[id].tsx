@@ -132,6 +132,11 @@ export default function BoardScreen(
 
   // Dismissible error banner
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Month 6 — dismissible SUCCESS banner. Distinct from errorMessage (which is
+  // styled red with an alert icon) so a genuine confirmation — today, only
+  // "Make flashcards" landing new cards in the caller's own deck — never
+  // reads as an error to the user.
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Modals: deep-link join, share, session, history, background picker
   const [joinModalVisible, setJoinModalVisible] = useState(false);
@@ -377,6 +382,15 @@ export default function BoardScreen(
     // AI-call quota (src/services/quotaService.ts#QuotaResource) all of
     // OCR/explain/diagram gate through the same choke point on.
     onQuotaExceeded: () => setUpsellResource("aiCall"),
+    // Month 6 — flashcards are saved to the CALLER's own deck
+    // (`users/{uid}/decks/...`), never board-scoped, so the affordance needs
+    // the uid even though nothing else this bridge does.
+    uid: user?.uid ?? "",
+    boardTitle: doc.board?.title ?? "Board",
+    onFlashcardsGenerated: (deckName, count) =>
+      setSuccessMessage(
+        `Added ${count} flashcard${count === 1 ? "" : "s"} to your "${deckName}" deck.`
+      ),
   });
 
   // Resolve every comment to a pin at its anchored element. Memoized over the
@@ -604,6 +618,20 @@ export default function BoardScreen(
         </View>
       )}
 
+      {/* Success banner (Month 6 — e.g. "Make flashcards" landing new cards
+          in the caller's own deck). Deliberately a separate, green-styled
+          banner from errorBanner above — never piggyback a confirmation on
+          the error banner's red styling. */}
+      {successMessage && (
+        <View style={styles.successBanner}>
+          <Ionicons name="checkmark-circle-outline" size={15} color="#166534" />
+          <Text style={styles.successBannerText}>{successMessage}</Text>
+          <TouchableOpacity onPress={() => setSuccessMessage(null)}>
+            <Ionicons name="close" size={15} color="#166534" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Canvas + overlays + canvas-anchored affordances */}
       <BoardCanvas
         boardId={id!}
@@ -822,6 +850,21 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: "#b91c1c",
+  },
+  successBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#f0fdf4",
+    borderBottomWidth: 1,
+    borderBottomColor: "#bbf7d0",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  successBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#166534",
   },
   saveToast: {
     position: "absolute",

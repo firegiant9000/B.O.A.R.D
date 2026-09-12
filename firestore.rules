@@ -490,6 +490,42 @@ service cloud.firestore {
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
         allow delete: if isOwner(uid);
       }
+
+      // Flashcard decks + cards (Month 6 — flashcard generation + review,
+      // task 30). Scheduling is per-user, never board-scoped: two students
+      // studying the same board have different SM-2 schedules (ROADMAP.md's
+      // flashcard item), so a deck lives under the OWNING user, not under a
+      // board. This subcollection has no rule until this block — without it
+      // every deck/card write is denied outright by the default deny, and the
+      // feature simply cannot work.
+      //
+      // Gated strictly on isOwner(uid) for BOTH read and write, on both the
+      // deck and the card — as private as the `private` API-key subcollection
+      // above, deliberately NOT as permissive as the parent `users/{uid}`
+      // document itself (whose `allow read: if isSignedIn()` exists only for
+      // profile lookup/friend search). A person's study decks are theirs
+      // alone; nothing about "what I'm studying" is meant to be as
+      // discoverable as a display name, so that looser parent rule is not
+      // inherited here — it never would be automatically (Firestore rules
+      // don't cascade to subcollections), but is called out because every
+      // other subcollection under `users/{uid}` in this file (private,
+      // notifications) already made the same deliberate choice and this one
+      // must too.
+      //
+      // No field-shape validation on the card's numeric schedule fields
+      // (repetitions/intervalDays/easeFactor/dueAtMs) beyond the owner gate.
+      // Unlike a cross-user surface (votes, reactions, ...), the only party
+      // who can ever corrupt this data is the deck's own owner — there is no
+      // second party to protect from a bad write here, so that validation is
+      // the CLIENT's job on read (src/services/flashcardService.ts, mirroring
+      // src/lib/sm2.ts's own Card-interface contract), not a rules concern.
+      match /decks/{deckId} {
+        allow read, write: if isOwner(uid);
+
+        match /cards/{cardId} {
+          allow read, write: if isOwner(uid);
+        }
+      }
     }
 
     // ── workspaces ──────────────────────────────────────────────────────────────

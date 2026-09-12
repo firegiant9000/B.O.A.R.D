@@ -9,9 +9,15 @@ import {
   textToDiagram,
   isDiagramConfigured,
 } from "../services/aiService";
+import {
+  generateFlashcards,
+  isFlashcardsConfigured,
+  getOrCreateBoardDeck,
+  addCardsToDeck,
+} from "../services/flashcardService";
 import { mermaidToBoard, DiagramBuild, EmptyDiagramError } from "../lib/mermaid-to-board";
 import { captureException } from "../lib/errorReporting";
-import { isQuotaDenial } from "../services/quotaService";
+import { isQuotaDenial, resourceExhaustedReason } from "../services/quotaService";
 import type { SelectionAnchor } from "./useSelection";
 
 /**
@@ -69,6 +75,16 @@ export interface BoardAIBridge {
    *  the upsell instead of routing this through `onError`'s generic banner;
    *  the modal itself decides cap vs. throttle from the workspace's plan. */
   onQuotaExceeded: () => void;
+  /** Month 6 — the signed-in user's uid. Flashcards are saved to the CALLER's
+   *  own per-user deck (`users/{uid}/decks/...`), never the board, so the
+   *  affordance needs this even though nothing else here does. */
+  uid: string;
+  /** The board's own title — used to name/find its default flashcard deck. */
+  boardTitle: string;
+  /** A flashcard generation call saved NEW cards to the caller's own deck.
+   *  Undefined suppresses the "Make flashcards" affordance (Month 5 presenter
+   *  lock), like `onRecognizeText`/`onExplain` above. */
+  onFlashcardsGenerated?: (deckName: string, count: number) => void;
 }
 
 /** A low-confidence OCR result held back behind a confirm step (Appendix B.7). */
@@ -85,6 +101,8 @@ export interface BoardAI {
   explainEnabled: boolean;
   /** Whether the text → diagram affordance should be offered. */
   diagramEnabled: boolean;
+  /** Whether the "Make flashcards" affordance should be offered. */
+  flashcardsEnabled: boolean;
 
   // Handwriting OCR (Phase 10)
   ocrBusy: boolean;
@@ -105,6 +123,10 @@ export interface BoardAI {
   setDiagramPrompt: (prompt: string) => void;
   diagramBusy: boolean;
   generateDiagram: () => Promise<void>;
+
+  // Flashcard generation (Month 6)
+  flashcardsBusy: boolean;
+  makeFlashcards: () => Promise<void>;
 }
 
 export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
@@ -120,6 +142,10 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
   const [diagramOpen, setDiagramOpen] = useState(false);
   const [diagramPrompt, setDiagramPrompt] = useState("");
   const [diagramBusy, setDiagramBusy] = useState(false);
+  // Month 6 — flashcard generation. Gates the in-flight call (button spinner);
+  // unlike OCR/explain, success writes to the caller's own deck, not the
+  // canvas, so there is no candidate/confirm state to hold here.
+  const [flashcardsBusy, setFlashcardsBusy] = useState(false);
 
   // --- Phase 10: handwriting OCR (selection → text element) ---
 
@@ -269,10 +295,63 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
     }
   };
 
+  // --- Month 6: flashcard generation (selection → cards → the caller's own deck) ---
+
+  // Capture the selected region + any selected text → generate via the Cloud
+  // Function (memoized by selection hash, like OCR) → save the returned cards
+  // into the caller's per-board deck (never the canvas — flashcards are a
+  // per-user study artifact, not board content). Reports success back through
+  // `onFlashcardsGenerated` rather than `adopt`, since nothing is added to the
+  // canvas itself.
+  const makeFlashcards = async () => {
+    if (flashcardsBusy) return;
+    const u = bridge.selectionUnion;
+    if (!u) return;
+    setFlashcardsBusy(true);
+    try {
+      const selectedText = bridge.selectionText();
+      const pathIds = bridge.selectedPathIds();
+      const image = await bridge.captureRegion(u);
+
+      const { cards } = await generateFlashcards(boardId, {
+        selectionText: selectedText || undefined,
+        imageDataUrl: image ?? undefined,
+        pathIds,
+      });
+
+      const deckId = await getOrCreateBoardDeck(bridge.uid, boardId, bridge.boardTitle);
+      await addCardsToDeck(bridge.uid, deckId, boardId, cards);
+      bridge.onFlashcardsGenerated?.(bridge.boardTitle, cards.length);
+    } catch (e: any) {
+      // EG-16 — generateFlashcards attaches `details: { reason }` at every
+      // resource-exhausted throw site (functions/src/callable/
+      // generateFlashcards.ts), so this ROUTES on the server's own reason
+      // instead of inferring it the way OCR/explain/diagram above have to
+      // (checkAiQuota, on the four M4 callables, attaches no such detail).
+      const reason = resourceExhaustedReason(e);
+      if (reason === "plan-quota") {
+        bridge.onQuotaExceeded();
+      } else if (reason === "rate-limit") {
+        bridge.onError("You're sending requests a little fast. Wait a few seconds and try again.");
+      } else if (isQuotaDenial(e)) {
+        // Defensive fallback only — should not be reachable for this
+        // callable, but a resource-exhausted rejection must never be
+        // silently swallowed just because it arrived with no `details`.
+        bridge.onQuotaExceeded();
+      } else {
+        captureException(e, { op: "board.makeFlashcards" });
+        bridge.onError(e?.message ?? "Couldn't generate flashcards from that selection.");
+      }
+    } finally {
+      setFlashcardsBusy(false);
+    }
+  };
+
   return {
     ocrEnabled: isOcrConfigured(),
     explainEnabled: isExplainConfigured(),
     diagramEnabled: isDiagramConfigured(),
+    flashcardsEnabled: isFlashcardsConfigured(),
 
     ocrBusy,
     ocrCandidate,
@@ -292,5 +371,8 @@ export function useBoardAI(boardId: string, bridge: BoardAIBridge): BoardAI {
     setDiagramPrompt,
     diagramBusy,
     generateDiagram,
+
+    flashcardsBusy,
+    makeFlashcards,
   };
 }

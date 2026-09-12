@@ -49,3 +49,18 @@ export const EXPLAIN_ENABLED =
 export const DIAGRAM_ENABLED =
   process.env.EXPO_PUBLIC_DIAGRAM === "1" ||
   process.env.EXPO_PUBLIC_DIAGRAM === "true";
+
+/**
+ * Month 6 — flashcard generation.
+ *
+ * Gates the "Make flashcards" selection affordance and the `generateFlashcards`
+ * callable. Default OFF until the function is deployed; flip to "1" via the
+ * build env to expose it. Rides the Cloud Function gateway like OCR/explain/
+ * diagram, so it is only meaningful once `AI_GATEWAY_ENABLED` is also on. The
+ * review screen and CSV export are NOT gated by this flag — reviewing/exporting
+ * cards you already have needs no AI call and should keep working even with
+ * generation switched off.
+ */
+export const FLASHCARDS_ENABLED =
+  process.env.EXPO_PUBLIC_FLASHCARDS === "1" ||
+  process.env.EXPO_PUBLIC_FLASHCARDS === "true";

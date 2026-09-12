@@ -738,6 +738,9 @@ export default function BoardCanvas({
         ocrCandidate={ai.ocrCandidate}
         onAcceptOcr={presenterLocksContentCreation ? undefined : ai.acceptOcr}
         onDismissOcr={ai.dismissOcr}
+        flashcardsEnabled={ai.flashcardsEnabled}
+        flashcardsBusy={ai.flashcardsBusy}
+        onMakeFlashcards={presenterLocksContentCreation ? undefined : ai.makeFlashcards}
       />
     </View>
   );

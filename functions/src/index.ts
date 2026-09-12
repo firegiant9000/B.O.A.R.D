@@ -92,6 +92,14 @@ export { stripeWebhook } from "./http/stripeWebhook";
 // unlike those two this callable never reads a workspace at all.
 export { createClass } from "./callable/createClass";
 
+// Month 6 — flashcard generation. Turns a board selection (transcribed text
+// and/or an image) into front/back study-card pairs, memoized by selection
+// hash exactly like recognizeHandwriting. Every `resource-exhausted` throw
+// site attaches `details: { reason }` distinguishing the transient rate
+// throttle from the plan's AI-call cap — the four M4 AI callables above
+// predate that distinction and do not carry it; see the callable's own header.
+export { generateFlashcards } from "./callable/generateFlashcards";
+
 // Month 6 — anonymous-poll tallies. Maintains a server-side vote count at
 // boards/{boardId}/polls/{pollId}/tally/summary on every write (create/
 // update/delete) to a poll's votes subcollection — the ONLY way an anonymous

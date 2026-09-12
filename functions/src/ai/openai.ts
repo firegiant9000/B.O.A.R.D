@@ -21,6 +21,9 @@ const MODEL_MAP: Record<string, string> = {
   "explain-vision": "gpt-4o-mini",
   // Phase 12 — text → diagram. Text-only (returns Mermaid syntax), so no vision tier.
   "diagram-text": "gpt-4o-mini",
+  // Month 6 — flashcard generation (ROADMAP.md's model table). One tier for
+  // both text-only and vision selections, like explain-vision.
+  "flashcards": "gpt-4o-mini",
 };
 
 export function resolveModel(tier: string): string {

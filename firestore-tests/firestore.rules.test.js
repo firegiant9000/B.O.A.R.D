@@ -427,6 +427,24 @@ beforeEach(async () => {
       read: false,
     });
 
+    // Month 6 — a seeded flashcard deck + card, owned by alice. Per-user
+    // scheduling (task 30): lives under `users/alice/decks/...`, never under
+    // a board.
+    await setDoc(doc(db, "users/alice/decks/deck1"), {
+      schemaVersion: 1,
+      name: "Biology 101",
+      boardId: "boardCoded",
+    });
+    await setDoc(doc(db, "users/alice/decks/deck1/cards/card1"), {
+      schemaVersion: 1,
+      front: "What is the powerhouse of the cell?",
+      back: "The mitochondria",
+      repetitions: 0,
+      intervalDays: 0,
+      easeFactor: 2.5,
+      dueAtMs: 0,
+    });
+
     // ── Month 6 — education pilot fixtures ──────────────────────────────────
     // classC exists only to isolate the classId PIN from the enrollment
     // gate below: studentA1 is deliberately enrolled in BOTH classA and
@@ -2032,6 +2050,111 @@ describe("OCR cache (ocrCache)", () => {
         text: "x", confidence: 1, source: "vision", model: "google-vision", createdAt: 0,
       })
     );
+  });
+});
+
+// ── Month 6: flashcard decks + cards (task 30) ────────────────────────────────
+// Per-user scheduling (`users/{uid}/decks/{deckId}/cards/{cardId}`), gated
+// strictly on the owning uid — deliberately NOT as permissive as the parent
+// `users/{uid}` document (whose read is any-signed-in-user, for profile
+// lookup). Every denial below is paired with the matching owner success so a
+// rule that denied EVERYONE (not just non-owners) would still be caught.
+describe("flashcard decks (Month 6)", () => {
+  it("the owner reads their own deck", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice/decks/deck1")));
+  });
+
+  it("a different user cannot read someone else's deck", async () => {
+    await assertFails(getDoc(doc(db(BOB), "users/alice/decks/deck1")));
+  });
+
+  it("the owner creates a new deck", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(ALICE), "users/alice/decks/deck2"), {
+        schemaVersion: 1,
+        name: "Chemistry",
+      })
+    );
+  });
+
+  it("a different user cannot create a deck under someone else's uid", async () => {
+    await assertFails(
+      setDoc(doc(db(BOB), "users/alice/decks/deck2"), {
+        schemaVersion: 1,
+        name: "Planted",
+      })
+    );
+  });
+
+  it("the owner deletes their own deck", async () => {
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/decks/deck1")));
+  });
+
+  it("a different user cannot delete someone else's deck", async () => {
+    await assertFails(deleteDoc(doc(db(BOB), "users/alice/decks/deck1")));
+  });
+
+  it("the owner reads a card in their own deck", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice/decks/deck1/cards/card1")));
+  });
+
+  it("a different user cannot read a card in someone else's deck", async () => {
+    await assertFails(getDoc(doc(db(BOB), "users/alice/decks/deck1/cards/card1")));
+  });
+
+  it("the owner updates their own card's schedule after a review", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "users/alice/decks/deck1/cards/card1"), {
+        repetitions: 1,
+        intervalDays: 1,
+        easeFactor: 2.5,
+        dueAtMs: 86_400_000,
+      })
+    );
+  });
+
+  it("a different user cannot update someone else's card", async () => {
+    await assertFails(
+      updateDoc(doc(db(BOB), "users/alice/decks/deck1/cards/card1"), {
+        repetitions: 99,
+      })
+    );
+  });
+
+  it("the owner adds a newly generated card to their own deck", async () => {
+    await assertSucceeds(
+      setDoc(doc(db(ALICE), "users/alice/decks/deck1/cards/card2"), {
+        schemaVersion: 1,
+        front: "Q",
+        back: "A",
+        repetitions: 0,
+        intervalDays: 0,
+        easeFactor: 2.5,
+        dueAtMs: 0,
+      })
+    );
+  });
+
+  it("a different user cannot plant a card under someone else's deck", async () => {
+    await assertFails(
+      setDoc(doc(db(BOB), "users/alice/decks/deck1/cards/card2"), {
+        schemaVersion: 1,
+        front: "Planted",
+        back: "Card",
+        repetitions: 0,
+        intervalDays: 0,
+        easeFactor: 2.5,
+        dueAtMs: 0,
+      })
+    );
+  });
+
+  it("the owner deletes their own card", async () => {
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/decks/deck1/cards/card1")));
+  });
+
+  it("a different user cannot delete someone else's card", async () => {
+    await assertFails(deleteDoc(doc(db(BOB), "users/alice/decks/deck1/cards/card1")));
   });
 });
 
