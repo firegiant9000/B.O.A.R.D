@@ -774,7 +774,7 @@ export interface Subscription {
   currentPeriodEndMs: number;
 }
 
-// Month 6 — flashcard generation + review (task 30). Scheduling is PER-USER
+// Month 6 — flashcard generation + review. Scheduling is PER-USER
 // (`users/{uid}/decks/{deckId}/cards/{cardId}`), never board-scoped: two
 // students studying the same board have different SM-2 schedules. See
 // src/lib/sm2.ts for the scheduling algorithm and src/services/

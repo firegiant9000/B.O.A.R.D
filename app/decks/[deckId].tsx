@@ -2,7 +2,7 @@ import React from "react";
 import { useLocalSearchParams } from "expo-router";
 import FlashcardReviewScreen from "../../src/components/study/FlashcardReviewScreen";
 
-// Month 6 — flashcard review entry point (task 30). Deliberately a BARE
+// Month 6 — flashcard review entry point. Deliberately a BARE
 // route: every gate and every bit of logic lives in FlashcardReviewScreen
 // (src/components/study/) or flashcardService, never here — screens under
 // app/ can't be render/import-tested in this Jest setup (expo-font is

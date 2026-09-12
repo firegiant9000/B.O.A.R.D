@@ -771,20 +771,21 @@ describe("BoardCanvas — eyedropper (Month 5, ROADMAP item 12)", () => {
 });
 
 describe("BoardCanvas — gated content-creation call sites", () => {
-  // Covers all five props this component itself gates: `onDuplicateSelected`
-  // (BoardOverlayLayer), `onAcceptOcr`, `onRecognizeText` and `onExplain`
-  // (AiSelectionActions), and PerfectShapePrompt's `onAccept`. The remaining
-  // two content-creation paths the fix round closed — `BoardHeader`'s
-  // diagram-open button and the duplicate/paste keyboard shortcuts — live
-  // outside this component and are covered where they're wired
-  // (`app/board/[id].tsx`), not here.
-  it("locked: all five are suppressed (undefined)", () => {
+  // Covers all six props this component itself gates: `onDuplicateSelected`
+  // (BoardOverlayLayer), `onAcceptOcr`, `onRecognizeText`, `onExplain` and
+  // `onMakeFlashcards` (AiSelectionActions), and PerfectShapePrompt's
+  // `onAccept`. The remaining two content-creation paths the fix round
+  // closed — `BoardHeader`'s diagram-open button and the duplicate/paste
+  // keyboard shortcuts — live outside this component and are covered where
+  // they're wired (`app/board/[id].tsx`), not here.
+  it("locked: all six are suppressed (undefined)", () => {
     renderCanvas({
       tools: { activeTool: "select", perfectCandidate: { pathId: "p1", shape: { kind: "rect" } as any, color: "#000", strokeWidth: 2 } },
       collab: { presenterLocksContentCreation: true },
       ai: {
         ocrEnabled: true,
         explainEnabled: true,
+        flashcardsEnabled: true,
         ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
       },
     });
@@ -793,10 +794,11 @@ describe("BoardCanvas — gated content-creation call sites", () => {
     expect(mockAiSelectionProps.onAcceptOcr).toBeUndefined();
     expect(mockAiSelectionProps.onRecognizeText).toBeUndefined();
     expect(mockAiSelectionProps.onExplain).toBeUndefined();
+    expect(mockAiSelectionProps.onMakeFlashcards).toBeUndefined();
     expect(mockPerfectShapePromptProps.onAccept).toBeUndefined();
   });
 
-  it("unlocked (no presenter): all five are wired to the real handlers", async () => {
+  it("unlocked (no presenter): all six are wired to the real handlers", async () => {
     const { elements, ai, tools } = renderCanvas({
       tools: {
         activeTool: "select",
@@ -806,6 +808,7 @@ describe("BoardCanvas — gated content-creation call sites", () => {
       ai: {
         ocrEnabled: true,
         explainEnabled: true,
+        flashcardsEnabled: true,
         ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
       },
     });
@@ -814,6 +817,7 @@ describe("BoardCanvas — gated content-creation call sites", () => {
     expect(mockAiSelectionProps.onAcceptOcr).toBe(ai.acceptOcr);
     expect(mockAiSelectionProps.onRecognizeText).toBe(ai.recognizeText);
     expect(mockAiSelectionProps.onExplain).toBe(ai.explain);
+    expect(mockAiSelectionProps.onMakeFlashcards).toBe(ai.makeFlashcards);
 
     // `acceptPerfect` is a local BoardCanvas closure, not `elements.replaceStrokeWithShape`
     // itself — call it and confirm it forwards to the real write path and clears
@@ -831,7 +835,7 @@ describe("BoardCanvas — gated content-creation call sites", () => {
     );
   });
 
-  it("unlocked (paused presenter): all five stay wired to the real handlers", () => {
+  it("unlocked (paused presenter): all six stay wired to the real handlers", () => {
     const { elements, ai } = renderCanvas({
       tools: { activeTool: "select" },
       collab: {
@@ -841,6 +845,7 @@ describe("BoardCanvas — gated content-creation call sites", () => {
       ai: {
         ocrEnabled: true,
         explainEnabled: true,
+        flashcardsEnabled: true,
         ocrCandidate: { text: "hi", position: { x: 0, y: 0 }, confidence: 0.3 },
       },
     });
@@ -849,6 +854,7 @@ describe("BoardCanvas — gated content-creation call sites", () => {
     expect(mockAiSelectionProps.onAcceptOcr).toBe(ai.acceptOcr);
     expect(mockAiSelectionProps.onRecognizeText).toBe(ai.recognizeText);
     expect(mockAiSelectionProps.onExplain).toBe(ai.explain);
+    expect(mockAiSelectionProps.onMakeFlashcards).toBe(ai.makeFlashcards);
   });
 });
 

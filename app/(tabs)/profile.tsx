@@ -431,7 +431,7 @@ export default function ProfileScreen() {
           <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
         </TouchableOpacity>
 
-        {/* Month 6 — flashcard decks entry point (task 30). Where a user
+        {/* Month 6 — flashcard decks entry point. Where a user
             comes back to review cards generated from a board selection
             (useBoardAI's "Make flashcards" affordance); DeckListScreen and
             FlashcardReviewScreen own all of the actual logic. */}

@@ -181,6 +181,11 @@ function RootNavigator() {
           instructor cohort grid for one class. */}
       <Stack.Screen name="classes" options={{ presentation: "modal" }} />
       <Stack.Screen name="class/[id]" options={{ presentation: "modal" }} />
+      {/* Month 6 — flashcard decks. "decks/index" is the deck list
+          (Profile's "Flashcard decks" row); "decks/[deckId]" is the review
+          screen a generated deck lands on. */}
+      <Stack.Screen name="decks/index" options={{ presentation: "modal" }} />
+      <Stack.Screen name="decks/[deckId]" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

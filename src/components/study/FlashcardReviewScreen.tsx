@@ -7,7 +7,8 @@ import { CorruptCardError } from "../../services/flashcardService";
 import { setClipboardText } from "../../lib/osClipboard";
 import type { FlashcardCard } from "../../types";
 
-// Month 6 — the flashcard review surface (task 30's "second app surface").
+// Month 6 — the flashcard review surface: the real cost of flashcard
+// generation, per the roadmap, is this second app surface, not the AI call.
 // Lives under src/components/ with a BARE route (app/decks/[deckId].tsx) —
 // screens under app/ can't be render/import-tested in this Jest setup
 // (expo-font is unresolvable via @expo/vector-icons, and @firebase/util ships

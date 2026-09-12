@@ -17,7 +17,7 @@ import { review, INITIAL_CARD, type Card } from "../lib/sm2";
 import { FLASHCARDS_ENABLED, AI_GATEWAY_ENABLED } from "../lib/featureFlags";
 import type { FlashcardCard, FlashcardDeck } from "../types";
 
-// Month 6 — flashcard generation + review (task 30). The second app surface
+// Month 6 — flashcard generation + review. The second app surface
 // ROADMAP.md calls out as "the easy half's" real cost: a review screen,
 // per-user scheduling, and a due-cards query. Scheduling is PER-USER
 // (`users/{uid}/decks/{deckId}/cards/{cardId}`), never board-scoped — two
@@ -273,9 +273,12 @@ const SCHEDULE_FIELDS: (keyof Card)[] = [
 ];
 
 /** Validates that every SM-2 schedule field on `raw` is a finite number,
- *  throwing `CorruptCardError` on the first violation. Exported so the review
- *  screen can validate a batch up front (skip corrupt cards, keep studying)
- *  rather than only discovering a corruption mid-review. */
+ *  throwing `CorruptCardError` on the first violation. Exported for direct
+ *  unit testing of the validation itself, and because `reviewCard` (below)
+ *  relies on it as the one gate between a loaded card and `review()` — the
+ *  review screen never calls this directly; it discovers a corruption by
+ *  catching `CorruptCardError` out of `reviewCard`, per-card, at review time
+ *  (there is no separate up-front batch scan of a deck's cards). */
 export function assertValidSchedule(raw: FlashcardCard): Card {
   for (const field of SCHEDULE_FIELDS) {
     const value = raw[field];

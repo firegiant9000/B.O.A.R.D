@@ -20,6 +20,8 @@ const deleteDoc = fs.deleteDoc as jest.Mock;
 const query = fs.query as jest.Mock;
 const where = fs.where as jest.Mock;
 const orderBy = fs.orderBy as jest.Mock;
+const collection = fs.collection as jest.Mock;
+const doc = fs.doc as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -157,6 +159,12 @@ describe("getDueCards", () => {
 
     const cards = await flashcardService.getDueCards("u1", "deck1", 1000);
 
+    // The data-model decision the brief calls a migration, not a patch: this
+    // MUST read `users/{uid}/decks/{deckId}/cards`, never a board-scoped
+    // path. Pinned directly (not just inferred from the mapped results),
+    // since firestoreMock's collection() is a token-returning stub that
+    // would happily "work" against any path.
+    expect(collection).toHaveBeenCalledWith({}, "users", "u1", "decks", "deck1", "cards");
     expect(where).toHaveBeenCalledWith("dueAtMs", "<=", 1000);
     expect(orderBy).toHaveBeenCalledWith("dueAtMs", "asc");
     expect(cards.map((c) => c.id)).toEqual(["card1", "card2"]);
@@ -203,6 +211,9 @@ describe("reviewCard", () => {
     const next = await flashcardService.reviewCard("u1", "deck1", "card1", 5, 1_000_000);
     expect(next.repetitions).toBe(1);
     expect(next.intervalDays).toBe(1);
+    // Same path pin as getDueCards' own test above — the card doc read AND
+    // written back must be under the caller's own deck, never a board.
+    expect(doc).toHaveBeenCalledWith({}, "users", "u1", "decks", "deck1", "cards", "card1");
     expect(updateDoc).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -292,11 +303,23 @@ describe("exportDeckToCsv", () => {
       const field = flashcardService.toCsvField(`${trigger}HYPERLINK("evil.com","click")`);
       // Wrapped in quotes (it contains commas/quotes too) with a leading
       // apostrophe INSIDE the quotes, immediately before the original trigger
-      // character — never a bare leading =/+/-/@ at the top level.
+      // character — never a bare leading =/+/-/@ at the top level. (Asserting
+      // only `!startsWith(trigger)` here would pass even with neutralization
+      // removed, since RFC 4180 quoting alone already makes the field start
+      // with `"` — the payload below has no comma/quote of its own, so
+      // quoting can't hide a missing neutralization the way it does here.)
       expect(field.startsWith(`"'${trigger}`)).toBe(true);
-      expect(field.startsWith(trigger)).toBe(false);
     }
   );
+
+  // The four cases above all contain commas/quotes, so RFC 4180 quoting kicks
+  // in regardless of neutralization — none of them alone proves the
+  // NEUTRALIZATION branch specifically ran. A bare trigger with nothing else
+  // to quote does: if neutralization were removed, this would come back
+  // as the exact same un-prefixed, unquoted string.
+  it("neutralizes a bare formula-injection payload with nothing else to quote", () => {
+    expect(flashcardService.toCsvField("=1+1")).toBe("'=1+1");
+  });
 
   it("neutralizes a formula-injection front field end-to-end through exportDeckToCsv", () => {
     const csv = flashcardService.exportDeckToCsv([

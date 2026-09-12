@@ -428,8 +428,7 @@ beforeEach(async () => {
     });
 
     // Month 6 — a seeded flashcard deck + card, owned by alice. Per-user
-    // scheduling (task 30): lives under `users/alice/decks/...`, never under
-    // a board.
+    // scheduling: lives under `users/alice/decks/...`, never under a board.
     await setDoc(doc(db, "users/alice/decks/deck1"), {
       schemaVersion: 1,
       name: "Biology 101",
@@ -2053,7 +2052,7 @@ describe("OCR cache (ocrCache)", () => {
   });
 });
 
-// ── Month 6: flashcard decks + cards (task 30) ────────────────────────────────
+// ── Month 6: flashcard decks + cards ──────────────────────────────────────────
 // Per-user scheduling (`users/{uid}/decks/{deckId}/cards/{cardId}`), gated
 // strictly on the owning uid — deliberately NOT as permissive as the parent
 // `users/{uid}` document (whose read is any-signed-in-user, for profile

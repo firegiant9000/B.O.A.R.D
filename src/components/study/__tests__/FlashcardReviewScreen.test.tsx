@@ -142,16 +142,21 @@ describe("FlashcardReviewScreen", () => {
     expect(screen.queryByTestId("card-back")).toBeNull();
   });
 
-  it("maps 'Again' to a quality below 3 (the SM-2 reset branch) and every other button to >= 3", async () => {
+  it.each([
+    ["quality-again", (q: number) => expect(q).toBeLessThan(3)],
+    ["quality-hard", (q: number) => expect(q).toBeGreaterThanOrEqual(3)],
+    ["quality-good", (q: number) => expect(q).toBeGreaterThanOrEqual(3)],
+    ["quality-easy", (q: number) => expect(q).toBeGreaterThanOrEqual(3)],
+  ])("pressing %s sends the quality SM-2 expects (below 3 only resets a card)", async (testId, assertQuality) => {
     mockGetDueCards.mockResolvedValue([makeCard()]);
     mockReviewCard.mockResolvedValue({ repetitions: 0, intervalDays: 1, easeFactor: 2.0, dueAtMs: 86_400_000 });
     render(<FlashcardReviewScreen deckId="deck1" />);
     await waitFor(() => expect(screen.getByTestId("card-front")).toBeTruthy());
     fireEvent.press(screen.getByTestId("show-back"));
-    fireEvent.press(screen.getByTestId("quality-again"));
+    fireEvent.press(screen.getByTestId(testId));
     await waitFor(() => expect(mockReviewCard).toHaveBeenCalled());
     const quality = mockReviewCard.mock.calls[0][3];
-    expect(quality).toBeLessThan(3);
+    assertQuality(quality);
   });
 
   it("CF-15 — skips a corrupted card with a visible warning instead of crashing, and still advances", async () => {
