@@ -122,6 +122,16 @@
         { "fieldPath": "boardId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "embeddings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "vector",
+          "vectorConfig": { "dimension": 1536, "flat": {} }
+        }
+      ]
     }
   ],
   "fieldOverrides": []

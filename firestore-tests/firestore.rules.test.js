@@ -2052,6 +2052,45 @@ describe("OCR cache (ocrCache)", () => {
   });
 });
 
+// ── Month 6: board Q&A embedding write path ───────────────────────────────────
+// `boards/{boardId}/embeddings/{elementId}` (functions/src/ai/embeddings.ts).
+// UNLIKE ocrCache above, this collection has NO match block in firestore.rules
+// at all — mirroring flashcardCache.ts's precedent, not ocrCache's: no client
+// surface ever reads a raw embedding vector (retrieval runs entirely
+// server-side, inside the Cloud Function that will call `findNearest` and
+// hand back an answer plus cited element ids, never the vectors themselves),
+// so there is no read to grant. Denied for get, list AND write by the file's
+// default deny.
+//
+// Every denial below is paired with a positive control on the SAME actor
+// against a genuinely-open collection (`boards/boardCoded/paths`, already
+// proven member/editor-writable above) so a rule that failed EVERY request —
+// not just this collection — could not slip through as a false pass. The
+// list-query case is included deliberately: this suite learned the hard way
+// (see the education-pilot "list-query provability" section below) that a
+// suite testing only `getDoc` cannot detect an enumeration hole, so any
+// collection this file discusses gets its list path exercised explicitly too.
+describe("board Q&A embeddings (Month 6)", () => {
+  it("denies a client GET of an embedding doc, even a board member/owner", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "boards/boardCoded/paths/p1")));
+    await assertFails(getDoc(doc(db(ALICE), "boards/boardCoded/embeddings/el1")));
+  });
+
+  it("denies a client LIST over the embeddings collection, even a board member/owner", async () => {
+    await assertSucceeds(getDocs(collection(db(ALICE), "boards/boardCoded/paths")));
+    await assertFails(getDocs(collection(db(ALICE), "boards/boardCoded/embeddings")));
+  });
+
+  it("denies a client write to embeddings — Functions (Admin SDK) only, even a board member/owner", async () => {
+    await assertSucceeds(setDoc(doc(db(ALICE), "boards/boardCoded/paths/p1"), { userId: ALICE }));
+    await assertFails(
+      setDoc(doc(db(ALICE), "boards/boardCoded/embeddings/el1"), {
+        text: "hello", elementType: "note", contentHash: "h", updatedAt: 0,
+      })
+    );
+  });
+});
+
 // ── Month 6: flashcard decks + cards ──────────────────────────────────────────
 // Per-user scheduling (`users/{uid}/decks/{deckId}/cards/{cardId}`), gated
 // strictly on the owning uid — deliberately NOT as permissive as the parent
