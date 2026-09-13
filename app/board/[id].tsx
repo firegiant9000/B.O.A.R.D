@@ -913,10 +913,14 @@ export default function BoardScreen(
           setMathComposerVisible(false);
           setMathEditingId(null);
         }}
-        // A new equation is centred in the CURRENT viewport, the same
-        // "insert near what the viewer is looking at" default polls and
-        // clipboard pastes use — an equation has no placing gesture of its
-        // own the way a text-tool tap or a shape drag does.
+        // A new equation is placed with its TOP-LEFT at the centre of the
+        // current viewport (so it hangs down-right of center, not centred on
+        // it — the rendered size isn't known until the callable returns, so
+        // true centring would mean a follow-up geometry update, not worth it
+        // for a ~20-unit-tall element) — the same "insert near what the
+        // viewer is looking at" default polls and clipboard pastes use. An
+        // equation has no placing gesture of its own the way a text-tool tap
+        // or a shape drag does.
         onCreateMath={(latex) =>
           elements.createMathElement(
             screenToBoard(viewport, { x: canvasSize.width / 2, y: canvasSize.height / 2 }),

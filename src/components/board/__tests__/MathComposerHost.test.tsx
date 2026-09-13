@@ -140,6 +140,20 @@ describe("MathComposerHost — edit (Month 6)", () => {
     expect(screen.queryByText("New equation")).toBeNull();
   });
 
+  it("labels itself as an edit even when the existing equation's latex is empty", () => {
+    // The trap this guards against: deriving "am I editing" from the seeded
+    // text (`initialLatex`) instead of the id would mislabel this as an
+    // insert, because an existing element can legitimately have empty/null
+    // latex (see `latexOfMathElement`). `editingId` is the only reliable
+    // signal, and it must also still route to `onUpdate`, not `onCreate`.
+    const { onCreate, onUpdate } = setup({ editingId: "m1", initialLatex: "" });
+    expect(screen.getByText("Edit equation")).toBeTruthy();
+    expect(screen.queryByText("New equation")).toBeNull();
+    submit(); // empty field: canSubmit is false, so this just proves no crash
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
   it("re-seeds when a DIFFERENT element is opened", () => {
     const { rerender, onCreate, onUpdate, onClose } = setup({
       editingId: "m1",

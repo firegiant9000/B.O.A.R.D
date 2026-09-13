@@ -70,6 +70,21 @@ const imageItem: ClipItem = {
   },
 };
 
+const mathItem: ClipItem = {
+  kind: "math",
+  data: {
+    schemaVersion: 1,
+    type: "math",
+    latex: "x^2",
+    svgPath: "M 0 0 L 1 1",
+    width: 40,
+    height: 20,
+    x: 5,
+    y: 9,
+    scale: 1,
+  },
+};
+
 describe("clipboard store", () => {
   beforeEach(() => clearClipboard());
 
@@ -154,5 +169,18 @@ describe("offsetClipItem", () => {
       expect(out.data.storagePath).toBe("boards/a/images/x/full.jpg");
       expect(out.data.url).toBe("https://example/full");
     }
+  });
+
+  it("offsets a math element's top-left and preserves its already-rendered path", () => {
+    const out = offsetClipItem(mathItem, 16);
+    expect(out.kind).toBe("math");
+    if (out.kind === "math") {
+      expect(out.data.x).toBe(21);
+      expect(out.data.y).toBe(25);
+      expect(out.data.svgPath).toBe("M 0 0 L 1 1");
+      expect(out.data.width).toBe(40);
+    }
+    // original untouched
+    expect(mathItem.data.x).toBe(5);
   });
 });

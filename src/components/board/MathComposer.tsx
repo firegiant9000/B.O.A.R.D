@@ -43,8 +43,14 @@ const SNIPPETS: { label: string; latex: string }[] = [
 
 export interface MathComposerProps {
   visible: boolean;
-  /** The element being edited, or null when inserting a new one. Drives the
-   *  title, the submit label, and what the field starts with. */
+  /** The id of the element being edited, or null/undefined when inserting a
+   *  new one. This — NOT `initialLatex` — is what drives the title and the
+   *  submit label: an existing element can legitimately have empty `latex`
+   *  (see `latexOfMathElement`), and deriving "am I editing" from the seeded
+   *  text would then mislabel a real edit as an insert. */
+  editingId?: string | null;
+  /** The element being edited, or null when inserting a new one. What the
+   *  field starts with. */
   initialLatex?: string | null;
   /** Set while the render is in flight; the sheet stays open and disabled. */
   busy?: boolean;
@@ -56,6 +62,7 @@ export interface MathComposerProps {
 
 export default function MathComposer({
   visible,
+  editingId,
   initialLatex,
   busy = false,
   error,
@@ -71,7 +78,7 @@ export default function MathComposer({
     if (visible) setLatex(initialLatex ?? "");
   }, [visible, initialLatex]);
 
-  const editing = !!initialLatex;
+  const editing = editingId != null;
   const trimmed = latex.trim();
   const canSubmit = trimmed.length > 0 && !busy;
 

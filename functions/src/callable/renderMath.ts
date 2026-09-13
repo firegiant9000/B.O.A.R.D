@@ -97,10 +97,17 @@ export async function handleRenderMath(
   if (!boardId) {
     throw new HttpsError("invalid-argument", "boardId is required.");
   }
-  // Length is checked HERE as well as inside the renderer: this is the trust
-  // boundary, and refusing before the board read keeps an oversized payload
-  // from costing anything at all. The composer's own `maxLength` is an
-  // affordance, not a gate.
+  // Emptiness and length are checked HERE — before the board read AND before
+  // `consumeToken` — as well as inside the renderer. Kept ahead of the bucket
+  // deliberately: this is a request-shape check, not a metered action, and it
+  // is the one branch in this function that touches neither Firestore nor the
+  // renderer, so it costs nothing beyond the callable invocation itself.
+  // That invocation is NOT free, though — this callable has no provider to
+  // bill but is still loopable compute, same as the `uid`/`boardId` checks
+  // above it, which are unmetered for the same structural reason: nothing can
+  // be charged against a bucket before the caller and board are known. The
+  // composer's own `maxLength` is an affordance, not a gate; this check (and
+  // the rate bucket below it, once identity is known) is the real boundary.
   if (typeof latex !== "string" || latex.trim().length === 0) {
     return { svgPath: "", width: 0, height: 0, cached: false, error: "Enter an equation." };
   }

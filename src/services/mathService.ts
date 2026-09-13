@@ -104,7 +104,6 @@ export function mapMathDoc(id: string, data: any): MathElement | null {
     height: positive(data.height, 1),
     scale: positive(data.scale, 1),
     bbox: undefined,
-    z: typeof data.z === "number" && Number.isFinite(data.z) ? data.z : undefined,
     createdAt: data.createdAt?.toDate?.() ?? new Date(),
   };
   // Recompute rather than trust a stored bbox that may disagree with the

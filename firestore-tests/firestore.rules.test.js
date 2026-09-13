@@ -2211,7 +2211,9 @@ describe("math elements (Month 6)", () => {
     );
   });
 
-  // Deletes last: they remove the seeded `m1` every read case above relies on.
+  // Grouped last for readability, not because order matters: `beforeEach`
+  // (above) clears and re-seeds Firestore before every test in this file, so
+  // these deletes cannot starve an earlier read case of its seeded `m1`.
   it("a viewer cannot delete one", async () => {
     await assertFails(deleteDoc(doc(db(CAROL), "boards/boardWrite/mathElements/m1")));
   });

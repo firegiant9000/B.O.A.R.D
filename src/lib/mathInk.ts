@@ -17,6 +17,13 @@
  * input stops accepting characters the server would only refuse a moment
  * later. Deliberately the same number as the server's.
  *
+ * ⚠️ DUPLICATED NUMBER. Must equal `MAX_LATEX_LENGTH` in
+ * functions/src/math/mathRender.ts, which is the source of truth — the two
+ * are physically separate files (bundle vs. function runtime) so the
+ * agreement is held by a drift test, not the type system:
+ * `src/lib/__tests__/mathInk.test.ts` parses the functions-side file as text
+ * and fails if the two disagree. Edit both files together.
+ *
  * It lives in this pure module rather than in mathService so the composer —
  * a presentational component — can read it without importing the Firestore
  * SDK through the service.

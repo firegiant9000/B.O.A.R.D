@@ -16,7 +16,7 @@
  * the rest of the hardware-keyboard work.
  */
 
-import { DrawPath, ShapeElement, TextElement, ImageElement } from "../types";
+import { DrawPath, ShapeElement, TextElement, ImageElement, MathElement } from "../types";
 import { DUPLICATE_OFFSET, translatePoints } from "./transform";
 
 type Stripped = "id" | "createdAt" | "boardId" | "userId" | "bbox";
@@ -25,7 +25,11 @@ export type ClipItem =
   | { kind: "path"; data: Omit<DrawPath, "id" | "createdAt" | "boardId" | "userId"> }
   | { kind: "shape"; data: Omit<ShapeElement, Stripped> }
   | { kind: "text"; data: Omit<TextElement, "id" | "createdAt" | "boardId" | "userId"> }
-  | { kind: "image"; data: Omit<ImageElement, Stripped> };
+  | { kind: "image"; data: Omit<ImageElement, Stripped> }
+  // Month 6 — math elements. Carries the already-typeset `svgPath` (like
+  // `duplicateSelected`'s copy, not `createMathElement`'s render), so paste
+  // costs one Firestore write and no callable call.
+  | { kind: "math"; data: Omit<MathElement, Stripped> };
 
 interface ClipboardState {
   items: ClipItem[];
@@ -78,5 +82,7 @@ export function offsetClipItem(item: ClipItem, d: number): ClipItem {
         kind: "text",
         data: { ...item.data, position: { x: item.data.position.x + d, y: item.data.position.y + d } },
       };
+    case "math":
+      return { kind: "math", data: { ...item.data, x: item.data.x + d, y: item.data.y + d } };
   }
 }

@@ -75,6 +75,10 @@ const CLIP_EPSILON = 0.05;
  * Longest LaTeX source accepted. Enforced HERE, in the function — this is the
  * real limit. The composer's matching `maxLength` is advisory only (see
  * src/components/board/MathComposer.tsx).
+ *
+ * ⚠️ DUPLICATED NUMBER. `src/lib/mathInk.ts`'s own `MAX_LATEX_LENGTH` must
+ * equal this one; `src/lib/__tests__/mathInk.test.ts` parses this file as
+ * text and fails if the two disagree. Edit both files together.
  */
 export const MAX_LATEX_LENGTH = 1000;
 
@@ -182,6 +186,16 @@ function getEngine(): Engine {
   const svg = new SVG({ fontCache: "none" });
   engine = { adaptor, doc: mathjax.document("", { InputJax: tex, OutputJax: svg }) };
   return engine;
+}
+
+/** Test-only: drop the process-lifetime engine so the next `renderMath` call
+ *  builds a brand-new adaptor/TeX/SVG/document instead of reusing this one —
+ *  what actually exercises the "across fresh documents" half of the
+ *  determinism claim above, as opposed to "across reuses of the shared
+ *  document", which every render in this file's test suite already covers by
+ *  default. Never called from production code. */
+export function resetEngineForTests(): void {
+  engine = null;
 }
 
 // --- flattening -------------------------------------------------------------

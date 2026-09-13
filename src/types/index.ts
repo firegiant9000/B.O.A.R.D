@@ -827,9 +827,9 @@ export interface FlashcardCard {
 //
 // `latex` is the EDITABLE SOURCE OF TRUTH; `svgPath`/`width`/`height` are
 // cached output derived from it. Re-render only when `latex` changes — every
-// other operation (move, resize, delete, z-order) touches geometry alone and
-// must never call the function. `mathService.updateMathLatex` is the one
-// write path that re-renders; see its header.
+// other operation (move, resize, delete) touches geometry alone and must
+// never call the function. `mathService.updateMathLatex` is the one write
+// path that re-renders; see its header.
 //
 // GEOMETRY. `svgPath` is in board units at `scale: 1`, with its origin at the
 // element's top-left, so a renderer draws it as
@@ -846,6 +846,14 @@ export interface FlashcardCard {
 // group rotate therefore ORBITS a math element about the pivot without
 // spinning it (useBoardElements' `commitRotate`) rather than silently
 // dropping it out of the group.
+//
+// There is also deliberately no `z`: unlike paths/shapes/text/images, math
+// elements do not participate in the shared z-order model, so Bring to
+// Front / Send to Back have no effect on an equation and equations always
+// render in creation order (oldest first — the same order the board already
+// subscribes to them in; see `mathService.subscribeToBoardMathElements`'s
+// `orderBy("createdAt", "asc")` and `useBoardElements`' `visibleMathElements`,
+// which filters but does not sort).
 //
 // `schemaVersion: 1` from inception; readers tolerate a missing/partial doc
 // (`data?.field ?? default`), like every other element kind here.
@@ -868,7 +876,5 @@ export interface MathElement {
   y: number;
   scale: number;
   bbox?: Bounds;
-  // Z-order within the math layer (Phase 8); see DrawPath.z.
-  z?: number;
   createdAt: Date;
 }

@@ -424,6 +424,15 @@ export default function BoardCanvas({
       // `hitTestAny` here is the SAME picking path `selectAtPoint` runs, not
       // a second one (cf. `colorOfElement`'s note) — it is called again only
       // because the decision needs the hit before delegating.
+      //
+      // DELIBERATELY not gated by `presenterLocksContentCreation` (the check
+      // below, at the bottom of this function): that lock's axis is "creates
+      // NEW content" — inserting an equation (Toolbar's button, gated via
+      // `canEdit={embedCanEdit}`) is squarely in scope, but re-typesetting an
+      // EXISTING one is the same class as the move/resize/rotate handlers
+      // this file already leaves available during a presentation. This is a
+      // client-side affordance only; the real boundary is firestore.rules'
+      // editor-write on `mathElements`.
       if (!isShiftHeld()) {
         const hit = elements.hitTestAny(point);
         if (hit && hit.kind === "math" && elements.selection.isSelected(hit.id)) {

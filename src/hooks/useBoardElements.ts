@@ -766,11 +766,14 @@ export function useBoardElements(
     () => images.filter((img) => !blockedIds.includes(img.userId)).sort(byZ),
     [images, blockedIds]
   );
-  // Month 6 — math elements. Blocked-user filtered AND z-ordered like every
-  // other selectable layer (unlike `visibleAudioNotes` below, which is a
-  // badge overlay with no z-stacking concept).
+  // Month 6 — math elements. Blocked-user filtered like every other layer,
+  // but NOT z-ordered: `MathElement` carries no `z` (see its type comment),
+  // so equations always render in creation order — the order the subscription
+  // already delivers them in (`orderBy("createdAt", "asc")`) — same as
+  // `visibleAudioNotes` below, which is also excluded from the z-stacking
+  // model.
   const visibleMathElements = useMemo(
-    () => mathElements.filter((m) => !blockedIds.includes(m.userId)).sort(byZ),
+    () => mathElements.filter((m) => !blockedIds.includes(m.userId)),
     [mathElements, blockedIds]
   );
   // Month 5 — voice notes. Blocked-user filtered like every other layer; not
@@ -1881,8 +1884,17 @@ export function useBoardElements(
       const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = img;
       items.push({ kind: "image", data: rest });
     }
+    // Month 6 — math elements. Stripped the same way as every other kind
+    // above (id/createdAt/boardId/userId/bbox); the already-typeset `svgPath`
+    // travels with it, so paste never re-renders — see `pasteClipboard`'s
+    // math branch.
+    for (const mEl of mathElements) {
+      if (!ids.has(mEl.id)) continue;
+      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = mEl;
+      items.push({ kind: "math", data: rest });
+    }
     setClipboard(items);
-  }, [selection.selectedIds, paths, shapes, textElements, images]);
+  }, [selection.selectedIds, paths, shapes, textElements, images, mathElements]);
 
   // Paste the clipboard onto the *current* board (cross-board safe): re-stamp
   // boardId + the pasting user, cascade the offset down-right, and select the
@@ -1894,43 +1906,67 @@ export function useBoardElements(
     const uid = authorId;
     const newIds: string[] = [];
     const tasks: Promise<void>[] = [];
-    for (const item of items) {
-      const off = offsetClipItem(item, d);
-      if (off.kind === "path") {
-        tasks.push(
-          pathService
-            .savePath(boardId, { ...off.data, boardId, userId: uid })
-            .then((nid) => {
-              newIds.push(nid);
-            })
-        );
-      } else if (off.kind === "shape") {
-        tasks.push(
-          shapeService
-            .saveShape(boardId, { ...off.data, boardId, userId: uid })
-            .then((nid) => {
-              newIds.push(nid);
-            })
-        );
-      } else if (off.kind === "text") {
-        tasks.push(
-          pathService
-            .saveTextElement(boardId, { ...off.data, boardId, userId: uid })
-            .then((nid) => {
-              newIds.push(nid);
-            })
-        );
-      } else {
-        tasks.push(
-          imageService
-            .saveImage(boardId, { ...off.data, boardId, userId: uid })
-            .then((nid) => {
-              newIds.push(nid);
-            })
-        );
-      }
-    }
     try {
+      for (const item of items) {
+        const off = offsetClipItem(item, d);
+        if (off.kind === "path") {
+          tasks.push(
+            pathService
+              .savePath(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "shape") {
+          tasks.push(
+            shapeService
+              .saveShape(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "text") {
+          tasks.push(
+            pathService
+              .saveTextElement(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "image") {
+          tasks.push(
+            imageService
+              .saveImage(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "math") {
+          // Month 6 — math elements. `saveMathElement`, not
+          // `createMathElement`: the clip item already carries typeset path
+          // data (`copySelected` only strips identity), so paste is one
+          // Firestore write and no render call — mirrors
+          // `duplicateSelected`'s math branch.
+          tasks.push(
+            mathService
+              .saveMathElement(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else {
+          // Exhaustiveness guard. A bare `else` here once silently treated
+          // ANY unrecognised `ClipItem` kind as an image — the exact trap
+          // that would have routed a pasted equation into the images
+          // collection. `never` turns a forgotten kind into a compile error;
+          // this throw is the runtime backstop and is caught below, same as
+          // every other paste failure.
+          const unhandled: never = off;
+          throw new Error(
+            `pasteClipboard: unhandled clip item kind "${(unhandled as ClipItem).kind}"`
+          );
+        }
+      }
       await Promise.all(tasks);
       onActivateSelectTool();
       selection.setMany(newIds, "elements");
@@ -2120,6 +2156,10 @@ export function useBoardElements(
   // ────────── WRITE PATH — Z-ORDER ──────────────────────────────────────
   // --- Z-order ---
 
+  // Math elements are deliberately absent from every plan below: `MathElement`
+  // has no `z` (see its type comment), so Bring to Front / Send to Back is a
+  // no-op on an equation and equations always render in creation order. Not
+  // an omission — there is nothing to plan for that kind.
   const reorderSelected = async (dir: "front" | "back") => {
     const ids = selection.selectedIds;
     if (ids.size === 0) return;
@@ -2362,7 +2402,16 @@ export function useBoardElements(
 
   const updateMathLatex = async (elementId: string, latex: string): Promise<void> => {
     const current = mathElements.find((mEl) => mEl.id === elementId);
-    if (!current) return;
+    // A collaborator deleted this element while the composer was open. This
+    // MUST reject, not resolve: `MathComposerHost.handleSubmit` treats a
+    // resolved promise as success and closes the sheet, which would discard
+    // the user's edit with no feedback at all. A plain, code-less Error is
+    // exactly what `mathErrorMessage` passes through verbatim, so it surfaces
+    // inline and the sheet stays open — the same contract every TeX-error
+    // rejection above already relies on.
+    if (!current) {
+      throw new Error("That equation is no longer on the board.");
+    }
     await mathService.updateMathLatex(boardId, elementId, latex, {
       x: current.x,
       y: current.y,

@@ -10,6 +10,7 @@
 
 import {
   renderMath,
+  resetEngineForTests,
   MATH_EM_BOARD_UNITS,
   MAX_LATEX_LENGTH,
   TEX_PACKAGES,
@@ -69,6 +70,22 @@ describe("renderMath — determinism (Month 6)", () => {
     await renderMath("\\int_0^\\infty e^{-x^2}\\,dx");
     await renderMath("\\sum_{i=1}^{n} i");
     const second = await renderMath("\\frac{a}{b}");
+    expect(first.error).toBeUndefined();
+    expect(first.svgPath.length).toBeGreaterThan(100);
+    expect(second.svgPath).toBe(first.svgPath);
+    expect(second.width).toBe(first.width);
+    expect(second.height).toBe(first.height);
+  });
+
+  it("is still byte-identical across a fresh MathJax document, not only within the shared one", async () => {
+    // The two tests above share one process-lifetime document (see
+    // mathRender.ts's DETERMINISM note) and would stay green even if a
+    // SECOND document rendered the same LaTeX differently.
+    // `resetEngineForTests` forces the next call to build a genuinely new
+    // adaptor/TeX/SVG/document, closing that half of the claim.
+    const first = await renderMath("x^2");
+    resetEngineForTests();
+    const second = await renderMath("x^2");
     expect(first.error).toBeUndefined();
     expect(first.svgPath.length).toBeGreaterThan(100);
     expect(second.svgPath).toBe(first.svgPath);

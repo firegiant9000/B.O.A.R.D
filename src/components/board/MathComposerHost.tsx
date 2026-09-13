@@ -102,6 +102,7 @@ export default function MathComposerHost({
   return (
     <MathComposer
       visible={visible}
+      editingId={editingId ?? null}
       initialLatex={initialLatex ?? null}
       busy={busy}
       error={error}
