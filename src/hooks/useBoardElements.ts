@@ -645,12 +645,15 @@ export function useBoardElements(
   // Month 6 — synchronous source for sticky notes' own anchor-delete cascade
   // (`cascadeDeleteNotesForElements` below). Unfiltered, for the same reason
   // `audioNotesRef` above is: a blocked user's note must still be cascaded
-  // away when its anchor is deleted. UNLIKE `audioNotesRef`, this needs no
-  // parallel "loaded" ref/fallback-read branch — `notes` has been part of
-  // this hook's always-on subscription set since before Month 5 (see the
-  // SUBSCRIPTIONS section below), not a later, lazily mounted one the way
-  // audio was, so trusting it immediately is the same bet every other
-  // always-on ref on this list already makes.
+  // away when its anchor is deleted. This mounts exactly like `audioNotesRef`
+  // (see `subscribeToBoardNotes`/`subscribeToBoardAudio` below — same
+  // `useEffect([boardId])` shape) and carries no parallel "loaded" ref of its
+  // own, so the same pre-first-snapshot window `audioNotesLoadedRef` guards
+  // against is real here too and is NOT closed: an element deleted between
+  // mount and the notes subscription's first snapshot orphans its attached
+  // note rather than cascading it. Left unguarded on purpose — a stale
+  // Firestore doc, unlike a leaked Storage object, has no ongoing cost, and
+  // the window is one snapshot round-trip wide.
   const notesRef = useRef<TextNote[]>([]);
   // rbush index over every visible element's bbox, rebuilt when the set changes,
   // queried during a marquee drag for O(log n) hit-testing.
@@ -1989,7 +1992,7 @@ export function useBoardElements(
         onError("Failed to delete some elements.");
       }
     },
-    [boardId, onScheduleSave, onError, cascadeDeleteVoiceNotes]
+    [boardId, onScheduleSave, onError, cascadeDeleteVoiceNotes, cascadeDeleteNotesForElements]
   );
 
   // Duplicate the selection 16px down-right; the copies become the new selection.

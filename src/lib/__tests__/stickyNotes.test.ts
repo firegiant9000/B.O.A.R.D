@@ -39,13 +39,10 @@ describe("sanitizeStickySize (corrupt-stored-value guard)", () => {
     }
   });
 
-  // NOTE on falsifiability: this passes even with the `Number.isFinite`
-  // guard removed from the implementation, because `STICKY_FONT_SIZES.includes(NaN)`
-  // is ALSO false (NaN never strictly equals 12/14/18) — the membership
-  // check alone already catches this input. It's still a real, worthwhile
-  // assertion about the function's overall contract (see sanitizeStickySize's
-  // own comment for why the isFinite guard is kept anyway); it just isn't
-  // evidence that any one specific line is load-bearing.
+  // NOTE on falsifiability: this passes even with the whole first-line guard
+  // (`typeof`/`Number.isFinite`) removed — `STICKY_FONT_SIZES.includes(NaN)`
+  // is already false, so the membership check alone catches this input; see
+  // `sanitizeStickySize`'s own comment for why the guard is kept anyway.
   it("falls back to the default for NaN — typeof NaN === 'number' is the named trap", () => {
     expect(sanitizeStickySize(NaN)).toBe(DEFAULT_STICKY_SIZE);
   });

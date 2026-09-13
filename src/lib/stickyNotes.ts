@@ -75,24 +75,12 @@ export const STICKY_FONT_SIZES = Object.keys(STICKY_SIZE_METRICS).map(Number);
 export const DEFAULT_STICKY_SIZE = 14;
 
 /**
- * Same guard as colour, for the numeric size. The membership check against
- * `STICKY_FONT_SIZES` is what actually does the work here — it pins the
- * result to one of the three known sizes, and (via `Array.prototype.includes`'s
- * strict, non-coercing comparison) already rejects a wrong type or a corrupt
- * `NaN`/`Infinity` on its own, since neither ever strictly equals 12, 14, or
- * 18. The explicit `typeof value === "number" && Number.isFinite(value)`
- * guard in front of it is kept anyway, for two reasons that are NOT about
- * this specific fixed set: (1) it documents the exact trap the brief calls
- * out — `typeof NaN === "number"`, so a bare `typeof` check alone would let
- * a corrupt `NaN` through — for whoever next touches this function, and (2)
- * it stops being redundant the moment `STICKY_FONT_SIZES` is ever widened
- * from an exact list to a range check (e.g. "12 to 18"), at which point a
- * range comparison against `NaN` (`NaN >= 12`) is ALSO always false, but a
- * range comparison against `Infinity` is not. `Number.isFinite` is the guard
- * that keeps working correctly if this function's shape ever changes;
- * membership-testing a NaN/Infinity coincidentally working today is not a
- * reason to drop it. See `stickyNotes.test.ts` for what is and isn't
- * actually falsifiable against this function AS WRITTEN today.
+ * Same guard as colour, for the numeric size. Both the `typeof` check and
+ * `Number.isFinite` are redundant against the `includes` membership check
+ * below (`Array.includes` never coerces, so it alone already rejects a wrong
+ * type, a corrupt `NaN`, or `Infinity`) — kept anyway, loudly, as
+ * belt-and-braces and to name the `typeof NaN === "number"` trap for
+ * whoever next touches this function.
  */
 export function sanitizeStickySize(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_STICKY_SIZE;

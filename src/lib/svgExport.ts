@@ -417,6 +417,13 @@ function textNode(t: TextElement): string {
 //     text, not as bold/italic `<tspan>`s, bullets, or links. `content` is
 //     passed through `wrapByEstimatedWidth`/`tspansFor` completely unaware
 //     that `lib/markdown.ts` exists.
+//   - A non-default-size note ALSO exports at the wrong position, not merely
+//     the wrong size: `NOTE_LEFT_OFFSET` (60) matches `TextNoteOverlay.tsx`'s
+//     own `metrics.width / 2 - 40` only at the 14px/200-wide default — a
+//     size-12 note's live left offset is 35, a size-18 note's is 90, so the
+//     exported rect lands beside, not under, where the note actually renders
+//     on the board. (`NOTE_TOP_OFFSET` is unaffected: the overlay's own top
+//     offset is a fixed -20 regardless of size.)
 // This was a deliberate scope decision, not an oversight: colour/size are
 // straightforward to add (a lookup by the note's own fields instead of a
 // bare constant), but rendering bold/italic in SVG `<tspan>`s and, further,

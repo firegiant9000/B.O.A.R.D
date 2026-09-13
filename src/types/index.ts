@@ -359,6 +359,13 @@ export interface TextNote {
   id: string;
   boardId: string;
   userId: string;
+  // Unlike color/size below, `content` is NOT migration-tolerant in the same
+  // sense: markdown parsing (`lib/markdown.ts`) applies unconditionally to
+  // every note's `content`, including one written before Month 6. A
+  // pre-existing note reading "2. Buy milk" now renders as a list item with
+  // a "2." marker, "a*b*c" now renders "b" in italics, and a leading "- "
+  // gains a bullet — the same string renders differently than it did before
+  // this feature, with no opt-out.
   content: string;
   position: { x: number; y: number };
   createdAt: Date;

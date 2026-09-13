@@ -5,7 +5,7 @@ jest.mock("@expo/vector-icons", () => {
 
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react-native";
-import { Linking } from "react-native";
+import { Linking, StyleSheet } from "react-native";
 import TextNoteOverlay from "../TextNoteOverlay";
 import type { PositionedTextNote, TextNote } from "../../types";
 
@@ -90,11 +90,33 @@ describe("markdown rendering", () => {
 describe("colour (corrupt-stored-value guard)", () => {
   it("falls back to the default colour for an unknown stored value", () => {
     const note = makeNote({ color: "chartreuse" as any });
-    const { UNSAFE_root } = render(<TextNoteOverlay {...baseProps} notes={[positioned(note)]} />);
-    // Renders without throwing and without ever reaching an invalid
-    // backgroundColor — the sanitize path is exercised whether or not this
-    // specific assertion introspects the resolved style.
-    expect(UNSAFE_root).toBeTruthy();
+    const { getByTestId } = render(<TextNoteOverlay {...baseProps} notes={[positioned(note)]} />);
+    const style = StyleSheet.flatten(getByTestId("note-card-n1").props.style);
+    expect(style.backgroundColor).toBe("#FFF9C4");
+  });
+});
+
+describe("colour and size (render layer)", () => {
+  it("renders a note in its stored colour", () => {
+    const note = makeNote({ color: "pink" });
+    const { getByTestId } = render(<TextNoteOverlay {...baseProps} notes={[positioned(note)]} />);
+    const style = StyleSheet.flatten(getByTestId("note-card-n1").props.style);
+    expect(style.backgroundColor).toBe("#F8BBD0");
+  });
+
+  it("renders a note at its stored size", () => {
+    // Both rendered consequences of `size`, not just the card's width: the
+    // block text's own `fontSize` too. A component that only ever wired up
+    // `maxWidth` (or hardcoded `fontSize: 14`) would leave this test green
+    // if it asserted card width alone — see markdown.ts's sibling render
+    // tests for the same "assert both, not just the one the name implies"
+    // discipline.
+    const note = makeNote({ size: 18 });
+    const { getByTestId } = render(<TextNoteOverlay {...baseProps} notes={[positioned(note)]} />);
+    const cardStyle = StyleSheet.flatten(getByTestId("note-card-n1").props.style);
+    expect(cardStyle.maxWidth).toBe(260);
+    const textStyle = StyleSheet.flatten(getByTestId("note-text-n1-0").props.style);
+    expect(textStyle.fontSize).toBe(18);
   });
 });
 

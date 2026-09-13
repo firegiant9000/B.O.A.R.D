@@ -125,6 +125,7 @@ export default function TextNoteOverlay({
         return (
           <View
             key={note.id}
+            testID={`note-card-${note.id}`}
             style={[
               styles.note,
               {
@@ -149,7 +150,10 @@ export default function TextNoteOverlay({
                       {block.marker}{" "}
                     </Text>
                   )}
-                  <Text style={[styles.noteText, { fontSize: metrics.fontSize, flexShrink: 1 }]}>
+                  <Text
+                    testID={`note-text-${note.id}-${i}`}
+                    style={[styles.noteText, { fontSize: metrics.fontSize, flexShrink: 1 }]}
+                  >
                     {block.runs.map((run, j) => (
                       <Text
                         key={j}
