@@ -64,8 +64,10 @@ export interface StickySizeMetrics {
 // Keyed by fontSize (px) — mirrors TextElement.fontSize's own plain-number
 // convention instead of a named "sm/md/lg" enum. 14's numbers are the note's
 // original hardcoded layout (TextNoteOverlay's `maxWidth: 200`/`fontSize:
-// 14`, svgExport's NOTE_WIDTH/NOTE_FONT_SIZE) — same "absent field renders
-// identically to before" requirement colour has.
+// 14`, and — before Fix Wave F4 wired `svgExport.ts#noteNode` through this
+// same table below — svgExport's own since-removed `NOTE_WIDTH`/
+// `NOTE_FONT_SIZE` constants) — same "absent field renders identically to
+// before" requirement colour has.
 export const STICKY_SIZE_METRICS: Record<number, StickySizeMetrics> = {
   12: { width: 150, fontSize: 12, minHeight: 56 },
   14: { width: 200, fontSize: 14, minHeight: 70 },

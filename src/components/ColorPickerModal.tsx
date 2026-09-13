@@ -9,6 +9,7 @@ import {
   ScrollView,
   LayoutChangeEvent,
   GestureResponderEvent,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { fromHex8, toHex6, toCssRgba, isValidHex, hasAlphaByte, clampAlpha } from "../lib/color";
@@ -183,6 +184,23 @@ export default function ColorPickerModal({
     onAddSwatch(toHex6({ ...parsedColor, a: 1 }));
   };
 
+  // Final correction (C5) — a swatch is workspace-wide shared state: removing
+  // one disappears for every member, with no undo and no toast, and the
+  // board screen applies it locally at once. A long-press is easy to trigger
+  // by accident, so this confirms first — same `Alert.alert` destructive
+  // pattern `Toolbar.tsx#handleClear` ("Clear Board") already uses for a
+  // shared, unrecoverable action, not a new confirmation UI of its own.
+  const handleRemoveSwatch = (hex: string) => {
+    Alert.alert(
+      "Remove Swatch",
+      "This removes the swatch for everyone in the workspace.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove", style: "destructive", onPress: () => onRemoveSwatch(hex) },
+      ]
+    );
+  };
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
@@ -289,8 +307,11 @@ export default function ColorPickerModal({
                 // prop doc for why this carries no separate PLAN gate). A
                 // plain member sees the same swatch with no long-press
                 // affordance at all, same silent-disable `canAddSwatch`
-                // already uses for adding.
-                onLongPress={canManageWorkspace ? () => onRemoveSwatch(hex) : undefined}
+                // already uses for adding. Final correction (C5) —
+                // `handleRemoveSwatch` confirms first: this is workspace-wide
+                // shared state, so an accidental long-press must not silently
+                // remove it for every member.
+                onLongPress={canManageWorkspace ? () => handleRemoveSwatch(hex) : undefined}
                 accessibilityRole="button"
                 accessibilityLabel={
                   canManageWorkspace

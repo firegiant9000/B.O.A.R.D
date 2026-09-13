@@ -69,9 +69,14 @@ interface BoardHeaderProps {
   /** Fix Wave F2 — the workspace's plan, read only for `canUsePresenter`'s
    *  advisory Pro gate on the toggle just below (ROADMAP.md:615 names
    *  presenter as Pro alongside voice notes/custom palette, both of which
-   *  already had this; presenter didn't). Defaults to "free" — the same
-   *  fail-closed default every other plan-gated prop in this codebase uses
-   *  when a caller omits it. */
+   *  already had this; presenter didn't).
+   *
+   *  Final correction (C1) — undefined is NOT the same as "free" and must
+   *  not be defaulted to it here. The caller (`app/board/[id].tsx`) passes
+   *  `doc.boardWorkspace?.plan` verbatim, so undefined means the workspace
+   *  hasn't resolved yet, this is a legacy/workspace-less board, or the
+   *  fetch failed — not "known to be on the free plan." `canUsePresenter`
+   *  fails open on undefined; only a plan known to be `"free"` gates. */
   plan?: Plan;
   /** A free-plan admin tapped the presenter toggle's "Pro" badge — routes to
    *  the upsell the same way `ColorPickerModal`'s `onUpgradeRequested` does
@@ -113,11 +118,14 @@ export default function BoardHeader({
   onStopPresenting,
   onPausePresenting,
   onResumePresenting,
-  plan = "free",
+  plan,
   onUpgradeRequested,
 }: BoardHeaderProps) {
   // Fix Wave F2 — see `canUsePresenter`'s own comment (workspaceService.ts)
   // for why this is advisory-only, client-side, with no firestore.rules gate.
+  // Final correction (C1) — no `= "free"` default here: `plan` stays
+  // `undefined` when the caller doesn't know it yet, and `canUsePresenter`
+  // is the thing that decides what undefined means (fail open).
   const canPresent = canUsePresenter(plan);
   return (
     <View style={styles.header}>

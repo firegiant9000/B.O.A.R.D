@@ -7,9 +7,9 @@
  *
  * Pure and synchronous throughout — no React Native import here — so it's
  * fully unit-testable on its own, which is where the real logic belongs:
- * `src/hooks/useBoardElements.ts` — this codebase's single largest file, by
- * a wide margin — has zero test coverage of any kind, so nothing that can
- * live in a pure module should live there instead.
+ * `src/hooks/useBoardElements.ts` is a large file with zero test coverage of
+ * any kind, so nothing that can live in a pure module should live there
+ * instead.
  *
  * `parseMarkdown` is line-oriented: each line of `source` becomes exactly one
  * `MarkdownBlock` (a sticky note is short free text, not a flowed document —

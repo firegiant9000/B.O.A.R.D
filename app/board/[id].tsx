@@ -683,7 +683,7 @@ export default function BoardScreen(
           onStopPresenting={collab.stopPresenting}
           onPausePresenting={collab.pausePresenting}
           onResumePresenting={collab.resumePresenting}
-          plan={doc.boardWorkspace?.plan ?? "free"}
+          plan={doc.boardWorkspace?.plan}
           onUpgradeRequested={() => setUpsellResource("presenter")}
         />
       )}

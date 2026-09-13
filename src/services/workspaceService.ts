@@ -265,6 +265,17 @@ export function canUseCustomPalette(plan: Plan): boolean {
 // predicate. Adding one is explicitly out of scope for this fix wave
 // (client-side gate only, per its own scope limit) — do not add it to
 // firestore.rules as part of wiring this predicate in.
-export function canUsePresenter(plan: Plan): boolean {
+//
+// Final correction (C1) — `plan` is `Plan | undefined`, not just `Plan`.
+// `undefined` means the caller does not yet KNOW the plan (the board's
+// workspace hasn't resolved, the board has no workspace at all, or the
+// workspace fetch failed — see `useBoardDocument.ts`'s `boardWorkspace`
+// comment), and that is a different fact from "known to be on the free
+// plan." This must fail OPEN on the unknown case: `plan !== "free"` already
+// does, because `undefined !== "free"`, so an unresolved/legacy caller is
+// treated as presentable and only a plan actually known to be `"free"` is
+// gated. Do not collapse the unknown case to `"free"` at any call site —
+// that reintroduces the regression this fixes.
+export function canUsePresenter(plan: Plan | undefined): boolean {
   return plan !== "free";
 }

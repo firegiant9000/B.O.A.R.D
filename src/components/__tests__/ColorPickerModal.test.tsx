@@ -13,6 +13,7 @@ jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } 
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
 
 import React from "react";
+import { Alert } from "react-native";
 import { render, screen, fireEvent } from "@testing-library/react-native";
 import ColorPickerModal from "../ColorPickerModal";
 
@@ -200,23 +201,52 @@ describe("alpha control disabled when the selection has nothing it would change 
   });
 });
 
-describe("removing a workspace swatch (Fix Wave F7)", () => {
-  it("long-pressing a swatch calls onRemoveSwatch when the caller can manage the workspace", () => {
+describe("removing a workspace swatch (Fix Wave F7, confirmation added by final correction C5)", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("long-pressing a swatch confirms first, and only calls onRemoveSwatch once the removal is confirmed", () => {
+    // The swatch is workspace-wide shared state (C5) — removing it must not
+    // be a bare long-press. Simulate the user picking the destructive button
+    // by invoking it out of the captured `Alert.alert` call.
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation((_title, _message, buttons) => {
+      buttons?.find((b) => b.text === "Remove")?.onPress?.();
+    });
     render(<ColorPickerModal {...baseProps} canManageWorkspace />);
     fireEvent(screen.getByTestId("color-picker-swatch-#123456"), "longPress");
+    expect(alertSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Array)
+    );
     expect(baseProps.onRemoveSwatch).toHaveBeenCalledWith("#123456");
   });
 
+  it("does NOT call onRemoveSwatch when the confirmation is dismissed (C5)", () => {
+    // A no-op Alert.alert mock models a dismissal — neither button's
+    // onPress ever runs, the same as tapping Cancel or backing out.
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    render(<ColorPickerModal {...baseProps} canManageWorkspace />);
+    fireEvent(screen.getByTestId("color-picker-swatch-#123456"), "longPress");
+    // Guard: prove the long-press actually reached the confirmation, so a
+    // long-press that silently did nothing at all couldn't pass this test.
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(baseProps.onRemoveSwatch).not.toHaveBeenCalled();
+  });
+
   it("a plain member (canManageWorkspace=false) cannot remove a swatch via long-press", () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     render(<ColorPickerModal {...baseProps} canManageWorkspace={false} />);
     fireEvent(screen.getByTestId("color-picker-swatch-#123456"), "longPress");
+    expect(alertSpy).not.toHaveBeenCalled();
     expect(baseProps.onRemoveSwatch).not.toHaveBeenCalled();
   });
 
   it("long-pressing still leaves a plain tap free to apply the colour", () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     render(<ColorPickerModal {...baseProps} canManageWorkspace />);
     fireEvent.press(screen.getByTestId("color-picker-swatch-#123456"));
     expect(baseProps.onChange).toHaveBeenCalledWith("#123456", 1);
+    expect(alertSpy).not.toHaveBeenCalled();
     expect(baseProps.onRemoveSwatch).not.toHaveBeenCalled();
   });
 });

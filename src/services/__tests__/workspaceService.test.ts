@@ -278,4 +278,11 @@ describe("canUsePresenter — advisory Pro gate (mirrors canUseCustomPalette / c
     expect(workspaceService.canUsePresenter("pro")).toBe(true);
     expect(workspaceService.canUsePresenter("edu")).toBe(true);
   });
+
+  // Final correction (C1) — undefined means "not known yet" (workspace
+  // unresolved, legacy/workspace-less board, or a failed fetch), which is a
+  // different fact from "known to be on the free plan," and must fail OPEN.
+  it("is true for an unknown plan (undefined) — fails open, unlike the free plan", () => {
+    expect(workspaceService.canUsePresenter(undefined)).toBe(true);
+  });
 });
