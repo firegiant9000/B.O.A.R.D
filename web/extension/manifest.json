@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "B.O.A.R.D",
+  "short_name": "B.O.A.R.D",
+  "version": "0.1.0",
+  "description": "View a B.O.A.R.D board in a side panel next to any page, and send it a page or a dragged image.",
+  "action": {
+    "default_title": "Open B.O.A.R.D"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "scripting"
+  ]
+}
