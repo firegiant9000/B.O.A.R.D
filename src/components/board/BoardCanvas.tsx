@@ -103,6 +103,12 @@ interface BoardCanvasProps {
   /** Delete the selection; screen-owned because the shortcut table shares it. */
   onDeleteSelected: () => void;
 
+  /** Month 6 — math elements. Open the equation composer on an existing
+   *  element. `latex` is the editable source of truth and `svgPath` is cached
+   *  output, so "edit" is always "retype the source"; this is the board's
+   *  edit entry point (the toolbar's button is the insert one). */
+  onEditMathElement: (elementId: string) => void;
+
   // Camera
   onPanBy: (dx: number, dy: number) => void;
   onZoomAtPoint: (factor: number, screenPoint: Point) => void;
@@ -142,6 +148,7 @@ export default function BoardCanvas({
   onEditText,
   isShiftHeld,
   onDeleteSelected,
+  onEditMathElement,
   onPanBy,
   onZoomAtPoint,
   onFling,
@@ -407,6 +414,23 @@ export default function BoardCanvas({
     if (tools.activeTool === "laser") { collab.publishPointer(point, true); return; }
     if (tools.activeTool === "comment") { anchorCommentAt(point); return; }
     if (tools.activeTool === "select") {
+      // Month 6 — math elements. A tap on an ALREADY-SELECTED equation opens
+      // the composer on its `latex`; the first tap just selects, like every
+      // other element. That two-step is deliberate — it keeps a single tap
+      // from stealing "select this so I can drag it" — and it is the board's
+      // only edit entry point for an equation. Shift-tap is excluded: that is
+      // an additive-selection gesture, not an edit one.
+      //
+      // `hitTestAny` here is the SAME picking path `selectAtPoint` runs, not
+      // a second one (cf. `colorOfElement`'s note) — it is called again only
+      // because the decision needs the hit before delegating.
+      if (!isShiftHeld()) {
+        const hit = elements.hitTestAny(point);
+        if (hit && hit.kind === "math" && elements.selection.isSelected(hit.id)) {
+          onEditMathElement(hit.id);
+          return;
+        }
+      }
       elements.selectAtPoint(point, isShiftHeld());
       return;
     }
@@ -588,6 +612,7 @@ export default function BoardCanvas({
         paths={elements.visible.paths}
         shapes={elements.visible.shapes}
         images={elements.visible.images}
+        mathElements={elements.visible.mathElements}
         shapeDraft={tools.shapeDraft}
         guides={tools.guides}
         selectedIds={elements.selection.selectedIds}

@@ -1,8 +1,9 @@
 import { Point } from "./viewport";
-import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, ShapeElement, TextElement, TextNote } from "../types";
+import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
 import { renderParamsFor, calligraphyWidthRange } from "./penStyles";
 import { calligraphyPathD } from "./calligraphy";
 import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
+import { MATH_DEFAULT_COLOR, mathTransform } from "./mathInk";
 
 /**
  * Month 6 — pure SVG export serializer.
@@ -37,7 +38,15 @@ import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
  * falls short of that.
  *
  * ELEMENT KINDS: `SvgExportElement`'s `kind` tag covers every element kind
- * that exists on the board today (path/shape/text/note/image/audio). Voice
+ * that exists on the board today (path/shape/text/note/image/audio/math).
+ * `math` (Month 6) is the cheapest of them all: an equation is stored as flat
+ * SVG path data already, so exporting one is emitting the `<path>` it
+ * literally is. That is the entire reason LaTeX is rendered to path data in a
+ * Cloud Function rather than displayed in a WebView — a WebView would have
+ * left this module with nothing exportable at all. NOTE for whoever adds the
+ * next kind: the `default` branch below SKIPS anything it hasn't been taught,
+ * silently, which is right for a non-visual kind and wrong for a visual one.
+ * Math would have exported as nothing without the case added here. Voice
  * notes (`kind: "audio"`) are a canvas AFFORDANCE — a mic/speaker badge a
  * viewer taps to play (`AudioAffordance.tsx`) — not board content the way a
  * stroke or shape is: they carry no drawable geometry of their own, only an
@@ -74,7 +83,8 @@ export type SvgExportElement =
   | { kind: "text"; data: TextElement }
   | { kind: "note"; data: TextNote }
   | { kind: "image"; data: ImageElement }
-  | { kind: "audio"; data: AudioElement };
+  | { kind: "audio"; data: AudioElement }
+  | { kind: "math"; data: MathElement };
 
 /** The board's per-kind element arrays — exactly `useBoardElements`'s own
  *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/
@@ -89,6 +99,7 @@ export interface BoardElementSets {
   notes: TextNote[];
   images: ImageElement[];
   audioNotes: AudioElement[];
+  mathElements: MathElement[];
 }
 
 /**
@@ -109,6 +120,12 @@ export function toSvgExportElements(elements: BoardElementSets): SvgExportElemen
     ...elements.images.map((data): SvgExportElement => ({ kind: "image", data })),
     ...elements.paths.map((data): SvgExportElement => ({ kind: "path", data })),
     ...elements.shapes.map((data): SvgExportElement => ({ kind: "shape", data })),
+    // Math sits directly above shapes, matching DrawingCanvas's own SVG tree
+    // order (and so the reverse of useBoardElements#hitTestAny's walk).
+    // `?? []` even though the field is required on the type: this module is
+    // reachable from untyped JS call sites, and a board that predates math
+    // must still export rather than throw on a missing array.
+    ...(elements.mathElements ?? []).map((data): SvgExportElement => ({ kind: "math", data })),
     ...elements.notes.map((data): SvgExportElement => ({ kind: "note", data })),
     ...elements.texts.map((data): SvgExportElement => ({ kind: "text", data })),
     ...elements.audioNotes.map((data): SvgExportElement => ({ kind: "audio", data })),
@@ -417,6 +434,22 @@ function imageNode(img: ImageElement, opts: SvgExportOptions | undefined): strin
   return body;
 }
 
+/** A math element (Month 6) — the equation's already-typeset outline, placed
+ *  with the SAME transform the live canvas uses (`mathInk.mathTransform`), so
+ *  a printed equation sits exactly where the screen showed it. Nonzero fill
+ *  rule is stated explicitly: one `d` carries every glyph of the expression
+ *  as subpaths, and font counters (the hole in an "a") are wound against
+ *  their outer contour. */
+function mathNode(m: MathElement): string {
+  const d = m.svgPath;
+  if (!d) return "";
+  return (
+    `<g transform="${escapeXmlAttr(mathTransform(m))}">` +
+    `<path d="${escapeXmlAttr(d)}" fill="${MATH_DEFAULT_COLOR}" fill-rule="nonzero" stroke="none" />` +
+    `</g>`
+  );
+}
+
 function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): string {
   switch (el.kind) {
     case "path":
@@ -429,6 +462,8 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
       return noteNode(el.data);
     case "image":
       return imageNode(el.data, opts);
+    case "math":
+      return mathNode(el.data);
     case "audio":
       // A voice-note badge is a canvas affordance, not drawable board
       // content — see this module's header. Deliberately no node.
@@ -436,10 +471,12 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
     default: {
       // Exhaustiveness guard for this file's own union. At runtime this also
       // catches any element kind this module hasn't been taught about yet
-      // (a future poll/math/code kind reaching here before its own case is
-      // added) — skipped the same way `audio` is, never thrown on, so one
+      // (a future poll/code kind reaching here before its own case is added)
+      // — skipped the same way `audio` is, never thrown on, so one
       // unrecognized element never makes an otherwise-exportable board fail
-      // to export at all.
+      // to export at all. That leniency is a TRAP for a visual kind: `math`
+      // (Month 6) would have exported as nothing at all, silently, if its
+      // case above had been left out. Add the case when the kind draws.
       const _exhaustive: never = el;
       void _exhaustive;
       return "";

@@ -945,6 +945,30 @@ service cloud.firestore {
         allow update, delete: if isBoardEditor(boardId);
       }
 
+      // Math elements (Month 6) — LaTeX equations stored as flat SVG path
+      // data. Same member-read / editor-write gate as every other canvas-
+      // content subcollection above.
+      //
+      // No `isEmbedEditor` disjunct, deliberately, and NOT for images'/audio's
+      // reason (there are no Storage bytes here — the path data lives on the
+      // document). It is polls' reason: creating one means calling the
+      // `renderMath` Cloud Function, whose own trust boundary resolves board
+      // MEMBERSHIP for the caller, and an embed identity is never a member.
+      // An embed editor allowed to write here could therefore only ever
+      // create an element whose `svgPath` it had no way to obtain. The
+      // Toolbar's equation button is hidden in an embed session to match (see
+      // `canInsertMath` there) — that is an affordance, this is the gate.
+      //
+      // There is no `mathCache` block below on purpose: nothing client-side
+      // reads a cached rendering (a hit is served back through the same
+      // callable response as a miss), so the file's default deny covers it —
+      // same call as flashcardCache, and see that module's header for why it
+      // differs from ocrCache, which DOES grant members a read.
+      match /mathElements/{elementId} {
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow write: if isBoardEditor(boardId);
+      }
+
       match /snapshots/{snapshotId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);

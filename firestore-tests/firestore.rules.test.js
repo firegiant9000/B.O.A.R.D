@@ -414,6 +414,31 @@ beforeEach(async () => {
       text: "Hi", confidence: 0.9, source: "vision", model: "google-vision", createdAt: 0,
     });
 
+    // Month 6 — a seeded math element and a seeded render-cache entry the
+    // `renderMath` Cloud Function would have written. `boardWrite` is the
+    // board whose per-role membership (editor/viewer/commenter) the write
+    // tests below exercise; `boardCoded` carries the cache entry, matching
+    // where ocrCache's own entry lives.
+    await setDoc(doc(db, "boards/boardWrite/mathElements/m1"), {
+      schemaVersion: 1,
+      type: "math",
+      boardId: "boardWrite",
+      userId: ALICE,
+      latex: "x^2",
+      svgPath: "M 0 0 L 1 1",
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 18,
+      scale: 1,
+    });
+    await setDoc(doc(db, "boards/boardCoded/mathCache/hash1"), {
+      svgPath: "M 0 0 L 1 1",
+      width: 20,
+      height: 18,
+      createdAt: 0,
+    });
+
     // Phase 10 — a seeded in-app notification for alice, authored by dave.
     await setDoc(doc(db, "users/alice/notifications/n1"), {
       recipientId: ALICE,
@@ -2086,6 +2111,133 @@ describe("board Q&A embeddings (Month 6)", () => {
     await assertFails(
       setDoc(doc(db(ALICE), "boards/boardCoded/embeddings/el1"), {
         text: "hello", elementType: "note", contentHash: "h", updatedAt: 0,
+      })
+    );
+  });
+});
+
+// ── Month 6: math elements ────────────────────────────────────────────────────
+// `boards/{boardId}/mathElements/{elementId}` — a LaTeX equation stored as
+// flat SVG path data. Member-read / editor-write, like every other canvas-
+// content subcollection, PLUS two deliberate absences this section proves:
+//
+//   1. No `isEmbedEditor` disjunct on the write, unlike paths/notes/shapes/
+//      textElements. An embed identity is never a board MEMBER, and creating
+//      a math element requires the `renderMath` callable, whose own trust
+//      boundary is exactly that membership — so an embed editor allowed to
+//      write here could only ever create an element whose `svgPath` it had no
+//      way to obtain.
+//   2. No `mathCache` match block at all (flashcardCache's precedent, not
+//      ocrCache's): nothing client-side reads a cached rendering, so there is
+//      no read to grant, and the file's default deny covers it.
+//
+// Every denial is paired with a positive control — the SAME actor against a
+// collection already proven open to them — so a rule that failed every
+// request could not slip through as a false pass. The list path is exercised
+// explicitly alongside the get path, for the reason the embeddings section
+// above states.
+describe("math elements (Month 6)", () => {
+  const mathDoc = (uid, boardId, docId) =>
+    setDoc(doc(db(uid), `boards/${boardId}/mathElements/${docId}`), {
+      schemaVersion: 1,
+      type: "math",
+      boardId,
+      userId: uid,
+      latex: "y^2",
+      svgPath: "M 0 0",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      scale: 1,
+    });
+
+  it("a board member reads a math element", async () => {
+    await assertSucceeds(getDoc(doc(db(CAROL), "boards/boardWrite/mathElements/m1")));
+  });
+
+  it("a non-member cannot read a math element", async () => {
+    // The same read succeeds for carol above, so this denial is bob and not
+    // a rule that refuses everyone.
+    await assertFails(getDoc(doc(db(BOB), "boards/boardWrite/mathElements/m1")));
+  });
+
+  it("a non-member cannot LIST the math elements either", async () => {
+    // A get-only suite cannot detect an enumeration hole.
+    await assertSucceeds(getDocs(collection(db(CAROL), "boards/boardWrite/mathElements")));
+    await assertFails(getDocs(collection(db(BOB), "boards/boardWrite/mathElements")));
+  });
+
+  it("an editor writes a math element", async () => {
+    await assertSucceeds(mathDoc(DAVE, "boardWrite", "byDave"));
+  });
+
+  it("a workspace viewer cannot write one, though they can read", async () => {
+    // carol reads m1 above, so this denial is the WRITE gate and not carol.
+    await assertFails(mathDoc(CAROL, "boardWrite", "byCarol"));
+  });
+
+  it("a member demoted to viewer by a per-board override cannot write one", async () => {
+    await assertFails(mathDoc(FRANK, "boardWrite", "byFrank"));
+  });
+
+  it("an edit-scoped embed identity cannot write one, though it CAN write paths", async () => {
+    // The positive control is the same identity on the same board: the
+    // denial is this collection, not the claim.
+    const edb = embedEditDb("boardWrite");
+    await assertSucceeds(
+      setDoc(doc(edb, "boards/boardWrite/paths/fromEmbedMath"), { userId: EMBED_EDIT_UID })
+    );
+    await assertFails(
+      setDoc(doc(edb, "boards/boardWrite/mathElements/fromEmbed"), {
+        schemaVersion: 1,
+        type: "math",
+        latex: "x",
+        svgPath: "M 0 0",
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        scale: 1,
+      })
+    );
+  });
+
+  it("a view-scoped embed identity can READ one (the embed renders the board)", async () => {
+    // An equation is canvas content; a read-only embed that could not read it
+    // would render a board with holes in it.
+    await assertSucceeds(
+      getDoc(doc(embedDb("boardWrite"), "boards/boardWrite/mathElements/m1"))
+    );
+  });
+
+  // Deletes last: they remove the seeded `m1` every read case above relies on.
+  it("a viewer cannot delete one", async () => {
+    await assertFails(deleteDoc(doc(db(CAROL), "boards/boardWrite/mathElements/m1")));
+  });
+
+  it("an editor can delete one", async () => {
+    await assertSucceeds(deleteDoc(doc(db(DAVE), "boards/boardWrite/mathElements/m1")));
+  });
+});
+
+// ── Month 6: the math render cache ────────────────────────────────────────────
+describe("math render cache (mathCache, Month 6)", () => {
+  it("denies a client GET of a cached rendering, even a board member/owner", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "boards/boardCoded/paths/p1")));
+    await assertFails(getDoc(doc(db(ALICE), "boards/boardCoded/mathCache/hash1")));
+  });
+
+  it("denies a client LIST over the cache", async () => {
+    await assertSucceeds(getDocs(collection(db(ALICE), "boards/boardCoded/paths")));
+    await assertFails(getDocs(collection(db(ALICE), "boards/boardCoded/mathCache")));
+  });
+
+  it("denies a client write — the Cloud Function (Admin SDK) is the only writer", async () => {
+    await assertSucceeds(setDoc(doc(db(ALICE), "boards/boardCoded/paths/p1"), { userId: ALICE }));
+    await assertFails(
+      setDoc(doc(db(ALICE), "boards/boardCoded/mathCache/forged"), {
+        svgPath: "M 0 0", width: 1, height: 1, createdAt: 0,
       })
     );
   });

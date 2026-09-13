@@ -812,3 +812,63 @@ export interface FlashcardCard {
   easeFactor: number;
   dueAtMs: number;
 }
+
+// Month 6 — math elements (ROADMAP.md's Month 6 "carried from M5" item; the
+// roadmap's own M5 entry records why this moved). A LaTeX equation as a
+// FIRST-CLASS canvas element.
+//
+// KaTeX cannot render here: it emits DOM HTML and this board is a
+// `react-native-svg` tree with no DOM on native. A WebView per equation is
+// unusable at thirty equations on a board and — decisively — opts the element
+// out of selection, transform, export and print. So `latex` is rendered to
+// flat SVG **path data** by a Cloud Function (MathJax's SVG output, flattened
+// — see functions/src/math/mathRender.ts) and cached on the element, which
+// then draws as an ordinary `<Path>` and gets all four for free.
+//
+// `latex` is the EDITABLE SOURCE OF TRUTH; `svgPath`/`width`/`height` are
+// cached output derived from it. Re-render only when `latex` changes — every
+// other operation (move, resize, delete, z-order) touches geometry alone and
+// must never call the function. `mathService.updateMathLatex` is the one
+// write path that re-renders; see its header.
+//
+// GEOMETRY. `svgPath` is in board units at `scale: 1`, with its origin at the
+// element's top-left, so a renderer draws it as
+// `translate(x, y) scale(scale)`. `width`/`height` are the RENDERED box —
+// natural size times `scale` — so they can be used directly for selection,
+// culling and hit-testing without anyone re-deriving them, exactly like
+// ImageElement's. `mathService` is the only writer of the pair and keeps them
+// consistent; a renderer should still treat all five numbers as untrusted
+// (`typeof NaN === "number"`, and every one of them is a stored number a
+// corrupt document could poison) — see `mathService.mapMathDoc`, which fails
+// them closed on read.
+//
+// There is deliberately no `rotation`. The brief's shape has none, and a
+// group rotate therefore ORBITS a math element about the pivot without
+// spinning it (useBoardElements' `commitRotate`) rather than silently
+// dropping it out of the group.
+//
+// `schemaVersion: 1` from inception; readers tolerate a missing/partial doc
+// (`data?.field ?? default`), like every other element kind here.
+export interface MathElement {
+  id: string;
+  schemaVersion: 1;
+  /** Discriminator, carried on the document as well as in this type so a
+   *  mixed-kind reader (export, print) can tell a math element apart without
+   *  knowing which subcollection it came from. */
+  type: "math";
+  boardId: string;
+  userId: string;
+  /** The editable source of truth. */
+  latex: string;
+  /** Rendered output, cached — flat SVG path data in board units at scale 1. */
+  svgPath: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  scale: number;
+  bbox?: Bounds;
+  // Z-order within the math layer (Phase 8); see DrawPath.z.
+  z?: number;
+  createdAt: Date;
+}

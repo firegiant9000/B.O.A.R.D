@@ -83,6 +83,22 @@ interface ToolbarProps {
    * would have denied.
    */
   canInsertPoll?: boolean;
+  /** Month 6 — insert a LaTeX equation. Opens MathComposer; the equation's
+   *  board-space position is chosen by the caller (the screen centers it in
+   *  the current viewport), because an equation has no placing gesture of its
+   *  own, exactly like a poll. */
+  onInsertMath: () => void;
+  /**
+   * Month 6 — whether the equation button shows at all. Defaults to true.
+   * The screen passes `mathService.isMathConfigured()` (the build-time
+   * feature flag) AND the same embed-session caveat `canInsertPoll` carries:
+   * firestore.rules' `mathElements` match has no `isEmbedEditor` disjunct, so
+   * an embed editor could never create one at any scope, and this button must
+   * not offer what would be denied. Hiding a button is an affordance, never a
+   * gate — the callable's membership check and firestore.rules are what
+   * actually stop the write.
+   */
+  canInsertMath?: boolean;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
@@ -141,6 +157,8 @@ export default function Toolbar({
   canScanDocument = true,
   onInsertPoll,
   canInsertPoll = true,
+  onInsertMath,
+  canInsertMath = true,
   onUndo,
   onRedo,
   canRedo,
@@ -283,6 +301,19 @@ export default function Toolbar({
               onPress={onInsertPoll}
             />
           )}
+          {/* Month 6 — math elements. The board's ONE insert entry point for
+              an equation (editing an existing one is a tap on the element
+              itself, BoardCanvas). Creation is editor-only under
+              firestore.rules, which this whole branch already requires
+              (`canEdit`). */}
+          {canInsertMath && (
+            <ToolButton
+              testID="toolbar-insert-math"
+              icon="calculator-outline"
+              active={false}
+              onPress={onInsertMath}
+            />
+          )}
         </View>
 
         <View style={styles.divider} />
@@ -379,14 +410,20 @@ function ToolButton({
   active,
   onPress,
   disabled,
+  testID,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   active: boolean;
   onPress: () => void;
   disabled?: boolean;
+  /** Optional — the icon-only buttons here are otherwise unaddressable from a
+   *  render test. Added with Month 6's equation button; existing buttons are
+   *  untouched and still pass none. */
+  testID?: string;
 }) {
   return (
     <TouchableOpacity
+      testID={testID}
       style={[styles.toolBtn, active && styles.toolBtnActive, disabled && styles.toolBtnDisabled]}
       onPress={onPress}
       disabled={disabled}

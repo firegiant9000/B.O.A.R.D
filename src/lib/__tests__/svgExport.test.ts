@@ -1,5 +1,6 @@
 import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
-import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, ShapeElement, TextElement, TextNote } from "../../types";
+import { mathTransform } from "../mathInk";
+import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
 
 const bounds: SvgExportBounds = { x: 0, y: 0, width: 800, height: 600 };
 
@@ -100,12 +101,32 @@ const audioData: AudioElement = {
   createdAt: new Date(),
 };
 
+// Month 6 — a math element. `svgPath` is the flat, already-typeset outline
+// the Cloud Function returned; the export serializer's whole job is to emit
+// it under the same transform the live canvas uses.
+const mathData: MathElement = {
+  id: "m1",
+  schemaVersion: 1,
+  type: "math",
+  boardId: "b1",
+  userId: "u1",
+  latex: "x^2",
+  svgPath: "M 1 2 L 3 4 Z",
+  x: 20,
+  y: 30,
+  width: 40,
+  height: 18,
+  scale: 2,
+  createdAt: new Date(),
+};
+
 const pathEl: SvgExportElement = { kind: "path", data: pathData };
 const shapeEl: SvgExportElement = { kind: "shape", data: shapeData };
 const textEl: SvgExportElement = { kind: "text", data: textData };
 const noteEl: SvgExportElement = { kind: "note", data: noteData };
 const imageEl: SvgExportElement = { kind: "image", data: imageData };
 const audioEl: SvgExportElement = { kind: "audio", data: audioData };
+const mathEl: SvgExportElement = { kind: "math", data: mathData };
 
 describe("toSvgDocument", () => {
   it("serializes a path element", () => {
@@ -116,12 +137,12 @@ describe("toSvgDocument", () => {
   });
 
   it("serializes every element kind that exists today, with real content per visual kind", () => {
-    // The union has grown past the brief's five kinds (audio notes exist
-    // today; poll/math/code are scheduled later) — every kind that exists
-    // right now must appear here, or a board holding one would silently
-    // break export without any test catching it.
+    // The union has grown past the brief's five kinds (audio notes and, as of
+    // Month 6, math elements exist today; poll/code are scheduled later) —
+    // every kind that exists right now must appear here, or a board holding
+    // one would silently break export without any test catching it.
     expect(() =>
-      toSvgDocument([pathEl, shapeEl, textEl, noteEl, imageEl, audioEl], bounds)
+      toSvgDocument([pathEl, shapeEl, textEl, noteEl, imageEl, audioEl, mathEl], bounds)
     ).not.toThrow();
 
     // "Doesn't throw" alone would also pass for a serializer that always
@@ -134,6 +155,7 @@ describe("toSvgDocument", () => {
     expect(noteDoc).toContain("<rect");
     expect(noteDoc).toContain("sticky");
     expect(toSvgDocument([imageEl], bounds)).toContain("<image");
+    expect(toSvgDocument([mathEl], bounds)).toContain("<path");
 
     // Audio is a canvas affordance badge, not board content the way a
     // stroke/shape/text/image is (see toSvgDocument's header) — it must not
@@ -408,7 +430,15 @@ describe("toSvgDocument", () => {
 });
 
 describe("toSvgExportElements", () => {
-  const empty = { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] };
+  const empty = {
+    paths: [],
+    shapes: [],
+    texts: [],
+    notes: [],
+    images: [],
+    audioNotes: [],
+    mathElements: [],
+  };
 
   it("wraps every kind's array entries with the matching kind tag", () => {
     const els = toSvgExportElements({
@@ -419,15 +449,17 @@ describe("toSvgExportElements", () => {
       notes: [noteData],
       images: [imageData],
       audioNotes: [audioData],
+      mathElements: [mathData],
     });
     const kinds = els.map((el) => el.kind).sort();
-    expect(kinds).toEqual(["audio", "image", "note", "path", "shape", "text"]);
+    expect(kinds).toEqual(["audio", "image", "math", "note", "path", "shape", "text"]);
     // Not just the right kind tags — the right underlying data too.
     expect(els.find((el) => el.kind === "path")?.data).toBe(pathData);
     expect(els.find((el) => el.kind === "image")?.data).toBe(imageData);
+    expect(els.find((el) => el.kind === "math")?.data).toBe(mathData);
   });
 
-  it("orders back-to-front matching the live canvas's own stacking (images, paths, shapes, notes, texts)", () => {
+  it("orders back-to-front matching the live canvas's own stacking (images, paths, shapes, math, notes, texts)", () => {
     // Two of each kind (in a scrambled input order) proves this reorders by
     // kind rather than by accidentally preserving call-argument order.
     const els = toSvgExportElements({
@@ -435,10 +467,26 @@ describe("toSvgExportElements", () => {
       audioNotes: [audioData],
       paths: [pathData],
       notes: [noteData],
+      mathElements: [mathData],
       shapes: [shapeData],
       texts: [textData],
     });
-    expect(els.map((el) => el.kind)).toEqual(["image", "path", "shape", "note", "text", "audio"]);
+    expect(els.map((el) => el.kind)).toEqual([
+      "image",
+      "path",
+      "shape",
+      "math",
+      "note",
+      "text",
+      "audio",
+    ]);
+  });
+
+  it("survives a caller that omits mathElements entirely (a board predating Month 6)", () => {
+    // The field is required on `BoardElementSets`, but this module is
+    // reachable from untyped JS; a missing array must not throw mid-export.
+    const legacy = { paths: [pathData], shapes: [], texts: [], notes: [], images: [], audioNotes: [] };
+    expect(toSvgExportElements(legacy as never).map((el) => el.kind)).toEqual(["path"]);
   });
 
   it("produces an empty array (not throwing) for a board with no content of any kind", () => {
@@ -450,5 +498,48 @@ describe("toSvgExportElements", () => {
     const doc = toSvgDocument(els, bounds);
     expect(doc).toContain("<path");
     expect(doc).toContain("<image");
+  });
+});
+
+describe("math elements export (Month 6)", () => {
+  // The architectural claim this whole feature rests on is that rendering
+  // LaTeX to path data server-side makes an equation exportable "for free".
+  // It is not free: `nodeFor`'s default branch SKIPS any kind it has not been
+  // taught, silently, so without a `math` case an exported board would simply
+  // have no equations in it and nothing anywhere would fail. These tests are
+  // what stop that.
+  it("emits the equation's own path data under the canvas's own transform", () => {
+    const doc = toSvgDocument([mathEl], bounds);
+    expect(doc).toContain(`<g transform="translate(20, 30) scale(2)">`);
+    expect(doc).toContain(`d="M 1 2 L 3 4 Z"`);
+    expect(doc).toContain(`fill-rule="nonzero"`);
+    expect(doc).toContain(`stroke="none"`);
+  });
+
+  it("places and sizes it exactly as the live canvas does", () => {
+    // mathInk.mathTransform is the single definition both renderers use; if
+    // one of them ever grew its own copy, this would diverge from
+    // MathElementView's rendered transform.
+    expect(toSvgDocument([mathEl], bounds)).toContain(
+      `<g transform="${mathTransform(mathData)}">`
+    );
+  });
+
+  it("fails a corrupt scale closed instead of emitting NaN into the document", () => {
+    // `typeof NaN === "number"`. A NaN in an SVG transform drops the subtree
+    // with no error anywhere, so the equation would vanish from the export.
+    const corrupt: SvgExportElement = {
+      kind: "math",
+      data: { ...mathData, scale: NaN, x: Number.POSITIVE_INFINITY },
+    };
+    const doc = toSvgDocument([corrupt], bounds);
+    expect(doc).not.toContain("NaN");
+    expect(doc).not.toContain("Infinity");
+    expect(doc).toContain(`<g transform="translate(0, 30) scale(1)">`);
+  });
+
+  it("emits nothing for an element with no rendered path data, rather than an empty <path>", () => {
+    const blank: SvgExportElement = { kind: "math", data: { ...mathData, svgPath: "" } };
+    expect(toSvgDocument([blank], bounds)).not.toContain("<path");
   });
 });

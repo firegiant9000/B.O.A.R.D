@@ -26,6 +26,7 @@ const baseProps = {
   onInsertImage: jest.fn(),
   onScanDocument: jest.fn(),
   onInsertPoll: jest.fn(),
+  onInsertMath: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
   onSave: jest.fn(),
@@ -137,6 +138,38 @@ describe("Toolbar — canInsertPoll (Month 6, embed edit sessions)", () => {
       <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertPoll={false} />
     );
     expect(screen.queryByText("bar-chart-outline")).toBeNull();
+  });
+});
+
+describe("Toolbar — canInsertMath (Month 6, math elements)", () => {
+  // This button is the board's ONE insert entry point for an equation (the
+  // edit path is a tap on the element itself, in BoardCanvas). Without it the
+  // whole feature is unreachable no matter how well the callable works.
+  it("shows the equation button by default, wired to onInsertMath", () => {
+    const onInsertMath = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onInsertMath={onInsertMath} />
+    );
+    fireEvent.press(screen.getByTestId("toolbar-insert-math"));
+    expect(onInsertMath).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the equation button when canInsertMath is false", () => {
+    // The screen passes false in an embed session and when the build-time
+    // flag is off. Hiding a button is an affordance, never the gate — that
+    // is firestore.rules' `mathElements` match plus the callable's own
+    // membership check.
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertMath={false} />
+    );
+    expect(screen.queryByTestId("toolbar-insert-math")).toBeNull();
+  });
+
+  it("is not offered at all on the read-only viewer toolbar", () => {
+    // A viewer cannot write `mathElements`; offering the button would mean
+    // offering what the rules would deny.
+    render(<Toolbar {...baseProps} activeTool="select" canEdit={false} onToolChange={jest.fn()} />);
+    expect(screen.queryByTestId("toolbar-insert-math")).toBeNull();
   });
 });
 

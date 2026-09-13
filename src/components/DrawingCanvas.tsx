@@ -2,7 +2,8 @@ import React, { useRef, useMemo, useEffect, useCallback } from "react";
 import { View, StyleSheet, Dimensions, Platform } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Svg, { Path, G, Rect, Ellipse, Line, Polygon, Circle, Defs, Pattern, Image as SvgImage } from "react-native-svg";
-import { DrawPath, ImageElement, BackgroundTemplate } from "../types";
+import { DrawPath, ImageElement, MathElement, BackgroundTemplate } from "../types";
+import MathElementView from "./board/MathElementView";
 import { Viewport, Point, Bounds, screenToBoard } from "../lib/viewport";
 import {
   ShapeDraft,
@@ -28,6 +29,10 @@ interface DrawingCanvasProps {
   shapes?: (ShapeDraft & { id: string })[];
   /** Persisted image elements (Phase 9), rendered in the SVG element tree. */
   images?: ImageElement[];
+  /** Persisted math elements (Month 6), rendered in the SVG element tree as
+   *  ordinary `<Path>` nodes — which is what makes an equation selectable,
+   *  transformable, exportable and printable with no special-casing. */
+  mathElements?: MathElement[];
   /** In-progress shape being dragged out, in board-space. */
   shapeDraft?: ShapeDraft | null;
   /** Smart-guide lines (board-space) to overlay during a shape drag. */
@@ -433,6 +438,7 @@ function DrawingCanvas(
     paths,
     shapes,
     images,
+    mathElements,
     shapeDraft,
     guides,
     selectedIds,
@@ -718,6 +724,21 @@ function DrawingCanvas(
               )
             )}
             {shapeDraft && <ShapeSvg s={shapeDraft} />}
+            {/* Math elements (Month 6) render above strokes and shapes — the
+                reverse of `useBoardElements.hitTestAny`'s walk order, which
+                is what keeps "what you tap" and "what you see on top" the
+                same thing. Within the layer they take the live group
+                transform exactly like every other kind, because they are
+                just `<Path>` nodes. */}
+            {mathElements?.map((m) =>
+              offsetTransform && isSel(m.id) ? (
+                <G key={m.id} transform={offsetTransform}>
+                  <MathElementView element={m} />
+                </G>
+              ) : (
+                <MathElementView key={m.id} element={m} />
+              )
+            )}
             {/* Per-element selection outlines (board-space), shifted with the
                 live move so multi-select feedback tracks the drag. */}
             {selectionBoxes?.map((b, i) => {

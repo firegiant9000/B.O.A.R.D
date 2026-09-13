@@ -182,3 +182,18 @@ export {
   onImageDeleted,
   onCommentDeleted,
 } from "./triggers/embeddings";
+
+// Month 6 — math elements. LaTeX → flat SVG path data via MathJax's SVG
+// output, run IN-PROCESS (this is the one callable here with no provider
+// behind it), memoized per board by a hash of the source. The client stores
+// the returned path data on the element, so this fires only when an
+// equation's `latex` actually changes, never on read or render.
+//
+// Two deliberate departures from the AI callables above, both explained at
+// length in the callable's own header: a malformed expression comes back as a
+// 200 carrying `error` rather than throwing (it is a typo, not an exception),
+// and it is metered by its OWN rate bucket with NO plan quota — there is no
+// spend to cap, and typesetting must not consume a workspace's AI-call
+// allowance. Its single `resource-exhausted` throw carries
+// `details: { reason: "rate-limit" }`.
+export { renderMath_fn as renderMath } from "./callable/renderMath";

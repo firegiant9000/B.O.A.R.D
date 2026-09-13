@@ -81,3 +81,25 @@ export const FLASHCARDS_ENABLED =
 export const BOARD_QA_ENABLED =
   process.env.EXPO_PUBLIC_BOARD_QA === "1" ||
   process.env.EXPO_PUBLIC_BOARD_QA === "true";
+
+/**
+ * Month 6 — math elements (LaTeX → SVG path data).
+ *
+ * Gates the toolbar's equation button and the `renderMath` callable. Default
+ * OFF until the function is deployed; flip to "1" via the build env.
+ *
+ * UNLIKE every flag above, this one does NOT depend on `AI_GATEWAY_ENABLED`.
+ * `renderMath` is not an AI feature: MathJax runs in-process, there is no
+ * provider, no API key and no per-call spend, so it is neither gated by the
+ * gateway cutover nor metered against the workspace's AI-call quota. Tying it
+ * to that flag would make equations unavailable for a reason that has nothing
+ * to do with them.
+ *
+ * Like every flag here it is inlined into the client bundle and therefore
+ * public and patchable — it hides the ENTRY POINT, nothing more. What
+ * actually stops an unauthorised or runaway caller is the callable's own
+ * membership check and rate bucket, both server-side, plus firestore.rules on
+ * the element documents themselves.
+ */
+export const MATH_ENABLED =
+  process.env.EXPO_PUBLIC_MATH === "1" || process.env.EXPO_PUBLIC_MATH === "true";

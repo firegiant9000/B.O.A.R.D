@@ -35,6 +35,7 @@ import type { CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
 import * as workspaceService from "../../src/services/workspaceService";
+import * as mathService from "../../src/services/mathService";
 import {
   isBoardQaConfigured,
   CANVAS_CITATION_KINDS,
@@ -156,6 +157,12 @@ export default function BoardScreen(
   // Month 6 — polls, quiz sequencing, dot voting. Opened from Toolbar's
   // "Insert poll" button, same convention as the pickers above.
   const [pollComposerVisible, setPollComposerVisible] = useState(false);
+  // Month 6 — math elements. Only the two pieces of plumbing live here; the
+  // busy flag, the error copy and when the sheet may close are all owned by
+  // `MathComposerHost` (a component, so it can be render-tested), and the
+  // writes themselves by `mathService` via `useBoardElements`.
+  const [mathComposerVisible, setMathComposerVisible] = useState(false);
+  const [mathEditingId, setMathEditingId] = useState<string | null>(null);
   // Month 6 — board Q&A chat, opened from the header's "ask this board"
   // button. Same screen-owned visibility convention as every dialog above.
   const [boardQaVisible, setBoardQaVisible] = useState(false);
@@ -721,6 +728,10 @@ export default function BoardScreen(
         onEditText={setEditingTextId}
         isShiftHeld={isShiftHeld}
         onDeleteSelected={handleDeleteSelected}
+        onEditMathElement={(elementId) => {
+          setMathEditingId(elementId);
+          setMathComposerVisible(true);
+        }}
         onPanBy={viewportCtl.panBy}
         onZoomAtPoint={viewportCtl.zoomAtPoint}
         onFling={viewportCtl.fling}
@@ -802,6 +813,16 @@ export default function BoardScreen(
           canScanDocument={!embedMode}
           onInsertPoll={() => setPollComposerVisible(true)}
           canInsertPoll={!embedMode}
+          onInsertMath={() => {
+            setMathEditingId(null);
+            setMathComposerVisible(true);
+          }}
+          // Hidden when the feature isn't built in, and in an embed session
+          // for the same reason as polls: firestore.rules' `mathElements`
+          // match carries no `isEmbedEditor` disjunct, so an embed editor's
+          // write would be denied at any scope. Affordance only — the gate
+          // is the callable plus those rules.
+          canInsertMath={!embedMode && mathService.isMathConfigured()}
           onUndo={elements.undo}
           onRedo={elements.redo}
           canRedo={elements.canRedo}
@@ -835,6 +856,7 @@ export default function BoardScreen(
           notes: elements.notes,
           images: elements.images,
           audioNotes: elements.audioNotes,
+          mathElements: elements.mathElements,
         }}
         getContentBounds={elements.contentBounds}
         historyVisible={historyVisible}
@@ -884,6 +906,24 @@ export default function BoardScreen(
         pollComposerVisible={pollComposerVisible}
         onClosePollComposer={() => setPollComposerVisible(false)}
         onCreatePoll={handleCreatePoll}
+        mathComposerVisible={mathComposerVisible}
+        mathEditingId={mathEditingId}
+        mathInitialLatex={mathEditingId ? elements.latexOfMathElement(mathEditingId) : null}
+        onCloseMathComposer={() => {
+          setMathComposerVisible(false);
+          setMathEditingId(null);
+        }}
+        // A new equation is centred in the CURRENT viewport, the same
+        // "insert near what the viewer is looking at" default polls and
+        // clipboard pastes use — an equation has no placing gesture of its
+        // own the way a text-tool tap or a shape drag does.
+        onCreateMath={(latex) =>
+          elements.createMathElement(
+            screenToBoard(viewport, { x: canvasSize.width / 2, y: canvasSize.height / 2 }),
+            latex
+          )
+        }
+        onUpdateMath={elements.updateMathLatex}
         boardQaEnabled={isBoardQaConfigured()}
         boardQaVisible={boardQaVisible}
         onCloseBoardQa={() => setBoardQaVisible(false)}

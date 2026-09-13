@@ -51,6 +51,7 @@ import * as shapeService from "../services/shapeService";
 import * as imageService from "../services/imageService";
 import * as scanService from "../services/scanService";
 import * as audioService from "../services/audioService";
+import * as mathService from "../services/mathService";
 import * as snapshotService from "../services/snapshotService";
 import { captureException } from "../lib/errorReporting";
 import { reportSyncState } from "../lib/connectivity";
@@ -63,6 +64,7 @@ import {
   ShapeElement,
   ImageElement,
   AudioElement,
+  MathElement,
 } from "../types";
 import { useSelection, SelectionController } from "./useSelection";
 import { useThrottledValue } from "./useThrottledValue";
@@ -95,31 +97,32 @@ import { useThrottledValue } from "./useThrottledValue";
  * its listener, its blocked-filter memo and sync ref, the spatial index, its
  * culling memo, and the returned object — plus whichever write paths it needs.
  *
- *   121  MODULE CONSTANTS & PURE GEOMETRY HELPERS       tolerances, cull settings, handle geometry, planZOrder, box helpers
- *   218  PUBLIC TYPES & THE BoardElements INTERFACE     start here: the contract every caller sees
- *   426  STATE & REFS                                   element arrays, selection, gesture refs, snapshot refs
- *   507  SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING         ADD A NEW ELEMENT KIND'S LISTENER HERE
- *   612  BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS   ADD A NEW KIND'S visible* MEMO + SYNC REF HERE
- *   650  SPATIAL INDEX (rbush, for marquee hit-testing) ADD A NEW KIND TO THE INDEX ENTRIES HERE
- *   664  VIEWPORT CULLING                               ADD A NEW KIND'S culled* MEMO HERE
- *   712  GEOMETRY & DERIVED SELECTION                   contentBounds, boxOfElement, selectedBoxes, selectionUnion
- *   780  HIT-TESTING & SELECTION ACTIONS                hitTestShape, hitTestAny, selectAtPoint, selectAllVisible
- *   872  WRITE PATH — ERASER                            eraseAtPointWith
- *   905  WRITE PATH — GROUP MOVE                        commitMove
- *   971  GESTURE — SELECT / MARQUEE DRAG                begin/move/endSelectGesture
- *  1036  GESTURE — RESIZE / ROTATE                      begin/move/endTransform + commitResize + commitRotate
- *  1238  WRITE PATH — STROKES                           commitStroke, drawDot, replaceStrokeWithShape
- *  1327  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
- *  1391  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
- *  1499  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
- *  1596  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, scanDocument, pasteExternalImage
- *  1735  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
- *  1771  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
- *  1848  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
- *  1925  WRITE PATH — STICKY NOTES (legacy)             submitNote, cancelNote, deleteNote
- *  1962  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
- *  2012  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
- *  2065  RETURN                                         ADD A NEW MEMBER TO THE RETURNED OBJECT HERE
+ *   128  MODULE CONSTANTS & PURE GEOMETRY HELPERS       tolerances, cull settings, handle geometry, planZOrder, box helpers
+ *   241  PUBLIC TYPES & THE BoardElements INTERFACE     start here: the contract every caller sees
+ *   521  STATE & REFS                                   element arrays, selection, gesture refs, snapshot refs
+ *   619  SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING         ADD A NEW ELEMENT KIND'S LISTENER HERE
+ *   746  BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS   ADD A NEW KIND'S visible* MEMO + SYNC REF HERE
+ *   845  SPATIAL INDEX (rbush, for marquee hit-testing) ADD A NEW KIND TO THE INDEX ENTRIES HERE
+ *   860  VIEWPORT CULLING                               ADD A NEW KIND'S culled* MEMO HERE
+ *   913  GEOMETRY & DERIVED SELECTION                   contentBounds, boxOfElement, selectedBoxes, selectionUnion
+ *   994  HIT-TESTING & SELECTION ACTIONS                hitTestShape, hitTestAny, selectAtPoint, selectAllVisible
+ *  1112  WRITE PATH — ERASER                            eraseAtPointWith
+ *  1149  WRITE PATH — GROUP MOVE                        commitMove
+ *  1228  GESTURE — SELECT / MARQUEE DRAG                begin/move/endSelectGesture
+ *  1293  GESTURE — RESIZE / ROTATE                      begin/move/endTransform + commitResize + commitRotate
+ *  1540  WRITE PATH — STROKES                           commitStroke, drawDot, replaceStrokeWithShape
+ *  1648  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
+ *  1712  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
+ *  1850  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
+ *  1947  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, scanDocument, pasteExternalImage
+ *  2120  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
+ *  2156  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
+ *  2257  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
+ *  2336  WRITE PATH — MATH ELEMENTS                     createMathElement, updateMathLatex, latexOfMathElement
+ *  2377  WRITE PATH — STICKY NOTES (legacy)             submitNote, cancelNote, deleteNote
+ *  2417  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
+ *  2489  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
+ *  2542  RETURN                                         ADD A NEW MEMBER TO THE RETURNED OBJECT HERE
  */
 
 // ────────── MODULE CONSTANTS & PURE GEOMETRY HELPERS ────────────────────
@@ -218,6 +221,22 @@ const textBox = (el: TextElement): Bounds => ({
 });
 const shapeBox = (s: ShapeElement): Bounds => s.bbox ?? shapeBbox(s);
 const imgBox = (img: ImageElement): Bounds => img.bbox ?? imageBbox(img);
+// Month 6 — math elements. `width`/`height` are already the RENDERED box
+// (natural size × `scale` — see MathElement's type comment), so this is the
+// same x+width arithmetic as a text element's, not a re-derivation from the
+// path data. Routed through mathService so the box is defined in exactly one
+// place for the service, this hook and the canvas alike.
+const mathBox = (m: MathElement): Bounds => mathService.mathElementBbox(m);
+// The same box computed from geometry ALONE. Every write path below that has
+// just changed x/y/width/height must use this one: `mathBox` deliberately
+// prefers the element's stored `bbox`, so spreading new geometry over an old
+// element and passing it there hands back the PRE-change box.
+const mathBoxOf = mathService.mathBoxOf;
+
+// Floor for a math element's `scale` under a resize drag. An equation scaled
+// to zero is invisible and (being zero-area) untappable, so it could never be
+// scaled back up or selected to delete.
+const MIN_MATH_SCALE = 0.05;
 
 // ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
@@ -288,6 +307,10 @@ export interface BoardElements {
    *  `x`/`y` (see AudioElement's type comment), so a renderer needs nothing
    *  from its anchor beyond `anchorElementId` to know one exists. */
   audioNotes: AudioElement[];
+  /** Math elements (Month 6). A full canvas primitive, unlike `audioNotes`:
+   *  indexed, culled, hit-tested, selectable and transformable exactly like
+   *  shapes and images, because it renders as an ordinary `<Path>`. */
+  mathElements: MathElement[];
   /** Viewport-culled subsets the canvas actually renders. */
   visible: {
     paths: DrawPath[];
@@ -298,6 +321,7 @@ export interface BoardElements {
     /** Blocked-user filtered, like every other `visible.*` array — NOT
      *  viewport-culled (see `audioNotes` above). */
     audioNotes: AudioElement[];
+    mathElements: MathElement[];
   };
   /** True until the first Firestore snapshot (or snapshot cold-load) arrives. */
   loading: boolean;
@@ -428,6 +452,18 @@ export interface BoardElements {
   submitNote: (content: string) => Promise<void>;
   deleteNote: (noteId: string) => Promise<void>;
 
+  // --- Math elements (Month 6) ---
+  /** Typeset `latex` and drop it on the board at `point`. Resolves to the new
+   *  element's id. REJECTS on a TeX error (with TeX's own message) so the
+   *  composer can stay open and show it — nothing is written on a failure. */
+  createMathElement: (point: Point, latex: string) => Promise<string>;
+  /** Re-typeset an existing element's source. The ONLY element write path
+   *  that calls the render function; move/resize/rotate/delete never do. */
+  updateMathLatex: (elementId: string, latex: string) => Promise<void>;
+  /** The LaTeX behind a math element id, or null — what the composer is
+   *  seeded with when an existing equation is opened for editing. */
+  latexOfMathElement: (elementId: string) => string | null;
+
   // --- Images ---
   /** The toolbar image button: web goes straight to a file dialog, native asks. */
   insertImage: () => void;
@@ -490,6 +526,7 @@ export function useBoardElements(
   const [shapes, setShapes] = useState<ShapeElement[]>([]);
   const [images, setImages] = useState<ImageElement[]>([]);
   const [audioNotes, setAudioNotes] = useState<AudioElement[]>([]);
+  const [mathElements, setMathElements] = useState<MathElement[]>([]);
   const [insertingImage, setInsertingImage] = useState(false);
 
   // Text note state (legacy sticky notes — kept for backwards compat)
@@ -529,6 +566,9 @@ export function useBoardElements(
   const visibleShapesRef = useRef<ShapeElement[]>([]);
   const visibleTextElementsRef = useRef<TextElement[]>([]);
   const visibleImagesRef = useRef<ImageElement[]>([]);
+  // Month 6 — math elements. A full hit-test/selection participant, so it
+  // needs the same synchronous mirror every other selectable kind has.
+  const visibleMathElementsRef = useRef<MathElement[]>([]);
   // Month 5 — synchronous source for the anchor-delete cascade (see
   // `cascadeDeleteVoiceNotes` below). Unfiltered (not the blocked-user
   // `visibleAudioNotes` memo): a blocked user's note must still be cascaded
@@ -666,6 +706,13 @@ export function useBoardElements(
     return imageService.subscribeToBoardImages(boardId, setImages);
   }, [boardId]);
 
+  // Month 6 — math elements. An ordinary element subscription: the docs carry
+  // their own cached `svgPath`, so a snapshot never triggers a render call.
+  useEffect(() => {
+    if (!boardId) return;
+    return mathService.subscribeToBoardMathElements(boardId, setMathElements);
+  }, [boardId]);
+
   // Month 5 — voice notes. A separate, independent subscription (its own
   // subcollection, no shared listener with any other kind) since it's not
   // part of the paths/shapes/text/images write-path family the rest of this
@@ -719,6 +766,13 @@ export function useBoardElements(
     () => images.filter((img) => !blockedIds.includes(img.userId)).sort(byZ),
     [images, blockedIds]
   );
+  // Month 6 — math elements. Blocked-user filtered AND z-ordered like every
+  // other selectable layer (unlike `visibleAudioNotes` below, which is a
+  // badge overlay with no z-stacking concept).
+  const visibleMathElements = useMemo(
+    () => mathElements.filter((m) => !blockedIds.includes(m.userId)).sort(byZ),
+    [mathElements, blockedIds]
+  );
   // Month 5 — voice notes. Blocked-user filtered like every other layer; not
   // z-ordered (no z-stacking concept for a badge overlay) and not fed into
   // the spatial index / culling below — see the BoardElements interface
@@ -741,6 +795,9 @@ export function useBoardElements(
   useEffect(() => {
     visibleImagesRef.current = visibleImages;
   }, [visibleImages]);
+  useEffect(() => {
+    visibleMathElementsRef.current = visibleMathElements;
+  }, [visibleMathElements]);
   // Month 5 — synced from the raw `audioNotes` state, not `visibleAudioNotes`
   // (see the ref's own comment on why blocked-user filtering doesn't apply
   // to the cascade).
@@ -795,9 +852,10 @@ export function useBoardElements(
       ...visibleShapes.map((s) => entryFromBounds(s.id, "shape", shapeBox(s))),
       ...visibleImages.map((img) => entryFromBounds(img.id, "image", imgBox(img))),
       ...visibleTextElements.map((el) => entryFromBounds(el.id, "text", textBox(el))),
+      ...visibleMathElements.map((m) => entryFromBounds(m.id, "math", mathBox(m))),
     ];
     spatialIndexRef.current = buildElementIndex(entries);
-  }, [visiblePaths, visibleShapes, visibleImages, visibleTextElements]);
+  }, [visiblePaths, visibleShapes, visibleImages, visibleTextElements, visibleMathElements]);
 
   // ────────── VIEWPORT CULLING ──────────────────────────────────────────
   // Phase 4 viewport culling — render only what overlaps the visible board rect.
@@ -847,6 +905,11 @@ export function useBoardElements(
     return visibleImages.filter((img) => boundsIntersect(img.bbox ?? imageBbox(img), view));
   }, [visibleImages, cullViewport, canvasSize]);
 
+  const culledMathElements = useMemo(() => {
+    const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
+    return visibleMathElements.filter((m) => boundsIntersect(mathBox(m), view));
+  }, [visibleMathElements, cullViewport, canvasSize]);
+
   // ────────── GEOMETRY & DERIVED SELECTION ──────────────────────────────
   // Board-space bounds of all content, for fit-to-content.
   const contentBounds = (): Bounds | null =>
@@ -866,6 +929,7 @@ export function useBoardElements(
         maxX: n.position.x,
         maxY: n.position.y,
       })),
+      ...visibleMathElements.map(mathBox),
     ]);
 
   // Phase 7 — current board-space box of an element by id, across every kind, used
@@ -891,13 +955,17 @@ export function useBoardElements(
         const im = visibleImages.find((x) => x.id === elId);
         if (im) return imgBox(im);
       }
+      if (!kind || kind === "math") {
+        const mEl = visibleMathElements.find((x) => x.id === elId);
+        if (mEl) return mathBox(mEl);
+      }
       if (!kind || kind === "note") {
         const n = visibleNotes.find((x) => x.id === elId);
         if (n) return { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y };
       }
       return null;
     },
-    [visiblePaths, visibleShapes, visibleTextElements, visibleImages, visibleNotes]
+    [visiblePaths, visibleShapes, visibleTextElements, visibleImages, visibleMathElements, visibleNotes]
   );
 
   // Board-space boxes of every selected element (mixed kinds), and their union
@@ -910,9 +978,17 @@ export function useBoardElements(
     for (const s of visibleShapes) if (ids.has(s.id)) boxes.push(shapeBox(s));
     for (const img of visibleImages) if (ids.has(img.id)) boxes.push(imgBox(img));
     for (const el of visibleTextElements) if (ids.has(el.id)) boxes.push(textBox(el));
+    for (const mEl of visibleMathElements) if (ids.has(mEl.id)) boxes.push(mathBox(mEl));
     return boxes;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection.selectedIds, visiblePaths, visibleShapes, visibleImages, visibleTextElements]);
+  }, [
+    selection.selectedIds,
+    visiblePaths,
+    visibleShapes,
+    visibleImages,
+    visibleTextElements,
+    visibleMathElements,
+  ]);
   const selectionUnion = useMemo(() => unionBounds(selectedBoxes), [selectedBoxes]);
 
   // ────────── HIT-TESTING & SELECTION ACTIONS ───────────────────────────
@@ -940,6 +1016,19 @@ export function useBoardElements(
       const el = visibleTextElementsRef.current[i];
       if (boundsContainPoint(textBox(el), point, SELECT_TAP_PADDING)) {
         return { id: el.id, kind: "text" };
+      }
+    }
+    // Month 6 — math elements. Ordered here because the hit-test walks
+    // top-down and math renders directly above shapes in the SVG tree (see
+    // DrawingCanvas); an equation annotated over with a stroke still loses
+    // the tap to the equation, same as any other box-shaped element. Box
+    // containment, like an image: an equation's glyphs are sparse, and
+    // requiring a tap to land on actual ink would make selecting one
+    // needlessly fiddly.
+    for (let i = visibleMathElementsRef.current.length - 1; i >= 0; i--) {
+      const mEl = visibleMathElementsRef.current[i];
+      if (boundsContainPoint(mathBox(mEl), point, SELECT_TAP_PADDING)) {
+        return { id: mEl.id, kind: "math" };
       }
     }
     for (let i = visibleShapesRef.current.length - 1; i >= 0; i--) {
@@ -997,6 +1086,7 @@ export function useBoardElements(
         ...visibleShapesRef.current.map((s) => s.id),
         ...visibleImagesRef.current.map((img) => img.id),
         ...visibleTextElementsRef.current.map((el) => el.id),
+        ...visibleMathElementsRef.current.map((mEl) => mEl.id),
       ],
       "elements"
     );
@@ -1069,6 +1159,7 @@ export function useBoardElements(
     const shapeUpdates: { id: string; data: any }[] = [];
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
+    const mathUpdates: { id: string; data: any }[] = [];
 
     // Compute from current state (not inside a setState updater, which can run
     // twice and double-enqueue the batch). The move drag never mutated these
@@ -1103,10 +1194,21 @@ export function useBoardElements(
       imageUpdates.push({ id: img.id, data: { x, y, bbox } });
       return { ...img, x, y, bbox };
     });
+    // Month 6 — math elements. A move is pure geometry: `latex` and the
+    // cached `svgPath` are untouched, so no render call happens here.
+    const nextMath = mathElements.map((mEl) => {
+      if (!ids.has(mEl.id)) return mEl;
+      const x = mEl.x + dx;
+      const y = mEl.y + dy;
+      const bbox = translateBounds(mathBox(mEl), dx, dy);
+      mathUpdates.push({ id: mEl.id, data: { x, y, bbox } });
+      return { ...mEl, x, y, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
+    setMathElements(nextMath);
 
     try {
       await Promise.all([
@@ -1114,6 +1216,7 @@ export function useBoardElements(
         shapeService.batchUpdateShapes(boardId, shapeUpdates),
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
+        mathService.batchUpdateMathElements(boardId, mathUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1252,6 +1355,7 @@ export function useBoardElements(
     const shapeUpdates: { id: string; data: any }[] = [];
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
+    const mathUpdates: { id: string; data: any }[] = [];
     const nextPaths = paths.map((p) => {
       if (!ids.has(p.id)) return p;
       const points = p.points.map((pt) => scalePointAbout(pt, anchor, sx, sy));
@@ -1290,16 +1394,38 @@ export function useBoardElements(
       imageUpdates.push({ id: img.id, data: { x: np.x, y: np.y, width, height, bbox } });
       return { ...moved, bbox };
     });
+    // Month 6 — math elements. An equation resizes by its `scale`, not by
+    // re-typesetting: the path data is resolution-independent vector outline,
+    // so scaling it is exact and — crucially — free, with no render call.
+    // A non-uniform drag (alt-held corner, an edge handle) has no meaning for
+    // a glyph outline, so the larger of the two factors is applied uniformly
+    // rather than stretching the letterforms; the box is then re-derived from
+    // the new scale so the selection outline matches what is drawn.
+    const nextMath = mathElements.map((mEl) => {
+      if (!ids.has(mEl.id)) return mEl;
+      const np = scalePointAbout({ x: mEl.x, y: mEl.y }, anchor, sx, sy);
+      const factor = Math.max(Math.abs(sx), Math.abs(sy));
+      const scale = Math.max(MIN_MATH_SCALE, mEl.scale * factor);
+      const applied = scale / mEl.scale;
+      const width = mEl.width * applied;
+      const height = mEl.height * applied;
+      const moved = { ...mEl, x: np.x, y: np.y, width, height, scale };
+      const bbox = mathBoxOf(moved);
+      mathUpdates.push({ id: mEl.id, data: { x: np.x, y: np.y, width, height, scale, bbox } });
+      return { ...moved, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
+    setMathElements(nextMath);
     try {
       await Promise.all([
         pathService.batchUpdatePaths(boardId, pathUpdates),
         shapeService.batchUpdateShapes(boardId, shapeUpdates),
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
+        mathService.batchUpdateMathElements(boardId, mathUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1319,6 +1445,7 @@ export function useBoardElements(
     const shapeUpdates: { id: string; data: any }[] = [];
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
+    const mathUpdates: { id: string; data: any }[] = [];
     const nextPaths = paths.map((p) => {
       if (!ids.has(p.id)) return p;
       const points = p.points.map((pt) => rotatePointAbout(pt, center, theta));
@@ -1371,16 +1498,37 @@ export function useBoardElements(
       imageUpdates.push({ id: img.id, data: { x, y, rotation, bbox } });
       return { ...moved, bbox };
     });
+    // Month 6 — math elements. MathElement has NO `rotation` field (see its
+    // type comment), so a group rotate ORBITS an equation about the pivot
+    // without spinning it. That is a deliberate, visible compromise: the
+    // alternative — skipping math entirely — would leave the equation behind
+    // while the rest of the selection swung away, silently breaking the
+    // group. Orbiting keeps the layout coherent; only the glyph angle is
+    // unchanged. Adding real rotation means adding the field and threading it
+    // through MathElementView's transform.
+    const nextMath = mathElements.map((mEl) => {
+      if (!ids.has(mEl.id)) return mEl;
+      const oc = { x: mEl.x + mEl.width / 2, y: mEl.y + mEl.height / 2 };
+      const nc = rotatePointAbout(oc, center, theta);
+      const x = nc.x - mEl.width / 2;
+      const y = nc.y - mEl.height / 2;
+      const moved = { ...mEl, x, y };
+      const bbox = mathBoxOf(moved);
+      mathUpdates.push({ id: mEl.id, data: { x, y, bbox } });
+      return { ...moved, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
+    setMathElements(nextMath);
     try {
       await Promise.all([
         pathService.batchUpdatePaths(boardId, pathUpdates),
         shapeService.batchUpdateShapes(boardId, shapeUpdates),
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
+        mathService.batchUpdateMathElements(boardId, mathUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1573,12 +1721,23 @@ export function useBoardElements(
       const shapeIds = visibleShapesRef.current.filter((s) => idSet.has(s.id)).map((s) => s.id);
       const textIds = visibleTextElementsRef.current.filter((el) => idSet.has(el.id)).map((el) => el.id);
       const imageIds = visibleImagesRef.current.filter((img) => idSet.has(img.id)).map((img) => img.id);
+      const mathIds = visibleMathElementsRef.current
+        .filter((mEl) => idSet.has(mEl.id))
+        .map((mEl) => mEl.id);
+      // Whatever is left over is a stroke. Month 6: `mathIds` has to be
+      // subtracted here as well, or every deleted equation would ALSO be
+      // issued as a delete against the `paths` collection.
       const pathIds = ids.filter(
-        (i) => !shapeIds.includes(i) && !textIds.includes(i) && !imageIds.includes(i)
+        (i) =>
+          !shapeIds.includes(i) &&
+          !textIds.includes(i) &&
+          !imageIds.includes(i) &&
+          !mathIds.includes(i)
       );
       setShapes((prev) => prev.filter((s) => !idSet.has(s.id)));
       setTextElements((prev) => prev.filter((el) => !idSet.has(el.id)));
       setImages((prev) => prev.filter((img) => !idSet.has(img.id)));
+      setMathElements((prev) => prev.filter((mEl) => !idSet.has(mEl.id)));
       setPaths((prev) => prev.filter((p) => !idSet.has(p.id)));
       try {
         await Promise.all([
@@ -1586,6 +1745,7 @@ export function useBoardElements(
           shapeService.batchDeleteShapes(boardId, shapeIds),
           pathService.batchDeleteTextElements(boardId, textIds),
           imageService.batchDeleteImages(boardId, imageIds),
+          mathService.batchDeleteMathElements(boardId, mathIds),
         ]);
         onScheduleSave();
         // Month 5 — anchor cascade (the other half of the orphan fix): any
@@ -1648,6 +1808,20 @@ export function useBoardElements(
         imageService.saveImage(boardId, { ...rest, x: img.x + off, y: img.y + off }).then((nid) => {
           newIds.push(nid);
         })
+      );
+    }
+    // Month 6 — math elements. `saveMathElement`, not `createMathElement`:
+    // the copy already has typeset path data, so duplicating an equation is
+    // one Firestore write with no render call at all.
+    for (const mEl of mathElements) {
+      if (!ids.has(mEl.id)) continue;
+      const { id: _i, createdAt: _c, bbox: _b, ...rest } = mEl;
+      tasks.push(
+        mathService
+          .saveMathElement(boardId, { ...rest, x: mEl.x + off, y: mEl.y + off })
+          .then((nid) => {
+            newIds.push(nid);
+          })
       );
     }
     try {
@@ -2159,6 +2333,47 @@ export function useBoardElements(
   const saveTextElement = (el: Omit<TextElement, "id" | "createdAt">) =>
     pathService.saveTextElement(boardId, el);
 
+  // ────────── WRITE PATH — MATH ELEMENTS ────────────────────────────────
+  // Month 6. The ONLY two element write paths that call the render function;
+  // move / resize / rotate / delete / duplicate above deliberately do not,
+  // because `svgPath` is cached on the document and only `latex` invalidates
+  // it.
+  //
+  // Both REJECT on failure rather than swallowing into `onError`, unlike
+  // every other write path in this file. The composer is a modal that stays
+  // open on a bad expression and shows TeX's own message inline ("Missing
+  // close brace"), which it cannot do if the error has already been turned
+  // into a board-level banner and discarded. Callers here own the message.
+
+  const createMathElement = async (point: Point, latex: string): Promise<string> => {
+    const id = await mathService.createMathElement({
+      boardId,
+      latex,
+      x: point.x,
+      y: point.y,
+      userId: authorId,
+    });
+    // Land ready to move, exactly as an inserted image or shape does.
+    selection.select(id);
+    onActivateSelectTool();
+    onScheduleSave();
+    return id;
+  };
+
+  const updateMathLatex = async (elementId: string, latex: string): Promise<void> => {
+    const current = mathElements.find((mEl) => mEl.id === elementId);
+    if (!current) return;
+    await mathService.updateMathLatex(boardId, elementId, latex, {
+      x: current.x,
+      y: current.y,
+      scale: current.scale,
+    });
+    onScheduleSave();
+  };
+
+  const latexOfMathElement = (elementId: string): string | null =>
+    mathElements.find((mEl) => mEl.id === elementId)?.latex ?? null;
+
   // ────────── WRITE PATH — STICKY NOTES (legacy) ────────────────────────
   // --- Text note handlers ---
 
@@ -2251,6 +2466,9 @@ export function useBoardElements(
       // is record/play only), so this is the only call site that needs to
       // know about them.
       audioService.clearBoardVoiceNotes(boardId),
+      // Month 6 — math elements. Nothing is Storage-backed here (the path
+      // data lives on the document), so this is a plain subcollection wipe.
+      mathService.clearBoardMathElements(boardId),
     ]);
 
   const resetLocalElements = () => {
@@ -2264,6 +2482,7 @@ export function useBoardElements(
     // server-side (clearBoardVoiceNotes), but without this line their
     // badges lingered on screen until the next snapshot caught up.
     setAudioNotes([]);
+    setMathElements([]);
     setRedoStack([]);
   };
 
@@ -2328,6 +2547,7 @@ export function useBoardElements(
     notes,
     images,
     audioNotes,
+    mathElements,
     visible: {
       paths: culledPaths,
       shapes: culledShapes,
@@ -2336,6 +2556,7 @@ export function useBoardElements(
       images: culledImages,
       // Not viewport-culled — see the BoardElements interface comment.
       audioNotes: visibleAudioNotes,
+      mathElements: culledMathElements,
     },
     loading: !canvasReady,
 
@@ -2410,6 +2631,10 @@ export function useBoardElements(
     cancelNote,
     submitNote,
     deleteNote,
+
+    createMathElement,
+    updateMathLatex,
+    latexOfMathElement,
 
     insertImage,
     scanDocument,

@@ -97,7 +97,15 @@ function renderModal(overrides: Partial<React.ComponentProps<typeof ShareBoardMo
     onAccessChanged: jest.fn(),
     boardTitle: "My Board",
     canvasRef: { current: "fake-svg-ref" },
-    boardElements: { paths: [pathData], shapes: [], texts: [], notes: [], images: [], audioNotes: [] },
+    boardElements: {
+      paths: [pathData],
+      shapes: [],
+      texts: [],
+      notes: [],
+      images: [],
+      audioNotes: [],
+      mathElements: [],
+    },
     getContentBounds: () => ({ minX: 0, minY: 0, maxX: 100, maxY: 100 }),
     ...overrides,
   };

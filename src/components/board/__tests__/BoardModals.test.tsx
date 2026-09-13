@@ -161,6 +161,12 @@ function renderModals(opts: {
   onAddSwatch?: jest.Mock;
   onRequestPaletteUpgrade?: jest.Mock;
   pollComposerVisible?: boolean;
+  // Month 6 — the equation composer.
+  mathComposerVisible?: boolean;
+  mathEditingId?: string | null;
+  mathInitialLatex?: string | null;
+  onCreateMath?: jest.Mock;
+  onUpdateMath?: jest.Mock;
   boardQaEnabled?: boolean;
   boardQaVisible?: boolean;
   isCitationLive?: jest.Mock;
@@ -198,7 +204,15 @@ function renderModals(opts: {
       shareVisible={false}
       onCloseShare={jest.fn()}
       canvasRef={{ current: null }}
-      boardElements={{ paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [] }}
+      boardElements={{
+        paths: [],
+        shapes: [],
+        texts: [],
+        notes: [],
+        images: [],
+        audioNotes: [],
+        mathElements: [],
+      }}
       getContentBounds={() => null}
       historyVisible={false}
       onCloseHistory={jest.fn()}
@@ -228,6 +242,12 @@ function renderModals(opts: {
       pollComposerVisible={opts.pollComposerVisible ?? false}
       onClosePollComposer={onClosePollComposer}
       onCreatePoll={onCreatePoll}
+      mathComposerVisible={opts.mathComposerVisible ?? false}
+      mathEditingId={opts.mathEditingId ?? null}
+      mathInitialLatex={opts.mathInitialLatex ?? null}
+      onCloseMathComposer={jest.fn()}
+      onCreateMath={opts.onCreateMath ?? jest.fn().mockResolvedValue("m1")}
+      onUpdateMath={opts.onUpdateMath ?? jest.fn().mockResolvedValue(undefined)}
       boardQaEnabled={opts.boardQaEnabled ?? true}
       boardQaVisible={opts.boardQaVisible ?? false}
       onCloseBoardQa={onCloseBoardQa}

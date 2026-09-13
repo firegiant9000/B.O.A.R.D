@@ -12,6 +12,7 @@ import UpsellModal from "../UpsellModal";
 import ColorPickerModal from "../ColorPickerModal";
 import StrokeWidthModal from "../StrokeWidthModal";
 import PollComposer, { NewPollInput } from "./PollComposer";
+import MathComposerHost from "./MathComposerHost";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
@@ -129,6 +130,19 @@ interface BoardModalsProps {
   onClosePollComposer: () => void;
   onCreatePoll: (input: NewPollInput) => void;
 
+  // Month 6 — the equation composer. Opened two ways: Toolbar's equation
+  // button (insert, `mathEditingId` null) and a tap on an already-selected
+  // math element (edit, `mathEditingId` set). MathComposerHost owns the busy
+  // flag and the error copy; only visibility and the edited id are screen
+  // state, matching every other modal here.
+  mathComposerVisible: boolean;
+  mathEditingId: string | null;
+  /** The edited element's current LaTeX, or null when inserting. */
+  mathInitialLatex: string | null;
+  onCloseMathComposer: () => void;
+  onCreateMath: (latex: string) => Promise<unknown>;
+  onUpdateMath: (elementId: string, latex: string) => Promise<unknown>;
+
   // Month 6 — board Q&A chat panel (BoardHeader's "ask this board" button
   // opens it). Only rendered when the feature is configured, the same shape as
   // the diagram prompt above.
@@ -209,6 +223,12 @@ export default function BoardModals({
   presenterLocksContentCreation,
   pollComposerVisible,
   onClosePollComposer,
+  mathComposerVisible,
+  mathEditingId,
+  mathInitialLatex,
+  onCloseMathComposer,
+  onCreateMath,
+  onUpdateMath,
   onCreatePoll,
   boardQaEnabled,
   boardQaVisible,
@@ -351,6 +371,17 @@ export default function BoardModals({
         visible={pollComposerVisible}
         onCancel={onClosePollComposer}
         onSubmit={onCreatePoll}
+      />
+
+      {/* Month 6 — the equation composer (Toolbar's equation button to
+          insert, a tap on an already-selected equation to edit). */}
+      <MathComposerHost
+        visible={mathComposerVisible}
+        editingId={mathEditingId}
+        initialLatex={mathInitialLatex}
+        onCreate={onCreateMath}
+        onUpdate={onUpdateMath}
+        onClose={onCloseMathComposer}
       />
 
       {/* Month 6 — board Q&A chat. Mounted only when configured, so a build
