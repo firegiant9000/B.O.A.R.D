@@ -339,6 +339,22 @@ export interface SessionSummary {
   openQuestions: string[];
 }
 
+// Month 6 — sticky-note polish. Eight fixed colours, named rather than raw
+// hex so a corrupt/unknown stored string can be checked by simple membership
+// (`sanitizeStickyColor` in `lib/stickyNotes.ts`) instead of validated as a
+// hex string. Deliberately independent of `ColorPickerModal`'s custom
+// per-workspace palette (hex + alpha, Pro-gated) — see that decision's own
+// comment in `lib/stickyNotes.ts`.
+export type StickyColor =
+  | "yellow"
+  | "pink"
+  | "blue"
+  | "green"
+  | "orange"
+  | "purple"
+  | "gray"
+  | "red";
+
 export interface TextNote {
   id: string;
   boardId: string;
@@ -346,6 +362,52 @@ export interface TextNote {
   content: string;
   position: { x: number; y: number };
   createdAt: Date;
+  // Month 6 — sticky-note polish (8 colours, 3 sizes). Optional / migration-
+  // tolerant, the same convention as TextElement.z/rotation below: absent ⇒
+  // the pre-this-feature look — "yellow" at size 14, this note's existing
+  // hardcoded `#FFF9C4` fill and 200-wide/14px layout (see
+  // `lib/stickyNotes.ts`'s DEFAULT_STICKY_COLOR/DEFAULT_STICKY_SIZE). A
+  // stored value outside the fixed set (a corrupt doc, a future or
+  // rolled-back client) must never reach a style prop —
+  // `sanitizeStickyColor`/`sanitizeStickySize` in `lib/stickyNotes.ts` are the
+  // tolerant-reader boundary for that, applied at every render site, not just
+  // where the doc is first read from Firestore.
+  color?: StickyColor;
+  // fontSize in px — one of `STICKY_FONT_SIZES` (mirrors TextElement.fontSize's
+  // own plain-number convention rather than a named enum). `Number.isFinite`
+  // matters here specifically because `typeof NaN === "number"`: see
+  // `sanitizeStickySize`'s own comment.
+  size?: number;
+  // Month 6 — attach-to-element, the alternative to pin-to-position. When
+  // set, this note's LIVE render position tracks the named element's current
+  // bounds (resolved via `useBoardElements`'s `boxOfElement`, exactly like
+  // AudioElement's own `anchorElementId`) instead of `position` above, which
+  // becomes a write-time snapshot only once this is set (same reasoning as
+  // AudioElement.x/y's own comment) — kept so the doc still satisfies every
+  // reader that treats `position` as required, and as a last-resort value
+  // only until the first live resolution lands. Deleting the anchor element
+  // cascades to delete this note (`cascadeDeleteNotesForElements` in
+  // useBoardElements.ts, mirroring `cascadeDeleteVoiceNotes`) rather than
+  // leaving it permanently orphaned; until that cascade completes, a render
+  // path must OMIT an attached note whose anchor can't be resolved rather
+  // than falling back to (0, 0) — the corrected behavior the voice-note
+  // badges already landed on. Absent ⇒ pin-to-position (the pre-this-feature
+  // behavior; `position` is authoritative).
+  anchorElementId?: string;
+}
+
+/** Month 6 — a sticky note paired with its LIVE render position. Mirrors
+ *  `PositionedAudioNote` (BoardOverlayLayer.tsx) exactly: the caller
+ *  (BoardCanvas) resolves this from the anchor's current bounds for an
+ *  attached note, or from the note's own `position` for a pinned one — see
+ *  `TextNote.anchorElementId`'s comment for why the two diverge. Kept in
+ *  `types/index.ts`, not in either component, so neither
+ *  `TextNoteOverlay.tsx` nor `BoardOverlayLayer.tsx` has to import a
+ *  rendering type from the other. */
+export interface PositionedTextNote {
+  note: TextNote;
+  x: number;
+  y: number;
 }
 
 export interface TextElement {

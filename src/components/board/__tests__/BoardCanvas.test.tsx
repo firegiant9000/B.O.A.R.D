@@ -166,6 +166,7 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     deleteTextElement: jest.fn().mockResolvedValue(undefined),
     saveTextElement: jest.fn().mockResolvedValue("text-1"),
 
+    beginNote: jest.fn(),
     pendingNotePosition: null,
     cancelNote: jest.fn(),
     submitNote: jest.fn().mockResolvedValue(undefined),
@@ -1003,6 +1004,86 @@ describe("BoardCanvas — voice notes: plan and existing notes pass through", ()
       },
     });
     expect(mockOverlayProps.audioNotes).toEqual([]);
+  });
+});
+
+// Month 6 — sticky notes' attach-to-element (the polish task's alternative
+// to pin-to-position). Same recipe as the voice-note describe block above.
+describe("BoardCanvas — sticky notes: pin-to-position vs attach-to-element", () => {
+  it("renders a pinned (unattached) note at its own persisted position", () => {
+    const note = {
+      id: "n1",
+      boardId: "board1",
+      userId: "self",
+      content: "hi",
+      position: { x: 42, y: 99 },
+      createdAt: new Date(),
+    };
+    renderCanvas({
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [note], images: [], audioNotes: [] } as any,
+      },
+    });
+    expect(mockOverlayProps.notes).toEqual([{ note, x: 42, y: 99 }]);
+  });
+
+  it("resolves an attached note's render position from its anchor's LIVE bounds via boxOfElement, not from the note's own persisted position", () => {
+    const note = {
+      id: "n1",
+      boardId: "board1",
+      userId: "self",
+      content: "hi",
+      // Deliberately far from ANCHOR_BOX below — this must NOT be what ends
+      // up on screen once the note is attached.
+      position: { x: 999, y: 999 },
+      anchorElementId: "el1",
+      createdAt: new Date(),
+    };
+    renderCanvas({
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [note], images: [], audioNotes: [] } as any,
+        boxOfElement: jest.fn((id: string) => (id === "el1" ? OVERLAY_BOUNDS : null)),
+      },
+    });
+    expect(mockOverlayProps.notes).toEqual([
+      { note, x: OVERLAY_BOUNDS.minX, y: OVERLAY_BOUNDS.minY },
+    ]);
+  });
+
+  it("omits a pinned note with a corrupt (non-finite) stored position instead of rendering it at NaN", () => {
+    const note = {
+      id: "n1",
+      boardId: "board1",
+      userId: "self",
+      content: "hi",
+      position: { x: NaN, y: 5 },
+      createdAt: new Date(),
+    };
+    renderCanvas({
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [note], images: [], audioNotes: [] } as any,
+      },
+    });
+    expect(mockOverlayProps.notes).toEqual([]);
+  });
+
+  it("omits an attached note whose anchor can't be found (boxOfElement returns null) instead of rendering it at a stale position", () => {
+    const note = {
+      id: "n1",
+      boardId: "board1",
+      userId: "self",
+      content: "hi",
+      position: { x: 999, y: 999 },
+      anchorElementId: "gone",
+      createdAt: new Date(),
+    };
+    renderCanvas({
+      elements: {
+        visible: { paths: [], shapes: [], texts: [], notes: [note], images: [], audioNotes: [] } as any,
+        boxOfElement: jest.fn(() => null),
+      },
+    });
+    expect(mockOverlayProps.notes).toEqual([]);
   });
 });
 

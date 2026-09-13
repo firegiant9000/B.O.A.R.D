@@ -394,14 +394,37 @@ function textNode(t: TextElement): string {
 }
 
 // TextNote (the legacy sticky note) carries no persisted width/height or
-// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead
-// (fixed `maxWidth: 200`, height grown to fit by real word-wrap). These
-// mirror that component's own fixed width/offsets/colors; `NOTE_MIN_HEIGHT`
+// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead (fixed
+// `maxWidth: 200`, height grown to fit by real word-wrap). `NOTE_MIN_HEIGHT`
 // is a floor for short content — `noteNode` below grows the rect for
 // longer content instead of using this as a fixed height, so realistic
 // note text doesn't overflow it: at 200 units wide and 14px type, ordinary
 // sticky-note text — as little as ~25-30 characters — already exceeds one
 // line, so a fixed height is wrong for typical content, not just outliers.
+//
+// KNOWN DIVERGENCE (Month 6 — sticky-note polish added colour, size, and
+// markdown to TextNote; this exporter was deliberately NOT taught any of the
+// three). These constants used to describe an honest mirror of
+// TextNoteOverlay.tsx's own fixed layout; they no longer do, and this note
+// replaces an earlier comment that still claimed one. Concretely:
+//   - EVERY exported note renders at this fixed width/font-size, regardless
+//     of its own `size` field (`NOTE_WIDTH`/`NOTE_FONT_SIZE` below correspond
+//     to the "md"/14px default only — see `lib/stickyNotes.ts`).
+//   - EVERY exported note renders in `NOTE_FILL` (yellow), regardless of its
+//     own `color` field.
+//   - `content` is written out AS TYPED — `**bold**`, `- list`,
+//     `[text](url)` and friends appear as literal characters in the exported
+//     text, not as bold/italic `<tspan>`s, bullets, or links. `content` is
+//     passed through `wrapByEstimatedWidth`/`tspansFor` completely unaware
+//     that `lib/markdown.ts` exists.
+// This was a deliberate scope decision, not an oversight: colour/size are
+// straightforward to add (a lookup by the note's own fields instead of a
+// bare constant), but rendering bold/italic in SVG `<tspan>`s and, further,
+// list bullets and tappable links is real additional work this task chose
+// not to take on. Anyone teaching this module the new fields should start
+// there, and should decide markdown support deliberately (partial support —
+// e.g. bold/italic only — is fine as long as the limit is stated here, same
+// as this comment now does for the current, even smaller, feature set).
 const NOTE_LEFT_OFFSET = 60;
 const NOTE_TOP_OFFSET = 20;
 const NOTE_WIDTH = 200;

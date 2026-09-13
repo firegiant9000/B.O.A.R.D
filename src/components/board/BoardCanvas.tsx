@@ -549,6 +549,30 @@ export default function BoardCanvas({
     return box ? [{ note, x: box.maxX + 8, y: box.minY }] : [];
   });
 
+  // Month 6 — sticky notes' attach-to-element (the polish task's alternative
+  // to pin-to-position). Mirrors `positionedAudioNotes` immediately above:
+  // an unattached (pinned) note renders at its own persisted `position`
+  // unchanged; an attached one resolves its LIVE box the same way a voice
+  // note's badge does (`boxOfElement` already handles kind "note" too, so it
+  // resolves ANY element kind an attach target can be). A note whose anchor
+  // can't be found is OMITTED, never rendered at a stale/zero position —
+  // the corrected behavior the voice-note badges already landed on.
+  const positionedNotes = elements.visible.notes.flatMap((note) => {
+    if (!note.anchorElementId) {
+      const { x, y } = note.position;
+      // Corrupt-stored-value guard for a pinned note's own position: a
+      // malformed doc's `x`/`y` reaching a `left`/`top` style prop as `NaN`
+      // is the same class of defect as an unvalidated colour/size, and
+      // `typeof x === "number"` alone would NOT catch it (`typeof NaN ===
+      // "number"`) — `Number.isFinite` is what actually does. Omitted
+      // rather than rendered at an invalid position, same principle as an
+      // attached note's unresolvable anchor below.
+      return Number.isFinite(x) && Number.isFinite(y) ? [{ note, x, y }] : [];
+    }
+    const box = elements.boxOfElement(note.anchorElementId);
+    return box ? [{ note, x: box.minX, y: box.minY }] : [];
+  });
+
   // Month 6 — reactions. The entry-point for starting a FIRST reaction on an
   // element: live only while exactly one element is selected with the select
   // tool, not mid-transform, not presenter-locked (see the giant comment
@@ -669,7 +693,7 @@ export default function BoardCanvas({
       <BoardOverlayLayer
         enablePanZoom={enablePanZoom}
         viewport={viewport}
-        notes={elements.visible.notes}
+        notes={positionedNotes}
         pendingNotePosition={elements.pendingNotePosition}
         onSubmitNote={elements.submitNote}
         onCancelNote={elements.cancelNote}

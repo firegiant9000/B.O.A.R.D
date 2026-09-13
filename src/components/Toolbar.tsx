@@ -114,6 +114,24 @@ interface ToolbarProps {
    * hiding the button for one would be hiding an affordance nothing denies.
    */
   canInsertCode?: boolean;
+  /** Month 6 — sticky notes (8 colours, 3 sizes, markdown, pin-to-position OR
+   *  attach-to-element). The board's ONE insert entry point: the screen
+   *  resolves the actual board-space point (the current viewport center,
+   *  exactly like the equation/code/poll buttons above) and calls
+   *  `elements.beginNote`, which itself decides pin-vs-attach from whatever
+   *  is currently selected — see that function's own comment. Without this
+   *  button the colour/size picker in `TextNoteOverlay.tsx` would be a
+   *  component nobody could ever reach. */
+  onInsertNote: () => void;
+  /** Month 6 — whether the note-insert button shows at all. Defaults to
+   *  true. Mirrors `canInsertCode`'s embed-session stance (NOT also gated on
+   *  `!embedMode`): firestore.rules' `notes` match carries the same
+   *  `isEmbedEditor` disjunct paths/shapes/textElements/codeElements do (a
+   *  sticky note needs no callable and no Storage bytes), so an embed editor
+   *  could already write one at any scope, and this button should not hide
+   *  what nothing denies.
+   */
+  canInsertNote?: boolean;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
@@ -176,6 +194,8 @@ export default function Toolbar({
   canInsertMath = true,
   onInsertCode,
   canInsertCode = true,
+  onInsertNote,
+  canInsertNote = true,
   onUndo,
   onRedo,
   canRedo,
@@ -340,6 +360,16 @@ export default function Toolbar({
               icon="code-slash-outline"
               active={false}
               onPress={onInsertCode}
+            />
+          )}
+          {/* Month 6 — sticky notes. The board's ONE insert entry point;
+              see `onInsertNote`'s own doc comment above. */}
+          {canInsertNote && (
+            <ToolButton
+              testID="toolbar-insert-note"
+              icon="reader-outline"
+              active={false}
+              onPress={onInsertNote}
             />
           )}
         </View>

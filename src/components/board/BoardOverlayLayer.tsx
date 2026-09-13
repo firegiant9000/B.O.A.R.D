@@ -8,7 +8,15 @@ import AudioAffordance from "./AudioAffordance";
 import ReactionBadge from "./ReactionBadge";
 import PollCard from "./PollCard";
 import { Bounds, Point, Viewport } from "../../lib/viewport";
-import { AudioElement, Plan, PollElement, ReactionEmoji, TextElement, TextNote } from "../../types";
+import {
+  AudioElement,
+  Plan,
+  PollElement,
+  PositionedTextNote,
+  ReactionEmoji,
+  StickyColor,
+  TextElement,
+} from "../../types";
 import type { ReactionCount } from "../../hooks/useBoardReactions";
 import type { PollResults } from "../../hooks/useBoardPolls";
 
@@ -68,10 +76,13 @@ interface BoardOverlayLayerProps {
   enablePanZoom: boolean;
   viewport: Viewport;
 
-  // Sticky notes (legacy)
-  notes: TextNote[];
+  // Sticky notes (Month 6 — 8 colours, 3 sizes, markdown, pin/attach). Each
+  // already carries its resolved LIVE render position (`PositionedTextNote`)
+  // — the caller (BoardCanvas) does the anchor-bounds join, mirroring
+  // `PositionedAudioNote` exactly; this layer stays "dumb" either way.
+  notes: PositionedTextNote[];
   pendingNotePosition: Point | null;
-  onSubmitNote: (content: string) => void;
+  onSubmitNote: (content: string, options?: { color?: StickyColor; size?: number }) => void;
   onCancelNote: () => void;
   onDeleteNote: (noteId: string) => void;
 

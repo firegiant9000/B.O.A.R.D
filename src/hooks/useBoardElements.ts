@@ -68,6 +68,7 @@ import {
   MathElement,
   CodeElement,
   CodeLanguage,
+  StickyColor,
 } from "../types";
 import { layoutCodeBox, MIN_CODE_FONT_SIZE } from "../lib/codeRender";
 import { useSelection, SelectionController } from "./useSelection";
@@ -101,33 +102,33 @@ import { useThrottledValue } from "./useThrottledValue";
  * its listener, its blocked-filter memo and sync ref, the spatial index, its
  * culling memo, and the returned object — plus whichever write paths it needs.
  *
- *   128  MODULE CONSTANTS & PURE GEOMETRY HELPERS       tolerances, cull settings, handle geometry, planZOrder, box helpers
- *   241  PUBLIC TYPES & THE BoardElements INTERFACE     start here: the contract every caller sees
- *   521  STATE & REFS                                   element arrays, selection, gesture refs, snapshot refs
- *   619  SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING         ADD A NEW ELEMENT KIND'S LISTENER HERE
- *   746  BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS   ADD A NEW KIND'S visible* MEMO + SYNC REF HERE
- *   845  SPATIAL INDEX (rbush, for marquee hit-testing) ADD A NEW KIND TO THE INDEX ENTRIES HERE
- *   860  VIEWPORT CULLING                               ADD A NEW KIND'S culled* MEMO HERE
- *   913  GEOMETRY & DERIVED SELECTION                   contentBounds, boxOfElement, selectedBoxes, selectionUnion
- *   994  HIT-TESTING & SELECTION ACTIONS                hitTestShape, hitTestAny, selectAtPoint, selectAllVisible
- *  1112  WRITE PATH — ERASER                            eraseAtPointWith
- *  1149  WRITE PATH — GROUP MOVE                        commitMove
- *  1228  GESTURE — SELECT / MARQUEE DRAG                begin/move/endSelectGesture
- *  1293  GESTURE — RESIZE / ROTATE                      begin/move/endTransform + commitResize + commitRotate
- *  1540  WRITE PATH — STROKES                           commitStroke, drawDot, replaceStrokeWithShape
- *  1648  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
- *  1712  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
- *  1850  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
- *  1947  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, scanDocument, pasteExternalImage
- *  2120  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
- *  2156  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
- *  2257  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
- *  2336  WRITE PATH — MATH ELEMENTS                     createMathElement, updateMathLatex, latexOfMathElement
- *  2377  WRITE PATH — CODE ELEMENTS                     createCodeElement, updateCodeSource, codeOfElement, languageOfElement
- *  2377  WRITE PATH — STICKY NOTES (legacy)             submitNote, cancelNote, deleteNote
- *  2417  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
- *  2489  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
- *  2542  RETURN                                         ADD A NEW MEMBER TO THE RETURNED OBJECT HERE
+ *   134  MODULE CONSTANTS & PURE GEOMETRY HELPERS       tolerances, cull settings, handle geometry, planZOrder, box helpers
+ *   261  PUBLIC TYPES & THE BoardElements INTERFACE     start here: the contract every caller sees
+ *   576  STATE & REFS                                   element arrays, selection, gesture refs, snapshot refs
+ *   690  SUBSCRIPTIONS & SNAPSHOT CHECKPOINTING         ADD A NEW ELEMENT KIND'S LISTENER HERE
+ *   824  BLOCKED-USER FILTER, Z-ORDER & HIT-TEST REFS   ADD A NEW KIND'S visible* MEMO + SYNC REF HERE
+ *   964  SPATIAL INDEX (rbush, for marquee hit-testing) ADD A NEW KIND TO THE INDEX ENTRIES HERE
+ *   987  VIEWPORT CULLING                               ADD A NEW KIND'S culled* MEMO HERE
+ *  1053  GEOMETRY & DERIVED SELECTION                   contentBounds, boxOfElement, selectedBoxes, selectionUnion
+ *  1149  HIT-TESTING & SELECTION ACTIONS                hitTestShape, hitTestAny, selectAtPoint, selectAllVisible
+ *  1280  WRITE PATH — ERASER                            eraseAtPointWith
+ *  1319  WRITE PATH — GROUP MOVE                        commitMove
+ *  1411  GESTURE — SELECT / MARQUEE DRAG                begin/move/endSelectGesture
+ *  1476  GESTURE — RESIZE / ROTATE                      begin/move/endTransform + commitResize + commitRotate
+ *  1762  WRITE PATH — STROKES                           commitStroke, drawDot, replaceStrokeWithShape
+ *  1872  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
+ *  1936  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
+ *  2104  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
+ *  2255  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, scanDocument, pasteExternalImage
+ *  2428  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
+ *  2474  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
+ *  2575  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
+ *  2656  WRITE PATH — MATH ELEMENTS                     createMathElement, updateMathLatex, latexOfMathElement
+ *  2706  WRITE PATH — CODE ELEMENTS                     createCodeElement, updateCodeSource, codeOfElement, languageOfElement
+ *  2761  WRITE PATH — STICKY NOTES                      beginNote, submitNote, cancelNote, deleteNote (Month 6: colour/size/attach)
+ *  2833  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
+ *  2912  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
+ *  2965  RETURN                                         ADD A NEW MEMBER TO THE RETURNED OBJECT HERE
  */
 
 // ────────── MODULE CONSTANTS & PURE GEOMETRY HELPERS ────────────────────
@@ -471,10 +472,20 @@ export interface BoardElements {
   /** Create one text element and hand back its id (the AI affordances' write path). */
   saveTextElement: (el: Omit<TextElement, "id" | "createdAt">) => Promise<string>;
 
-  // --- Sticky notes (legacy) ---
+  // --- Sticky notes (Month 6 — 8 colours, 3 sizes, markdown, pin/attach) ---
+  /** Starts note creation at `point` (a raw board-space point, or an
+   *  attach-target's own bounds' top-left — either way the caller decides
+   *  what to pass, exactly like the equation/code/poll insert buttons already
+   *  do). Attach-vs-pin is decided INSIDE this call from the current
+   *  selection, not by the caller — see `beginNote`'s own comment. */
+  beginNote: (point: Point) => void;
   pendingNotePosition: Point | null;
   cancelNote: () => void;
-  submitNote: (content: string) => Promise<void>;
+  /** `options.color`/`options.size` are optional so `submitNote` stays
+   *  callable unchanged by anything that predates the colour/size picker;
+   *  absent ⇒ the note is created with no `color`/`size` field at all (the
+   *  same pre-this-feature doc shape). */
+  submitNote: (content: string, options?: { color?: StickyColor; size?: number }) => Promise<void>;
   deleteNote: (noteId: string) => Promise<void>;
 
   // --- Math elements (Month 6) ---
@@ -574,8 +585,11 @@ export function useBoardElements(
   const [codeElements, setCodeElements] = useState<CodeElement[]>([]);
   const [insertingImage, setInsertingImage] = useState(false);
 
-  // Text note state (legacy sticky notes — kept for backwards compat)
+  // Sticky note state. `pendingNoteAnchorId` is set by `beginNote` alongside
+  // `pendingNotePosition` (below) when a note starts life attached to an
+  // element rather than pinned to a point — see `beginNote`'s own comment.
   const [pendingNotePosition, setPendingNotePosition] = useState<Point | null>(null);
+  const [pendingNoteAnchorId, setPendingNoteAnchorId] = useState<string | null>(null);
 
   // Redo stack — stores path data to re-save on redo
   const [redoStack, setRedoStack] = useState<Omit<DrawPath, "id" | "createdAt">[]>([]);
@@ -628,6 +642,16 @@ export function useBoardElements(
   // falls back to a real read only in the brief window before it does,
   // rather than trusting an empty initial array as "no notes exist".
   const audioNotesLoadedRef = useRef(false);
+  // Month 6 — synchronous source for sticky notes' own anchor-delete cascade
+  // (`cascadeDeleteNotesForElements` below). Unfiltered, for the same reason
+  // `audioNotesRef` above is: a blocked user's note must still be cascaded
+  // away when its anchor is deleted. UNLIKE `audioNotesRef`, this needs no
+  // parallel "loaded" ref/fallback-read branch — `notes` has been part of
+  // this hook's always-on subscription set since before Month 5 (see the
+  // SUBSCRIPTIONS section below), not a later, lazily mounted one the way
+  // audio was, so trusting it immediately is the same bet every other
+  // always-on ref on this list already makes.
+  const notesRef = useRef<TextNote[]>([]);
   // rbush index over every visible element's bbox, rebuilt when the set changes,
   // queried during a marquee drag for O(log n) hit-testing.
   const spatialIndexRef = useRef<ElementIndex>(buildElementIndex([]));
@@ -872,6 +896,11 @@ export function useBoardElements(
   useEffect(() => {
     audioNotesRef.current = audioNotes;
   }, [audioNotes]);
+  // Month 6 — synced from the raw `notes` state, not `visibleNotes`, for the
+  // identical reason `audioNotesRef` above is.
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
 
   // Month 5 — anchor-delete cascade (the orphan fix's other half): any voice
   // note anchored to one of `elementIds` must not survive that element's
@@ -905,6 +934,28 @@ export function useBoardElements(
       if (matchingIds.length === 0) return;
       audioService.batchDeleteVoiceNotes(boardId, matchingIds).catch((e) => {
         captureException(e, { op: "board.audioCascade" });
+      });
+    },
+    [boardId]
+  );
+
+  // Month 6 — sticky notes' own anchor-delete cascade: attach-to-element's
+  // other half. Mirrors `cascadeDeleteVoiceNotes` immediately above exactly
+  // (same in-memory-filter-then-batch-delete shape, same "never fails the
+  // element delete it's cascading from" fire-and-forget contract) for a
+  // note's `anchorElementId` instead of a voice note's — see
+  // `notesRef`'s own comment for why this needs no lazy-load fallback branch
+  // the way the audio version does.
+  const cascadeDeleteNotesForElements = useCallback(
+    (elementIds: string[]) => {
+      if (elementIds.length === 0) return;
+      const idSet = new Set(elementIds);
+      const matchingIds = notesRef.current
+        .filter((n) => n.anchorElementId && idSet.has(n.anchorElementId))
+        .map((n) => n.id);
+      if (matchingIds.length === 0) return;
+      pathService.batchDeleteTextNotes(boardId, matchingIds).catch((e) => {
+        captureException(e, { op: "board.noteCascade" });
       });
     },
     [boardId]
@@ -946,11 +997,19 @@ export function useBoardElements(
 
   const culledNotes = useMemo(() => {
     const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
-    return visibleNotes.filter((n) =>
-      boundsIntersect(
-        { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y },
-        view
-      )
+    return visibleNotes.filter(
+      (n) =>
+        // Month 6 — an attached note's `position` is a write-time snapshot
+        // only (see TextNote.anchorElementId's own comment); culling by it
+        // could hide a note whose LIVE anchor position is actually on
+        // screen (or show one that isn't). An attached note skips this
+        // filter entirely instead, mirroring `audioNotes`' own "not run
+        // through culling" precedent just above for the same reason.
+        !!n.anchorElementId ||
+        boundsIntersect(
+          { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y },
+          view
+        )
     );
   }, [visibleNotes, cullViewport, canvasSize]);
 
@@ -1252,6 +1311,8 @@ export function useBoardElements(
     // In-memory lookup (see `cascadeDeleteVoiceNotes`) — a two-second eraser
     // drag calls this at ~30Hz, so this must never be a Firestore read.
     cascadeDeleteVoiceNotes(hits);
+    // Month 6 — same cascade, for a sticky note attached to an erased stroke.
+    cascadeDeleteNotesForElements(hits);
     onScheduleSave();
   };
 
@@ -1800,6 +1861,8 @@ export function useBoardElements(
       // `anchorElementId` would point at nothing this hook ever renders
       // again).
       cascadeDeleteVoiceNotes([pathId]);
+      // Month 6 — same trade-off, for a sticky note attached to the stroke.
+      cascadeDeleteNotesForElements([pathId]);
     } catch (e) {
       captureException(e, { op: "board.perfectShape" });
       onError("Couldn't perfect the shape.");
@@ -1919,6 +1982,8 @@ export function useBoardElements(
         // voice note anchored to one of these ids must not survive them.
         // Only fires once the real deletes have actually committed.
         cascadeDeleteVoiceNotes(ids);
+        // Month 6 — same cascade, for a sticky note attached to any of them.
+        cascadeDeleteNotesForElements(ids);
       } catch (e) {
         captureException(e, { op: "board.deleteSelected" });
         onError("Failed to delete some elements.");
@@ -2578,6 +2643,8 @@ export function useBoardElements(
       onScheduleSave();
       // Month 5 — anchor cascade: a text element can carry a voice note.
       cascadeDeleteVoiceNotes([elementId]);
+      // Month 6 — same cascade, for a sticky note attached to this element.
+      cascadeDeleteNotesForElements([elementId]);
     } catch {
       onError("Failed to delete text element.");
     }
@@ -2691,17 +2758,42 @@ export function useBoardElements(
   const languageOfCodeElement = (elementId: string): CodeLanguage | null =>
     codeElements.find((cEl) => cEl.id === elementId)?.language ?? null;
 
-  // ────────── WRITE PATH — STICKY NOTES (legacy) ────────────────────────
+  // ────────── WRITE PATH — STICKY NOTES ──────────────────────────────────
   // --- Text note handlers ---
 
-  const submitNote = async (content: string) => {
+  // Month 6 — the note-creation entry point (Toolbar's "Add sticky note"
+  // button, wired via the screen). Decides pin-vs-attach right here, before
+  // the editor ever opens, from the SAME "exactly one element selected"
+  // signal `newVoiceNoteAnchor` already uses in BoardCanvas.tsx for voice
+  // notes: if one element is selected, the new note attaches to it;
+  // otherwise it pins to `point` (the current viewport center, chosen by the
+  // caller the same way the equation/code/poll insert buttons already do).
+  const beginNote = useCallback(
+    (point: Point) => {
+      setPendingNoteAnchorId(selection.count === 1 ? selection.selectedId : null);
+      setPendingNotePosition(point);
+    },
+    [selection.count, selection.selectedId]
+  );
+
+  const submitNote = async (
+    content: string,
+    options?: { color?: StickyColor; size?: number }
+  ) => {
     if (!pendingNotePosition) return;
 
     const newNote: Omit<TextNote, "id" | "createdAt"> = {
       boardId,
       userId: authorId,
       content,
+      // Write-time snapshot only when attached (see TextNote.anchorElementId's
+      // own comment) — kept so the doc still satisfies every reader that
+      // treats `position` as required; the live render position for an
+      // attached note comes from `boxOfElement`, not this field.
       position: pendingNotePosition,
+      ...(options?.color ? { color: options.color } : {}),
+      ...(options?.size ? { size: options.size } : {}),
+      ...(pendingNoteAnchorId ? { anchorElementId: pendingNoteAnchorId } : {}),
     };
 
     try {
@@ -2712,10 +2804,12 @@ export function useBoardElements(
     }
 
     setPendingNotePosition(null);
+    setPendingNoteAnchorId(null);
   };
 
   const cancelNote = () => {
     setPendingNotePosition(null);
+    setPendingNoteAnchorId(null);
   };
 
   const deleteNote = async (noteId: string) => {
@@ -2724,7 +2818,12 @@ export function useBoardElements(
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       onScheduleSave();
       // Month 5 — anchor cascade: a sticky note can carry a voice note
-      // (ROADMAP.md:584 names "sticky" explicitly).
+      // (ROADMAP.md:584 names "sticky" explicitly). NOT mirrored the other
+      // way (no `cascadeDeleteNotesForElements([noteId])` here): a sticky
+      // note is never itself a selectable element (it's outside
+      // `ElementKind` — see `spatialIndex.ts`), so `beginNote` above can
+      // never produce another note anchored to a note's id in the first
+      // place; a cascade for that case would have nothing to ever match.
       cascadeDeleteVoiceNotes([noteId]);
     } catch {
       Alert.alert("Error", "Failed to delete note");
@@ -2751,6 +2850,9 @@ export function useBoardElements(
       // cascaded note can't be un-deleted by redo either way — same
       // trade-off as replaceStrokeWithShape's comment.
       cascadeDeleteVoiceNotes([targetPath.id]);
+      // Month 6 — same cascade + trade-off, for a sticky note attached to
+      // the undone stroke.
+      cascadeDeleteNotesForElements([targetPath.id]);
     } catch {
       onError("Undo failed.");
     }
@@ -2950,6 +3052,7 @@ export function useBoardElements(
     deleteTextElement,
     saveTextElement,
 
+    beginNote,
     pendingNotePosition,
     cancelNote,
     submitNote,

@@ -28,6 +28,7 @@ const baseProps = {
   onInsertPoll: jest.fn(),
   onInsertMath: jest.fn(),
   onInsertCode: jest.fn(),
+  onInsertNote: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
   onSave: jest.fn(),
@@ -204,6 +205,32 @@ describe("Toolbar — canInsertCode (Month 6, code elements)", () => {
     // offering what the rules would deny.
     render(<Toolbar {...baseProps} activeTool="select" canEdit={false} onToolChange={jest.fn()} />);
     expect(screen.queryByTestId("toolbar-insert-code")).toBeNull();
+  });
+});
+
+describe("Toolbar — canInsertNote (Month 6, sticky-note polish)", () => {
+  // This button is the board's ONE insert entry point for a sticky note.
+  // Without it, the colour/size picker in TextNoteOverlay.tsx would be a
+  // component nobody could ever reach.
+  it("shows the note-insert button by default, wired to onInsertNote", () => {
+    const onInsertNote = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onInsertNote={onInsertNote} />
+    );
+    fireEvent.press(screen.getByTestId("toolbar-insert-note"));
+    expect(onInsertNote).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the note-insert button when canInsertNote is false", () => {
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertNote={false} />
+    );
+    expect(screen.queryByTestId("toolbar-insert-note")).toBeNull();
+  });
+
+  it("is not offered at all on the read-only viewer toolbar", () => {
+    render(<Toolbar {...baseProps} activeTool="select" canEdit={false} onToolChange={jest.fn()} />);
+    expect(screen.queryByTestId("toolbar-insert-note")).toBeNull();
   });
 });
 

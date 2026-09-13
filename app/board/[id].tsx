@@ -845,6 +845,20 @@ export default function BoardScreen(
           // editor's write here is reachable exactly like a shape's already is.
           // Gated only on the build-time flag.
           canInsertCode={codeService.isCodeConfigured()}
+          // Month 6 — sticky notes. Same board-space placement the equation/
+          // code composers use (the current viewport center) — `beginNote`
+          // itself decides pin-vs-attach from whatever is currently selected;
+          // see that function's own comment in useBoardElements.ts. No
+          // `canInsertNote` override: unlike images/math/polls, a sticky note
+          // needs neither Storage bytes nor a callable, so — like code
+          // elements — there is nothing an embed editor's write here could
+          // reach that firestore.rules' `notes` match (which carries the same
+          // `isEmbedEditor` disjunct) doesn't already allow.
+          onInsertNote={() =>
+            elements.beginNote(
+              screenToBoard(viewport, { x: canvasSize.width / 2, y: canvasSize.height / 2 })
+            )
+          }
           onUndo={elements.undo}
           onRedo={elements.redo}
           canRedo={elements.canRedo}
