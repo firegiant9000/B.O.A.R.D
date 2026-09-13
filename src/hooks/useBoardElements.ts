@@ -69,7 +69,7 @@ import {
   CodeElement,
   CodeLanguage,
 } from "../types";
-import { layoutCodeBox } from "../lib/codeRender";
+import { layoutCodeBox, MIN_CODE_FONT_SIZE } from "../lib/codeRender";
 import { useSelection, SelectionController } from "./useSelection";
 import { useThrottledValue } from "./useThrottledValue";
 
@@ -251,10 +251,11 @@ const codeBox = (c: CodeElement): Bounds => codeService.codeElementBbox(c);
 // instead of `codeBox`.
 const codeBoxOf = codeService.codeBoxOf;
 
-// Floor for a code element's `fontSize` under a resize drag — mirrors
+// Floor for a code element's `fontSize` under a resize drag — imported from
+// `lib/codeRender` (the single source of truth; see that module's own
+// comment on `MIN_CODE_FONT_SIZE`) rather than redeclared here, mirroring
 // MIN_MATH_SCALE's reasoning: a block scaled to an invisible/zero size could
 // never be resized back up or selected to delete.
-const MIN_CODE_FONT_SIZE = 6;
 
 // ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
@@ -2022,6 +2023,12 @@ export function useBoardElements(
     shapes,
     textElements,
     images,
+    // `mathElements` was missing from this array before Month 6's code-element
+    // work touched it — a pre-existing stale-closure bug: the math-duplicate
+    // loop above reads `mathElements`, so without this dep, duplicating an
+    // equation could copy a version from whenever this callback was last
+    // recreated for some OTHER dep, not the current board state. Fixed here
+    // alongside adding `codeElements` for the same, newly-added loop.
     mathElements,
     codeElements,
     onEditText,

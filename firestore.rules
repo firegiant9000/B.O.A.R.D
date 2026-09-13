@@ -185,7 +185,7 @@ service cloud.firestore {
     // never produce this: verifyEmbedToken rejects v1 + edit outright.
     //
     // EXACTLY what it grants, on exactly the one board the claim names:
-    //   - write to paths, notes, textElements, shapes and snapshots;
+    //   - write to paths, notes, textElements, shapes, codeElements and snapshots;
     //   - read presence/cursors, and write its OWN presence/cursor doc.
     //
     // What it does NOT grant, deliberately. This identity is not a board member and
@@ -884,7 +884,10 @@ service cloud.firestore {
       // non-member write path on the canvas, it is board-scoped by its claim, and
       // a read-only ('view') embed is unaffected: isEmbedEditor requires
       // embedScope == 'edit'. NOT extended to images/audio below — see the
-      // storage.rules note on isEmbedEditor.
+      // storage.rules note on isEmbedEditor. Month 6 adds `codeElements` (below,
+      // near `mathElements`) to this same embed-write set, and `mathElements`
+      // deliberately to neither this set nor this enumeration — see that
+      // block's own comment for why the two Month 6 kinds diverge.
       match /paths/{pathId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);

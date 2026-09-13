@@ -54,7 +54,9 @@ import type { CodeElement, CodeLanguage } from "../types";
 // `shellscript` (Shiki's canonical grammar name for it) — imported by its
 // brief-given name so the language list here reads the same as the brief's.
 //
-// One theme, per the brief ("bundle only these grammars ... and one theme").
+// One theme — the same bundle-cost reasoning the brief applies to grammars
+// (the brief does not itself mention themes; this is this module's own
+// extension of that reasoning, not a quoted requirement).
 // `github-light` was picked because it renders correctly on this board's
 // white canvas (`DrawingCanvas.tsx`'s `#FFFFFF` background) without this
 // element needing its own opaque backdrop first.

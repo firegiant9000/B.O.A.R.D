@@ -3,6 +3,7 @@ import { G, Rect, Text as SvgText, TSpan } from "react-native-svg";
 import {
   CODE_BACKGROUND_COLOR,
   CODE_BORDER_COLOR,
+  CODE_DEFAULT_FONT_SIZE,
   CODE_DEFAULT_FOREGROUND,
   codeTransform,
   layoutCodeBox,
@@ -46,8 +47,6 @@ export default function CodeElementView({
   selected = false,
   onCopied,
 }: CodeElementViewProps) {
-  if (!element) return null;
-
   const lines = useMemo(
     () => tokenizeCode(element.code, element.language),
     [element.code, element.language]
@@ -67,7 +66,9 @@ export default function CodeElementView({
   const x = Number.isFinite(element.x) ? element.x : 0;
   const y = Number.isFinite(element.y) ? element.y : 0;
   const fontSize =
-    Number.isFinite(element.fontSize) && element.fontSize > 0 ? element.fontSize : layout.padding;
+    Number.isFinite(element.fontSize) && element.fontSize > 0
+      ? element.fontSize
+      : CODE_DEFAULT_FONT_SIZE;
 
   const firstBaselineDy = layout.padding + layout.lineHeight * 0.8;
 

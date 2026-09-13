@@ -2350,6 +2350,21 @@ describe("code elements (Month 6)", () => {
     );
   });
 
+  it("a view-scoped embed identity cannot write one", async () => {
+    // The SAME seeded co1 and the SAME board as the read above (so this
+    // cannot fail merely because the document or the actor doesn't exist),
+    // and the same document the edit-scoped embed test above CAN write —
+    // an identity whose claims differ only in `embedScope` ('view' vs
+    // 'edit'). If isEmbedEditor ever stopped checking the scope (the exact
+    // shape of the most serious rules hole found on this branch: a grant
+    // that turned out to be scope-independent), this would start passing.
+    await assertFails(
+      updateDoc(doc(embedDb("boardWrite"), "boards/boardWrite/codeElements/co1"), {
+        code: "hacked",
+      })
+    );
+  });
+
   // Grouped last for readability, not because order matters: `beforeEach`
   // (above) clears and re-seeds Firestore before every test in this file, so
   // these deletes cannot starve an earlier read case of its seeded `co1`.

@@ -748,9 +748,10 @@ function DrawingCanvas(
             {/* Code elements (Month 6) render directly above math — the same
                 "newest rich-content kind paints on top" ordering
                 `useBoardElements.hitTestAny`'s own comment describes, still
-                under the text overlay above. `selected` (not the live group
-                transform's `isSel` alone) gates the copy-code badge so it
-                only shows for a lone selection, mirroring
+                under the text overlay above. `selected={isSel(c.id)}` gates
+                the copy-code badge per element: `isSel` is a `.has()` check
+                against the whole selection set, so every selected code
+                element in a multi-select renders its own badge, mirroring
                 `CodeElementView.test.tsx`'s own convention. */}
             {codeElements?.map((c) =>
               offsetTransform && isSel(c.id) ? (

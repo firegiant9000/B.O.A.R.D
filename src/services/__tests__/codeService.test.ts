@@ -2,13 +2,14 @@ jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"))
 jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
 
 import * as fs from "firebase/firestore";
-import { ts } from "../../test-utils/firestoreMock";
+import { makeQuerySnap, ts } from "../../test-utils/firestoreMock";
 import * as codeService from "../codeService";
 import { CODE_DEFAULT_FONT_SIZE, CODE_DEFAULT_LANGUAGE, layoutCodeBox } from "../../lib/codeRender";
 
 const addDoc = fs.addDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
 const deleteDoc = fs.deleteDoc as jest.Mock;
+const onSnapshot = fs.onSnapshot as jest.Mock;
 const collection = fs.collection as jest.Mock;
 const doc = fs.doc as jest.Mock;
 
@@ -224,5 +225,102 @@ describe("delete (Month 6)", () => {
     await codeService.deleteCodeElement("b1", "c1");
     expect(doc).toHaveBeenCalledWith({}, "boards", "b1", "codeElements", "c1");
     expect(deleteDoc).toHaveBeenCalled();
+  });
+});
+
+describe("updateCodeElement — generic geometry update, no layout call (Month 6)", () => {
+  it("writes exactly the given fields, unlike updateCodeSource which re-lays-out", async () => {
+    await codeService.updateCodeElement("b1", "c1", { x: 1, y: 2, rotation: 90 });
+    expect(doc).toHaveBeenCalledWith({}, "boards", "b1", "codeElements", "c1");
+    expect(updateDoc.mock.calls[0][1]).toEqual({ x: 1, y: 2, rotation: 90 });
+  });
+});
+
+describe("batched geometry writes (Month 6)", () => {
+  const writeBatch = fs.writeBatch as jest.Mock;
+  const getDocs = fs.getDocs as jest.Mock;
+
+  /** The mock's batch object for the Nth writeBatch() call. */
+  const batchAt = (n: number) => writeBatch.mock.results[n].value;
+
+  it("batchUpdateCodeElements writes one update per element and commits", async () => {
+    // The move/resize/rotate/z-order path in useBoardElements.
+    await codeService.batchUpdateCodeElements("b1", [
+      { id: "c1", data: { x: 1, y: 2 } },
+      { id: "c2", data: { x: 3, y: 4 } },
+    ]);
+    expect(batchAt(0).update).toHaveBeenCalledTimes(2);
+    expect(batchAt(0).commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("chunks past Firestore's 500-write batch limit rather than committing one oversized batch", async () => {
+    const updates = Array.from({ length: 501 }, (_, i) => ({ id: `c${i}`, data: { x: i } }));
+    await codeService.batchUpdateCodeElements("b1", updates);
+    expect(writeBatch).toHaveBeenCalledTimes(2);
+    expect(batchAt(0).update).toHaveBeenCalledTimes(500);
+    expect(batchAt(1).update).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits nothing at all for an empty update list", async () => {
+    await codeService.batchUpdateCodeElements("b1", []);
+    expect(writeBatch).not.toHaveBeenCalled();
+  });
+
+  it("batchDeleteCodeElements deletes each id", async () => {
+    await codeService.batchDeleteCodeElements("b1", ["c1", "c2", "c3"]);
+    expect(batchAt(0).delete).toHaveBeenCalledTimes(3);
+    expect(batchAt(0).commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearBoardCodeElements deletes every document the collection holds", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        ["c1", goodDoc()],
+        ["c2", goodDoc()],
+      ])
+    );
+    await codeService.clearBoardCodeElements("b1");
+    expect(collection).toHaveBeenCalledWith({}, "boards", "b1", "codeElements");
+    expect(batchAt(0).delete).toHaveBeenCalledTimes(2);
+    expect(batchAt(0).commit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isCodeConfigured (Month 6)", () => {
+  it("reports the build-time flag — an affordance gate, never a security one", () => {
+    // CODE_ENABLED is inlined into the client bundle and therefore public and
+    // patchable; what actually stops a write is firestore.rules alone (there
+    // is no callable in this feature's path at all — see this module's
+    // header).
+    expect(typeof codeService.isCodeConfigured()).toBe("boolean");
+  });
+});
+
+describe("subscribeToBoardCodeElements (Month 6)", () => {
+  it("maps and filters the snapshot, dropping documents with no `code` string", () => {
+    const onChange = jest.fn();
+    codeService.subscribeToBoardCodeElements("b1", onChange);
+    expect(collection).toHaveBeenCalledWith({}, "boards", "b1", "codeElements");
+    const handler = onSnapshot.mock.calls[0][1];
+    handler(
+      makeQuerySnap([
+        ["c1", goodDoc()],
+        ["c2", { ...goodDoc(), code: undefined }], // not a code element — dropped
+        ["c3", goodDoc({ code: "", language: "py" })], // empty code IS valid, unlike math
+      ])
+    );
+    const emitted = onChange.mock.calls[0][0];
+    expect(emitted.map((e: { id: string }) => e.id)).toEqual(["c1", "c3"]);
+  });
+});
+
+describe("codeBoxOf vs codeElementBbox (Month 6)", () => {
+  it("codeBoxOf always computes; codeElementBbox prefers a stored box", () => {
+    // Getting this backwards in a write path hands back the PRE-change box —
+    // the selection outline and the drawn text then disagree.
+    const stored = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+    const el = { ...codeService.mapCodeDoc("c1", goodDoc())!, bbox: stored };
+    expect(codeService.codeElementBbox(el)).toBe(stored);
+    expect(codeService.codeBoxOf(el)).toEqual({ minX: 10, minY: 20, maxX: 110, maxY: 70 });
   });
 });
