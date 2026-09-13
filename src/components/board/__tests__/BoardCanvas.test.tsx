@@ -83,7 +83,17 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     images: [],
     audioNotes: [],
     mathElements: [],
-    visible: { paths: [], shapes: [], texts: [], notes: [], images: [], audioNotes: [], mathElements: [] },
+    codeElements: [],
+    visible: {
+      paths: [],
+      shapes: [],
+      texts: [],
+      notes: [],
+      images: [],
+      audioNotes: [],
+      mathElements: [],
+      codeElements: [],
+    },
     loading: false,
 
     selection: {
@@ -164,6 +174,10 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     createMathElement: jest.fn().mockResolvedValue("math-new"),
     updateMathLatex: jest.fn().mockResolvedValue(undefined),
     latexOfMathElement: jest.fn(() => null),
+    createCodeElement: jest.fn().mockResolvedValue("code-new"),
+    updateCodeSource: jest.fn().mockResolvedValue(undefined),
+    codeOfElement: jest.fn(() => null),
+    languageOfCodeElement: jest.fn(() => null),
     insertImage: jest.fn(),
     scanDocument: jest.fn().mockResolvedValue(undefined),
 
@@ -352,6 +366,9 @@ interface RenderOpts {
   /** Month 6 — the equation edit entry point (a tap on an already-selected
    *  math element). */
   onEditMathElement?: (elementId: string) => void;
+  /** Month 6 — the code element edit entry point (a tap on an already-
+   *  selected code element). */
+  onEditCodeElement?: (elementId: string) => void;
   /** Shift held during a tap — additive selection, never an edit. */
   shiftHeld?: boolean;
 }
@@ -359,6 +376,7 @@ interface RenderOpts {
 function renderCanvas(opts: RenderOpts) {
   const elements = makeElements(opts.elements);
   const onEditMathElement = opts.onEditMathElement ?? jest.fn();
+  const onEditCodeElement = opts.onEditCodeElement ?? jest.fn();
   const tools = makeTools(opts.tools ?? { activeTool: "select" });
   const collab = makeCollab(opts.collab);
   const ai = makeAi(opts.ai);
@@ -394,6 +412,7 @@ function renderCanvas(opts: RenderOpts) {
       isShiftHeld={() => opts.shiftHeld ?? false}
       onDeleteSelected={jest.fn()}
       onEditMathElement={onEditMathElement}
+      onEditCodeElement={onEditCodeElement}
       onPanBy={jest.fn()}
       onZoomAtPoint={jest.fn()}
       onFling={jest.fn()}
@@ -411,6 +430,7 @@ function renderCanvas(opts: RenderOpts) {
   return {
     elements,
     onEditMathElement,
+    onEditCodeElement,
     tools,
     collab,
     ai,
@@ -1403,6 +1423,7 @@ describe("BoardCanvas — math elements: rendering and the edit entry point (Mon
           images: [],
           audioNotes: [],
           mathElements: [mathElement],
+          codeElements: [],
         },
       },
     });
@@ -1500,5 +1521,163 @@ describe("BoardCanvas — math elements: rendering and the edit entry point (Mon
 
     expect(onEditMathElement).not.toHaveBeenCalled();
     expect(elements.selectAtPoint).toHaveBeenCalledWith(POINT, false);
+  });
+});
+
+describe("BoardCanvas — code elements: rendering and the edit entry point (Month 6)", () => {
+  it("hands the viewport-culled code elements to DrawingCanvas", () => {
+    // Without this the snippets exist in Firestore and draw nowhere.
+    const codeElement = {
+      id: "c1",
+      schemaVersion: 1 as const,
+      type: "code" as const,
+      boardId: "board1",
+      userId: "self",
+      code: "const x = 1;",
+      language: "ts" as const,
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 50,
+      fontSize: 14,
+      rotation: 0,
+      createdAt: new Date(),
+    };
+    renderCanvas({
+      elements: {
+        visible: {
+          paths: [],
+          shapes: [],
+          texts: [],
+          notes: [],
+          images: [],
+          audioNotes: [],
+          mathElements: [],
+          codeElements: [codeElement],
+        },
+      },
+    });
+    expect(mockDrawingCanvasProps.codeElements).toEqual([codeElement]);
+  });
+
+  it("a tap on an ALREADY-SELECTED code element opens the composer instead of re-selecting", () => {
+    // The board's one edit entry point. `code`/`language` are the source of
+    // truth (tokenizing is synchronous and local), so editing is always
+    // "retype the source".
+    const onEditCodeElement = jest.fn();
+    const { elements } = renderCanvas({
+      tools: { activeTool: "select" },
+      onEditCodeElement,
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "c1", kind: "code" as const })),
+        selection: {
+          ...makeElements().selection,
+          isSelected: jest.fn((id: string) => id === "c1"),
+        },
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(onEditCodeElement).toHaveBeenCalledWith("c1");
+    // And it did NOT fall through to the ordinary select path.
+    expect(elements.selectAtPoint).not.toHaveBeenCalled();
+  });
+
+  it("the FIRST tap on an unselected code element only selects it", () => {
+    // The two-step is deliberate: a single tap must not steal "select this
+    // so I can drag it".
+    const onEditCodeElement = jest.fn();
+    const { elements } = renderCanvas({
+      tools: { activeTool: "select" },
+      onEditCodeElement,
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "c1", kind: "code" as const })),
+        selection: { ...makeElements().selection, isSelected: jest.fn(() => false) },
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(onEditCodeElement).not.toHaveBeenCalled();
+    expect(elements.selectAtPoint).toHaveBeenCalledWith(POINT, false);
+  });
+
+  it("a SHIFT-tap on a selected code element stays an additive selection, not an edit", () => {
+    const onEditCodeElement = jest.fn();
+    const { elements } = renderCanvas({
+      tools: { activeTool: "select" },
+      onEditCodeElement,
+      shiftHeld: true,
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "c1", kind: "code" as const })),
+        selection: {
+          ...makeElements().selection,
+          isSelected: jest.fn((id: string) => id === "c1"),
+        },
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(onEditCodeElement).not.toHaveBeenCalled();
+    expect(elements.selectAtPoint).toHaveBeenCalledWith(POINT, true);
+  });
+
+  it("a tap on a selected element of a DIFFERENT kind never opens the code composer", () => {
+    // The falsifier for the first test: without the `kind === "code"` check,
+    // tapping any already-selected element would open a code editor.
+    const onEditCodeElement = jest.fn();
+    const { elements } = renderCanvas({
+      tools: { activeTool: "select" },
+      onEditCodeElement,
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "s1", kind: "shape" as const })),
+        selection: {
+          ...makeElements().selection,
+          isSelected: jest.fn((id: string) => id === "s1"),
+        },
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(onEditCodeElement).not.toHaveBeenCalled();
+    expect(elements.selectAtPoint).toHaveBeenCalledWith(POINT, false);
+  });
+
+  it("a selected MATH element never opens the code composer, and vice versa", () => {
+    // The falsifier for the combined math/code dispatch: each kind must
+    // route to its OWN handler, never the other one's.
+    const onEditMathElement = jest.fn();
+    const onEditCodeElement = jest.fn();
+    const { elements } = renderCanvas({
+      tools: { activeTool: "select" },
+      onEditMathElement,
+      onEditCodeElement,
+      elements: {
+        hitTestAny: jest.fn(() => ({ id: "m1", kind: "math" as const })),
+        selection: {
+          ...makeElements().selection,
+          isSelected: jest.fn((id: string) => id === "m1"),
+        },
+      },
+    });
+
+    act(() => {
+      mockDrawingCanvasProps.onTap(POINT);
+    });
+
+    expect(onEditMathElement).toHaveBeenCalledWith("m1");
+    expect(onEditCodeElement).not.toHaveBeenCalled();
+    expect(elements.selectAtPoint).not.toHaveBeenCalled();
   });
 });

@@ -167,6 +167,13 @@ function renderModals(opts: {
   mathInitialLatex?: string | null;
   onCreateMath?: jest.Mock;
   onUpdateMath?: jest.Mock;
+  // Month 6 — the code composer.
+  codeComposerVisible?: boolean;
+  codeEditingId?: string | null;
+  codeInitialCode?: string | null;
+  codeInitialLanguage?: "ts" | "js" | "py" | "java" | "c" | "cpp" | "sql" | "json" | "bash" | null;
+  onCreateCode?: jest.Mock;
+  onUpdateCode?: jest.Mock;
   boardQaEnabled?: boolean;
   boardQaVisible?: boolean;
   isCitationLive?: jest.Mock;
@@ -212,6 +219,7 @@ function renderModals(opts: {
         images: [],
         audioNotes: [],
         mathElements: [],
+        codeElements: [],
       }}
       getContentBounds={() => null}
       historyVisible={false}
@@ -248,6 +256,13 @@ function renderModals(opts: {
       onCloseMathComposer={jest.fn()}
       onCreateMath={opts.onCreateMath ?? jest.fn().mockResolvedValue("m1")}
       onUpdateMath={opts.onUpdateMath ?? jest.fn().mockResolvedValue(undefined)}
+      codeComposerVisible={opts.codeComposerVisible ?? false}
+      codeEditingId={opts.codeEditingId ?? null}
+      codeInitialCode={opts.codeInitialCode ?? null}
+      codeInitialLanguage={opts.codeInitialLanguage ?? null}
+      onCloseCodeComposer={jest.fn()}
+      onCreateCode={opts.onCreateCode ?? jest.fn().mockResolvedValue("c1")}
+      onUpdateCode={opts.onUpdateCode ?? jest.fn().mockResolvedValue(undefined)}
       boardQaEnabled={opts.boardQaEnabled ?? true}
       boardQaVisible={opts.boardQaVisible ?? false}
       onCloseBoardQa={onCloseBoardQa}

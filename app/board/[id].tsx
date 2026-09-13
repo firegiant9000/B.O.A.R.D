@@ -36,6 +36,7 @@ import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewp
 import * as friendService from "../../src/services/friendService";
 import * as workspaceService from "../../src/services/workspaceService";
 import * as mathService from "../../src/services/mathService";
+import * as codeService from "../../src/services/codeService";
 import {
   isBoardQaConfigured,
   CANVAS_CITATION_KINDS,
@@ -163,6 +164,12 @@ export default function BoardScreen(
   // writes themselves by `mathService` via `useBoardElements`.
   const [mathComposerVisible, setMathComposerVisible] = useState(false);
   const [mathEditingId, setMathEditingId] = useState<string | null>(null);
+  // Month 6 — code elements. Same screen-owned plumbing shape as the two
+  // math fields above: visibility + which element (if any) is being edited;
+  // `CodeComposerHost` owns the busy flag and error copy, and the writes
+  // themselves go through `codeService` via `useBoardElements`.
+  const [codeComposerVisible, setCodeComposerVisible] = useState(false);
+  const [codeEditingId, setCodeEditingId] = useState<string | null>(null);
   // Month 6 — board Q&A chat, opened from the header's "ask this board"
   // button. Same screen-owned visibility convention as every dialog above.
   const [boardQaVisible, setBoardQaVisible] = useState(false);
@@ -732,6 +739,10 @@ export default function BoardScreen(
           setMathEditingId(elementId);
           setMathComposerVisible(true);
         }}
+        onEditCodeElement={(elementId) => {
+          setCodeEditingId(elementId);
+          setCodeComposerVisible(true);
+        }}
         onPanBy={viewportCtl.panBy}
         onZoomAtPoint={viewportCtl.zoomAtPoint}
         onFling={viewportCtl.fling}
@@ -823,6 +834,17 @@ export default function BoardScreen(
           // write would be denied at any scope. Affordance only — the gate
           // is the callable plus those rules.
           canInsertMath={!embedMode && mathService.isMathConfigured()}
+          onInsertCode={() => {
+            setCodeEditingId(null);
+            setCodeComposerVisible(true);
+          }}
+          // UNLIKE math/poll, this is NOT gated on `!embedMode`: firestore.rules'
+          // `codeElements` match carries the SAME `isEmbedEditor` disjunct every
+          // other geometry-only collection (paths/shapes/textElements) does — a
+          // code element needs no callable and no Storage bytes, so an embed
+          // editor's write here is reachable exactly like a shape's already is.
+          // Gated only on the build-time flag.
+          canInsertCode={codeService.isCodeConfigured()}
           onUndo={elements.undo}
           onRedo={elements.redo}
           canRedo={elements.canRedo}
@@ -857,6 +879,7 @@ export default function BoardScreen(
           images: elements.images,
           audioNotes: elements.audioNotes,
           mathElements: elements.mathElements,
+          codeElements: elements.codeElements,
         }}
         getContentBounds={elements.contentBounds}
         historyVisible={historyVisible}
@@ -928,6 +951,25 @@ export default function BoardScreen(
           )
         }
         onUpdateMath={elements.updateMathLatex}
+        codeComposerVisible={codeComposerVisible}
+        codeEditingId={codeEditingId}
+        codeInitialCode={codeEditingId ? elements.codeOfElement(codeEditingId) : null}
+        codeInitialLanguage={codeEditingId ? elements.languageOfCodeElement(codeEditingId) : null}
+        onCloseCodeComposer={() => {
+          setCodeComposerVisible(false);
+          setCodeEditingId(null);
+        }}
+        // Same top-left-at-viewport-centre placement as the equation composer
+        // above, for the same reason: a code block has no placing gesture of
+        // its own either.
+        onCreateCode={(code, language) =>
+          elements.createCodeElement(
+            screenToBoard(viewport, { x: canvasSize.width / 2, y: canvasSize.height / 2 }),
+            code,
+            language
+          )
+        }
+        onUpdateCode={elements.updateCodeSource}
         boardQaEnabled={isBoardQaConfigured()}
         boardQaVisible={boardQaVisible}
         onCloseBoardQa={() => setBoardQaVisible(false)}

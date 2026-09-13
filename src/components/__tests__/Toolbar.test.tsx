@@ -27,6 +27,7 @@ const baseProps = {
   onScanDocument: jest.fn(),
   onInsertPoll: jest.fn(),
   onInsertMath: jest.fn(),
+  onInsertCode: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
   onSave: jest.fn(),
@@ -170,6 +171,39 @@ describe("Toolbar — canInsertMath (Month 6, math elements)", () => {
     // offering what the rules would deny.
     render(<Toolbar {...baseProps} activeTool="select" canEdit={false} onToolChange={jest.fn()} />);
     expect(screen.queryByTestId("toolbar-insert-math")).toBeNull();
+  });
+});
+
+describe("Toolbar — canInsertCode (Month 6, code elements)", () => {
+  // This button is the board's ONE insert entry point for a code block (the
+  // edit path is a tap on the element itself, in BoardCanvas). Without it the
+  // whole feature is unreachable no matter how well codeRender.ts tokenizes.
+  it("shows the code button by default, wired to onInsertCode", () => {
+    const onInsertCode = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onInsertCode={onInsertCode} />
+    );
+    fireEvent.press(screen.getByTestId("toolbar-insert-code"));
+    expect(onInsertCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the code button when canInsertCode is false", () => {
+    // The screen passes false only when the build-time flag is off — UNLIKE
+    // `canInsertMath`, this is never conditioned on embed mode (firestore.rules'
+    // `codeElements` match carries the same `isEmbedEditor` disjunct every
+    // other geometry-only collection does). Hiding a button is an affordance,
+    // never the gate — that is firestore.rules' `codeElements` match.
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertCode={false} />
+    );
+    expect(screen.queryByTestId("toolbar-insert-code")).toBeNull();
+  });
+
+  it("is not offered at all on the read-only viewer toolbar", () => {
+    // A viewer cannot write `codeElements`; offering the button would mean
+    // offering what the rules would deny.
+    render(<Toolbar {...baseProps} activeTool="select" canEdit={false} onToolChange={jest.fn()} />);
+    expect(screen.queryByTestId("toolbar-insert-code")).toBeNull();
   });
 });
 

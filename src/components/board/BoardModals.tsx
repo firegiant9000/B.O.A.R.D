@@ -13,10 +13,11 @@ import ColorPickerModal from "../ColorPickerModal";
 import StrokeWidthModal from "../StrokeWidthModal";
 import PollComposer, { NewPollInput } from "./PollComposer";
 import MathComposerHost from "./MathComposerHost";
+import CodeComposerHost from "./CodeComposerHost";
 import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
-import type { BoardPresence, Plan } from "../../types";
+import type { BoardPresence, CodeLanguage, Plan } from "../../types";
 import type { UpsellResource } from "../upsellCopy";
 import type { Bounds } from "../../lib/viewport";
 import type { BoardElementSets } from "../../lib/svgExport";
@@ -143,6 +144,20 @@ interface BoardModalsProps {
   onCreateMath: (latex: string) => Promise<unknown>;
   onUpdateMath: (elementId: string, latex: string) => Promise<unknown>;
 
+  // Month 6 — the code composer. Opened two ways: Toolbar's code button
+  // (insert, `codeEditingId` null) and a tap on an already-selected code
+  // element (edit, `codeEditingId` set) — mirrors the equation composer's
+  // props exactly. CodeComposerHost owns the busy flag and the error copy.
+  codeComposerVisible: boolean;
+  codeEditingId: string | null;
+  /** The edited element's current source, or null when inserting. */
+  codeInitialCode: string | null;
+  /** The edited element's current language, or null when inserting. */
+  codeInitialLanguage: CodeLanguage | null;
+  onCloseCodeComposer: () => void;
+  onCreateCode: (code: string, language: CodeLanguage) => Promise<unknown>;
+  onUpdateCode: (elementId: string, code: string, language: CodeLanguage) => Promise<unknown>;
+
   // Month 6 — board Q&A chat panel (BoardHeader's "ask this board" button
   // opens it). Only rendered when the feature is configured, the same shape as
   // the diagram prompt above.
@@ -229,6 +244,13 @@ export default function BoardModals({
   onCloseMathComposer,
   onCreateMath,
   onUpdateMath,
+  codeComposerVisible,
+  codeEditingId,
+  codeInitialCode,
+  codeInitialLanguage,
+  onCloseCodeComposer,
+  onCreateCode,
+  onUpdateCode,
   onCreatePoll,
   boardQaEnabled,
   boardQaVisible,
@@ -382,6 +404,18 @@ export default function BoardModals({
         onCreate={onCreateMath}
         onUpdate={onUpdateMath}
         onClose={onCloseMathComposer}
+      />
+
+      {/* Month 6 — the code composer (Toolbar's code button to insert, a tap
+          on an already-selected code element to edit). */}
+      <CodeComposerHost
+        visible={codeComposerVisible}
+        editingId={codeEditingId}
+        initialCode={codeInitialCode}
+        initialLanguage={codeInitialLanguage}
+        onCreate={onCreateCode}
+        onUpdate={onUpdateCode}
+        onClose={onCloseCodeComposer}
       />
 
       {/* Month 6 — board Q&A chat. Mounted only when configured, so a build

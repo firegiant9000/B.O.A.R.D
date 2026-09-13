@@ -85,6 +85,22 @@ const mathItem: ClipItem = {
   },
 };
 
+const codeItem: ClipItem = {
+  kind: "code",
+  data: {
+    schemaVersion: 1,
+    type: "code",
+    code: "const x = 1;",
+    language: "ts",
+    width: 100,
+    height: 50,
+    x: 5,
+    y: 9,
+    fontSize: 14,
+    rotation: 0,
+  },
+};
+
 describe("clipboard store", () => {
   beforeEach(() => clearClipboard());
 
@@ -182,5 +198,19 @@ describe("offsetClipItem", () => {
     }
     // original untouched
     expect(mathItem.data.x).toBe(5);
+  });
+
+  it("offsets a code element's top-left and preserves its source/language", () => {
+    const out = offsetClipItem(codeItem, 16);
+    expect(out.kind).toBe("code");
+    if (out.kind === "code") {
+      expect(out.data.x).toBe(21);
+      expect(out.data.y).toBe(25);
+      expect(out.data.code).toBe("const x = 1;");
+      expect(out.data.language).toBe("ts");
+      expect(out.data.width).toBe(100);
+    }
+    // original untouched
+    expect(codeItem.data.x).toBe(5);
   });
 });

@@ -969,6 +969,22 @@ service cloud.firestore {
         allow write: if isBoardEditor(boardId);
       }
 
+      // Code elements (Month 6) — syntax-highlighted source, tokenized
+      // entirely client-side (Shiki, no Cloud Function — see
+      // src/lib/codeRender.ts's header). Same member-read / editor-write
+      // gate as paths/notes/textElements/shapes above, INCLUDING the
+      // `isEmbedEditor` disjunct those carry and `mathElements` above
+      // deliberately does not: a code element needs no callable and no
+      // Storage bytes, so there is nothing an embed editor's write could
+      // reach that it couldn't already produce itself — unlike math (which
+      // needs `renderMath`, a members-only callable) and unlike images/audio
+      // (Storage-gated bytes), a code element is exactly as reachable to an
+      // embed editor as a path or shape already is.
+      match /codeElements/{elementId} {
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
+      }
+
       match /snapshots/{snapshotId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);

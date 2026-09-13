@@ -439,6 +439,23 @@ beforeEach(async () => {
       createdAt: 0,
     });
 
+    // Month 6 — a seeded code element. Same `boardWrite` board as `m1` above,
+    // so the write tests below exercise the SAME per-role membership.
+    await setDoc(doc(db, "boards/boardWrite/codeElements/co1"), {
+      schemaVersion: 1,
+      type: "code",
+      boardId: "boardWrite",
+      userId: ALICE,
+      code: "const x = 1;",
+      language: "ts",
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 50,
+      fontSize: 14,
+      rotation: 0,
+    });
+
     // Phase 10 — a seeded in-app notification for alice, authored by dave.
     await setDoc(doc(db, "users/alice/notifications/n1"), {
       recipientId: ALICE,
@@ -2242,6 +2259,106 @@ describe("math render cache (mathCache, Month 6)", () => {
         svgPath: "M 0 0", width: 1, height: 1, createdAt: 0,
       })
     );
+  });
+});
+
+// ── Month 6: code elements ────────────────────────────────────────────────────
+// `boards/{boardId}/codeElements/{elementId}` — syntax-highlighted source,
+// tokenized entirely client-side (no Cloud Function — see
+// src/lib/codeRender.ts's header). Member-read / editor-write, like every
+// other canvas-content subcollection, INCLUDING the `isEmbedEditor` disjunct
+// `mathElements` above deliberately omits: a code element needs no callable
+// and no Storage bytes, so there is nothing an embed editor's write could
+// reach here that a path/shape write doesn't already let it reach — the
+// embed-editor case below is therefore a POSITIVE control, the mirror image
+// of math's denial, not a copy-pasted assumption.
+//
+// Every denial is paired with a positive control — the SAME actor against a
+// collection already proven open to them — so a rule that failed every
+// request could not slip through as a false pass.
+describe("code elements (Month 6)", () => {
+  const codeDoc = (uid, boardId, docId) =>
+    setDoc(doc(db(uid), `boards/${boardId}/codeElements/${docId}`), {
+      schemaVersion: 1,
+      type: "code",
+      boardId,
+      userId: uid,
+      code: "print(1)",
+      language: "py",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      fontSize: 14,
+      rotation: 0,
+    });
+
+  it("a board member reads a code element", async () => {
+    await assertSucceeds(getDoc(doc(db(CAROL), "boards/boardWrite/codeElements/co1")));
+  });
+
+  it("a non-member cannot read a code element", async () => {
+    // The same read succeeds for carol above, so this denial is bob and not
+    // a rule that refuses everyone.
+    await assertFails(getDoc(doc(db(BOB), "boards/boardWrite/codeElements/co1")));
+  });
+
+  it("a non-member cannot LIST the code elements either", async () => {
+    // A get-only suite cannot detect an enumeration hole.
+    await assertSucceeds(getDocs(collection(db(CAROL), "boards/boardWrite/codeElements")));
+    await assertFails(getDocs(collection(db(BOB), "boards/boardWrite/codeElements")));
+  });
+
+  it("an editor writes a code element", async () => {
+    await assertSucceeds(codeDoc(DAVE, "boardWrite", "byDave"));
+  });
+
+  it("a workspace viewer cannot write one, though they can read", async () => {
+    // carol reads co1 above, so this denial is the WRITE gate and not carol.
+    await assertFails(codeDoc(CAROL, "boardWrite", "byCarol"));
+  });
+
+  it("a member demoted to viewer by a per-board override cannot write one", async () => {
+    await assertFails(codeDoc(FRANK, "boardWrite", "byFrank"));
+  });
+
+  it("an edit-scoped embed identity CAN write one — unlike math, there is nothing here it couldn't already reach", async () => {
+    const edb = embedEditDb("boardWrite");
+    await assertSucceeds(
+      setDoc(doc(edb, "boards/boardWrite/codeElements/fromEmbed"), {
+        schemaVersion: 1,
+        type: "code",
+        boardId: "boardWrite",
+        userId: EMBED_EDIT_UID,
+        code: "x",
+        language: "ts",
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        fontSize: 14,
+        rotation: 0,
+      })
+    );
+  });
+
+  it("a view-scoped embed identity can READ one (the embed renders the board)", async () => {
+    // A code element is canvas content; a read-only embed that could not
+    // read it would render a board with holes in it.
+    await assertSucceeds(
+      getDoc(doc(embedDb("boardWrite"), "boards/boardWrite/codeElements/co1"))
+    );
+  });
+
+  // Grouped last for readability, not because order matters: `beforeEach`
+  // (above) clears and re-seeds Firestore before every test in this file, so
+  // these deletes cannot starve an earlier read case of its seeded `co1`.
+  it("a viewer cannot delete one", async () => {
+    await assertFails(deleteDoc(doc(db(CAROL), "boards/boardWrite/codeElements/co1")));
+  });
+
+  it("an editor can delete one", async () => {
+    await assertSucceeds(deleteDoc(doc(db(DAVE), "boards/boardWrite/codeElements/co1")));
   });
 });
 

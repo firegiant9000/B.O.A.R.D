@@ -1,6 +1,7 @@
 import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
 import { mathTransform } from "../mathInk";
-import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
+import { layoutCodeBox } from "../codeRender";
+import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
 
 const bounds: SvgExportBounds = { x: 0, y: 0, width: 800, height: 600 };
 
@@ -120,6 +121,26 @@ const mathData: MathElement = {
   createdAt: new Date(),
 };
 
+// Month 6 — a code element. `code`/`language` are the source of truth (no
+// cached render output — see CodeElement's type comment); the export
+// serializer re-tokenizes with the SAME pure function the live canvas uses.
+const codeData: CodeElement = {
+  id: "c1",
+  schemaVersion: 1,
+  type: "code",
+  boardId: "b1",
+  userId: "u1",
+  code: "const x = 1;",
+  language: "ts",
+  x: 20,
+  y: 30,
+  width: 120,
+  height: 50,
+  fontSize: 14,
+  rotation: 0,
+  createdAt: new Date(),
+};
+
 const pathEl: SvgExportElement = { kind: "path", data: pathData };
 const shapeEl: SvgExportElement = { kind: "shape", data: shapeData };
 const textEl: SvgExportElement = { kind: "text", data: textData };
@@ -127,6 +148,7 @@ const noteEl: SvgExportElement = { kind: "note", data: noteData };
 const imageEl: SvgExportElement = { kind: "image", data: imageData };
 const audioEl: SvgExportElement = { kind: "audio", data: audioData };
 const mathEl: SvgExportElement = { kind: "math", data: mathData };
+const codeEl: SvgExportElement = { kind: "code", data: codeData };
 
 describe("toSvgDocument", () => {
   it("serializes a path element", () => {
@@ -138,11 +160,11 @@ describe("toSvgDocument", () => {
 
   it("serializes every element kind that exists today, with real content per visual kind", () => {
     // The union has grown past the brief's five kinds (audio notes and, as of
-    // Month 6, math elements exist today; poll/code are scheduled later) —
+    // Month 6, math AND code elements exist today; poll is scheduled later) —
     // every kind that exists right now must appear here, or a board holding
     // one would silently break export without any test catching it.
     expect(() =>
-      toSvgDocument([pathEl, shapeEl, textEl, noteEl, imageEl, audioEl, mathEl], bounds)
+      toSvgDocument([pathEl, shapeEl, textEl, noteEl, imageEl, audioEl, mathEl, codeEl], bounds)
     ).not.toThrow();
 
     // "Doesn't throw" alone would also pass for a serializer that always
@@ -156,6 +178,7 @@ describe("toSvgDocument", () => {
     expect(noteDoc).toContain("sticky");
     expect(toSvgDocument([imageEl], bounds)).toContain("<image");
     expect(toSvgDocument([mathEl], bounds)).toContain("<path");
+    expect(toSvgDocument([codeEl], bounds)).toContain("<text");
 
     // Audio is a canvas affordance badge, not board content the way a
     // stroke/shape/text/image is (see toSvgDocument's header) — it must not
@@ -438,6 +461,7 @@ describe("toSvgExportElements", () => {
     images: [],
     audioNotes: [],
     mathElements: [],
+    codeElements: [],
   };
 
   it("wraps every kind's array entries with the matching kind tag", () => {
@@ -450,16 +474,18 @@ describe("toSvgExportElements", () => {
       images: [imageData],
       audioNotes: [audioData],
       mathElements: [mathData],
+      codeElements: [codeData],
     });
     const kinds = els.map((el) => el.kind).sort();
-    expect(kinds).toEqual(["audio", "image", "math", "note", "path", "shape", "text"]);
+    expect(kinds).toEqual(["audio", "code", "image", "math", "note", "path", "shape", "text"]);
     // Not just the right kind tags — the right underlying data too.
     expect(els.find((el) => el.kind === "path")?.data).toBe(pathData);
     expect(els.find((el) => el.kind === "image")?.data).toBe(imageData);
     expect(els.find((el) => el.kind === "math")?.data).toBe(mathData);
+    expect(els.find((el) => el.kind === "code")?.data).toBe(codeData);
   });
 
-  it("orders back-to-front matching the live canvas's own stacking (images, paths, shapes, math, notes, texts)", () => {
+  it("orders back-to-front matching the live canvas's own stacking (images, paths, shapes, math, code, notes, texts)", () => {
     // Two of each kind (in a scrambled input order) proves this reorders by
     // kind rather than by accidentally preserving call-argument order.
     const els = toSvgExportElements({
@@ -468,6 +494,7 @@ describe("toSvgExportElements", () => {
       paths: [pathData],
       notes: [noteData],
       mathElements: [mathData],
+      codeElements: [codeData],
       shapes: [shapeData],
       texts: [textData],
     });
@@ -476,14 +503,15 @@ describe("toSvgExportElements", () => {
       "path",
       "shape",
       "math",
+      "code",
       "note",
       "text",
       "audio",
     ]);
   });
 
-  it("survives a caller that omits mathElements entirely (a board predating Month 6)", () => {
-    // The field is required on `BoardElementSets`, but this module is
+  it("survives a caller that omits mathElements/codeElements entirely (a board predating Month 6)", () => {
+    // Both fields are required on `BoardElementSets`, but this module is
     // reachable from untyped JS; a missing array must not throw mid-export.
     const legacy = { paths: [pathData], shapes: [], texts: [], notes: [], images: [], audioNotes: [] };
     expect(toSvgExportElements(legacy as never).map((el) => el.kind)).toEqual(["path"]);
@@ -541,5 +569,58 @@ describe("math elements export (Month 6)", () => {
   it("emits nothing for an element with no rendered path data, rather than an empty <path>", () => {
     const blank: SvgExportElement = { kind: "math", data: { ...mathData, svgPath: "" } };
     expect(toSvgDocument([blank], bounds)).not.toContain("<path");
+  });
+});
+
+describe("code elements export (Month 6)", () => {
+  // Unlike math, there is nothing cached to emit: the export re-tokenizes
+  // `code`/`language` with the SAME pure `lib/codeRender.ts` functions the
+  // live canvas uses, so the printed snippet is colored identically to the
+  // one on screen. `nodeFor`'s default branch SKIPS any kind it hasn't been
+  // taught, silently — without a `code` case, an exported board would have
+  // no snippets in it and nothing would fail.
+  it("emits a background card and the tokenized text at the element's own box", () => {
+    const doc = toSvgDocument([codeEl], bounds);
+    expect(doc).toContain(`<rect x="20" y="30" width="120" height="50"`);
+    expect(doc).toContain("<text");
+    // "const" is a keyword Shiki colors — real tokenization, not one plain
+    // run of the whole line (see codeRender.test.ts's own such assertion).
+    expect(doc).toMatch(/<tspan fill="#[0-9a-fA-F]{3,6}">const<\/tspan>/);
+  });
+
+  it("round-trips the source text through the exported tspans", () => {
+    const doc = toSvgDocument([codeEl], bounds);
+    const runContents = [...doc.matchAll(/<tspan fill="[^"]*">([^<]*)<\/tspan>/g)].map((m) => m[1]);
+    expect(runContents.join("")).toBe(codeData.code);
+  });
+
+  it("places the second line one lineHeight below the first, via dy", () => {
+    const multiline: SvgExportElement = {
+      kind: "code",
+      data: { ...codeData, code: "const x = 1;\nconsole.log(x);" },
+    };
+    const layout = layoutCodeBox(multiline.data.code, multiline.data.fontSize);
+    const doc = toSvgDocument([multiline], bounds);
+    expect(doc).toContain(`<tspan x="32" dy="0">`);
+    expect(doc).toContain(`<tspan x="32" dy="${layout.lineHeight}">`);
+  });
+
+  it("fails corrupt geometry closed instead of emitting NaN into the document", () => {
+    const corrupt: SvgExportElement = {
+      kind: "code",
+      data: { ...codeData, x: NaN, y: NaN, width: NaN, height: NaN, rotation: 30 },
+    };
+    const doc = toSvgDocument([corrupt], bounds);
+    expect(doc).not.toContain("NaN");
+    // Every one of x/y/width/height fell back to 0, so the pivot is the origin.
+    expect(doc).toContain(`<g transform="rotate(30, 0, 0)">`);
+    expect(doc).toContain(`<rect x="0" y="0" width="1" height="1"`);
+  });
+
+  it("still draws a card for empty code, unlike math's no-op on empty output", () => {
+    // CodeElement's type comment: an empty snippet still has a box to
+    // select/retype into, unlike an equation with no rendered path at all.
+    const blank: SvgExportElement = { kind: "code", data: { ...codeData, code: "" } };
+    expect(toSvgDocument([blank], bounds)).toContain("<rect");
   });
 });

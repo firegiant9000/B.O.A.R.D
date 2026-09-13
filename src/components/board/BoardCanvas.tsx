@@ -109,6 +109,11 @@ interface BoardCanvasProps {
    *  edit entry point (the toolbar's button is the insert one). */
   onEditMathElement: (elementId: string) => void;
 
+  /** Month 6 — code elements. Open the code composer on an existing element,
+   *  seeded with its `code`/`language` — the same tap-on-an-already-selected-
+   *  element edit entry point as `onEditMathElement` above. */
+  onEditCodeElement: (elementId: string) => void;
+
   // Camera
   onPanBy: (dx: number, dy: number) => void;
   onZoomAtPoint: (factor: number, screenPoint: Point) => void;
@@ -149,6 +154,7 @@ export default function BoardCanvas({
   isShiftHeld,
   onDeleteSelected,
   onEditMathElement,
+  onEditCodeElement,
   onPanBy,
   onZoomAtPoint,
   onFling,
@@ -414,12 +420,14 @@ export default function BoardCanvas({
     if (tools.activeTool === "laser") { collab.publishPointer(point, true); return; }
     if (tools.activeTool === "comment") { anchorCommentAt(point); return; }
     if (tools.activeTool === "select") {
-      // Month 6 — math elements. A tap on an ALREADY-SELECTED equation opens
-      // the composer on its `latex`; the first tap just selects, like every
-      // other element. That two-step is deliberate — it keeps a single tap
-      // from stealing "select this so I can drag it" — and it is the board's
-      // only edit entry point for an equation. Shift-tap is excluded: that is
-      // an additive-selection gesture, not an edit one.
+      // Month 6 — math AND code elements share this same tap-to-edit shape.
+      // A tap on an ALREADY-SELECTED equation/snippet opens its composer
+      // seeded with the source (`latex`, or `code`+`language`); the first tap
+      // just selects, like every other element. That two-step is deliberate
+      // — it keeps a single tap from stealing "select this so I can drag
+      // it" — and it is the board's only edit entry point for either kind.
+      // Shift-tap is excluded: that is an additive-selection gesture, not an
+      // edit one.
       //
       // `hitTestAny` here is the SAME picking path `selectAtPoint` runs, not
       // a second one (cf. `colorOfElement`'s note) — it is called again only
@@ -427,17 +435,24 @@ export default function BoardCanvas({
       //
       // DELIBERATELY not gated by `presenterLocksContentCreation` (the check
       // below, at the bottom of this function): that lock's axis is "creates
-      // NEW content" — inserting an equation (Toolbar's button, gated via
-      // `canEdit={embedCanEdit}`) is squarely in scope, but re-typesetting an
-      // EXISTING one is the same class as the move/resize/rotate handlers
-      // this file already leaves available during a presentation. This is a
-      // client-side affordance only; the real boundary is firestore.rules'
-      // editor-write on `mathElements`.
+      // NEW content" — inserting an equation/snippet (Toolbar's buttons,
+      // gated via `canEdit={embedCanEdit}`) is squarely in scope, but
+      // re-editing an EXISTING one is the same class as the move/resize/
+      // rotate handlers this file already leaves available during a
+      // presentation. This is a client-side affordance only; the real
+      // boundary is firestore.rules' editor-write on `mathElements`/
+      // `codeElements`.
       if (!isShiftHeld()) {
         const hit = elements.hitTestAny(point);
-        if (hit && hit.kind === "math" && elements.selection.isSelected(hit.id)) {
-          onEditMathElement(hit.id);
-          return;
+        if (hit && elements.selection.isSelected(hit.id)) {
+          if (hit.kind === "math") {
+            onEditMathElement(hit.id);
+            return;
+          }
+          if (hit.kind === "code") {
+            onEditCodeElement(hit.id);
+            return;
+          }
         }
       }
       elements.selectAtPoint(point, isShiftHeld());
@@ -622,6 +637,7 @@ export default function BoardCanvas({
         shapes={elements.visible.shapes}
         images={elements.visible.images}
         mathElements={elements.visible.mathElements}
+        codeElements={elements.visible.codeElements}
         shapeDraft={tools.shapeDraft}
         guides={tools.guides}
         selectedIds={elements.selection.selectedIds}

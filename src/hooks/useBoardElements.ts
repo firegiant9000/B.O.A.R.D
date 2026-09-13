@@ -52,6 +52,7 @@ import * as imageService from "../services/imageService";
 import * as scanService from "../services/scanService";
 import * as audioService from "../services/audioService";
 import * as mathService from "../services/mathService";
+import * as codeService from "../services/codeService";
 import * as snapshotService from "../services/snapshotService";
 import { captureException } from "../lib/errorReporting";
 import { reportSyncState } from "../lib/connectivity";
@@ -65,7 +66,10 @@ import {
   ImageElement,
   AudioElement,
   MathElement,
+  CodeElement,
+  CodeLanguage,
 } from "../types";
+import { layoutCodeBox } from "../lib/codeRender";
 import { useSelection, SelectionController } from "./useSelection";
 import { useThrottledValue } from "./useThrottledValue";
 
@@ -119,6 +123,7 @@ import { useThrottledValue } from "./useThrottledValue";
  *  2156  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
  *  2257  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
  *  2336  WRITE PATH — MATH ELEMENTS                     createMathElement, updateMathLatex, latexOfMathElement
+ *  2377  WRITE PATH — CODE ELEMENTS                     createCodeElement, updateCodeSource, codeOfElement, languageOfElement
  *  2377  WRITE PATH — STICKY NOTES (legacy)             submitNote, cancelNote, deleteNote
  *  2417  WRITE PATH — UNDO / REDO / CLEAR               undo, redo, clearBoardElements, resetLocalElements
  *  2489  DERIVED GESTURE PREVIEW                        selectedTransform, overlayBounds, overlayRotation, previewText
@@ -238,6 +243,19 @@ const mathBoxOf = mathService.mathBoxOf;
 // scaled back up or selected to delete.
 const MIN_MATH_SCALE = 0.05;
 
+// Month 6 — code elements. A full canvas primitive (z-ordered, rotatable),
+// unlike math — see CodeElement's type comment for why the two diverge.
+const codeBox = (c: CodeElement): Bounds => codeService.codeElementBbox(c);
+// The same box computed from geometry ALONE — see `mathBoxOf`'s comment for
+// why a write path that has just changed x/y/width/height must use this one
+// instead of `codeBox`.
+const codeBoxOf = codeService.codeBoxOf;
+
+// Floor for a code element's `fontSize` under a resize drag — mirrors
+// MIN_MATH_SCALE's reasoning: a block scaled to an invisible/zero size could
+// never be resized back up or selected to delete.
+const MIN_CODE_FONT_SIZE = 6;
+
 // ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
 export interface ElementHit {
@@ -311,6 +329,11 @@ export interface BoardElements {
    *  indexed, culled, hit-tested, selectable and transformable exactly like
    *  shapes and images, because it renders as an ordinary `<Path>`. */
   mathElements: MathElement[];
+  /** Code elements (Month 6). A full canvas primitive like shapes/images —
+   *  UNLIKE `mathElements`, it participates in the shared z-order model and
+   *  supports real rotation (see `CodeElement`'s type comment for why the
+   *  two diverge). */
+  codeElements: CodeElement[];
   /** Viewport-culled subsets the canvas actually renders. */
   visible: {
     paths: DrawPath[];
@@ -322,6 +345,7 @@ export interface BoardElements {
      *  viewport-culled (see `audioNotes` above). */
     audioNotes: AudioElement[];
     mathElements: MathElement[];
+    codeElements: CodeElement[];
   };
   /** True until the first Firestore snapshot (or snapshot cold-load) arrives. */
   loading: boolean;
@@ -464,6 +488,25 @@ export interface BoardElements {
    *  seeded with when an existing equation is opened for editing. */
   latexOfMathElement: (elementId: string) => string | null;
 
+  // --- Code elements (Month 6) ---
+  /** Lay out `code` (pure, synchronous — no render call, unlike math) and
+   *  drop it on the board at `point`. Resolves to the new element's id. */
+  createCodeElement: (
+    point: Point,
+    code: string,
+    language: CodeLanguage
+  ) => Promise<string>;
+  /** Re-lay-out an existing element's source/language at its current
+   *  fontSize. Rejects if the element no longer exists (a collaborator
+   *  deleted it while the composer was open), mirroring
+   *  `updateMathLatex`'s same contract. */
+  updateCodeSource: (elementId: string, code: string, language: CodeLanguage) => Promise<void>;
+  /** The source behind a code element id, or null — what the composer seeds
+   *  when an existing snippet is opened for editing. */
+  codeOfElement: (elementId: string) => string | null;
+  /** The language behind a code element id, or null. */
+  languageOfCodeElement: (elementId: string) => CodeLanguage | null;
+
   // --- Images ---
   /** The toolbar image button: web goes straight to a file dialog, native asks. */
   insertImage: () => void;
@@ -527,6 +570,7 @@ export function useBoardElements(
   const [images, setImages] = useState<ImageElement[]>([]);
   const [audioNotes, setAudioNotes] = useState<AudioElement[]>([]);
   const [mathElements, setMathElements] = useState<MathElement[]>([]);
+  const [codeElements, setCodeElements] = useState<CodeElement[]>([]);
   const [insertingImage, setInsertingImage] = useState(false);
 
   // Text note state (legacy sticky notes — kept for backwards compat)
@@ -569,6 +613,8 @@ export function useBoardElements(
   // Month 6 — math elements. A full hit-test/selection participant, so it
   // needs the same synchronous mirror every other selectable kind has.
   const visibleMathElementsRef = useRef<MathElement[]>([]);
+  // Month 6 — code elements. Same reasoning as visibleMathElementsRef.
+  const visibleCodeElementsRef = useRef<CodeElement[]>([]);
   // Month 5 — synchronous source for the anchor-delete cascade (see
   // `cascadeDeleteVoiceNotes` below). Unfiltered (not the blocked-user
   // `visibleAudioNotes` memo): a blocked user's note must still be cascaded
@@ -713,6 +759,13 @@ export function useBoardElements(
     return mathService.subscribeToBoardMathElements(boardId, setMathElements);
   }, [boardId]);
 
+  // Month 6 — code elements. An ordinary element subscription — there is no
+  // render call to trigger at all here, ever (see codeService's header).
+  useEffect(() => {
+    if (!boardId) return;
+    return codeService.subscribeToBoardCodeElements(boardId, setCodeElements);
+  }, [boardId]);
+
   // Month 5 — voice notes. A separate, independent subscription (its own
   // subcollection, no shared listener with any other kind) since it's not
   // part of the paths/shapes/text/images write-path family the rest of this
@@ -776,6 +829,14 @@ export function useBoardElements(
     () => mathElements.filter((m) => !blockedIds.includes(m.userId)),
     [mathElements, blockedIds]
   );
+  // Month 6 — code elements. Blocked-user filtered AND z-ordered, unlike
+  // `visibleMathElements` above — see `CodeElement`'s type comment for why
+  // the two diverge (a code block has no baked path data to orbit; it is
+  // ordinary positioned text with a real Bring to Front / Send to Back).
+  const visibleCodeElements = useMemo(
+    () => codeElements.filter((c) => !blockedIds.includes(c.userId)).sort(byZ),
+    [codeElements, blockedIds]
+  );
   // Month 5 — voice notes. Blocked-user filtered like every other layer; not
   // z-ordered (no z-stacking concept for a badge overlay) and not fed into
   // the spatial index / culling below — see the BoardElements interface
@@ -801,6 +862,9 @@ export function useBoardElements(
   useEffect(() => {
     visibleMathElementsRef.current = visibleMathElements;
   }, [visibleMathElements]);
+  useEffect(() => {
+    visibleCodeElementsRef.current = visibleCodeElements;
+  }, [visibleCodeElements]);
   // Month 5 — synced from the raw `audioNotes` state, not `visibleAudioNotes`
   // (see the ref's own comment on why blocked-user filtering doesn't apply
   // to the cascade).
@@ -856,9 +920,17 @@ export function useBoardElements(
       ...visibleImages.map((img) => entryFromBounds(img.id, "image", imgBox(img))),
       ...visibleTextElements.map((el) => entryFromBounds(el.id, "text", textBox(el))),
       ...visibleMathElements.map((m) => entryFromBounds(m.id, "math", mathBox(m))),
+      ...visibleCodeElements.map((c) => entryFromBounds(c.id, "code", codeBox(c))),
     ];
     spatialIndexRef.current = buildElementIndex(entries);
-  }, [visiblePaths, visibleShapes, visibleImages, visibleTextElements, visibleMathElements]);
+  }, [
+    visiblePaths,
+    visibleShapes,
+    visibleImages,
+    visibleTextElements,
+    visibleMathElements,
+    visibleCodeElements,
+  ]);
 
   // ────────── VIEWPORT CULLING ──────────────────────────────────────────
   // Phase 4 viewport culling — render only what overlaps the visible board rect.
@@ -913,6 +985,11 @@ export function useBoardElements(
     return visibleMathElements.filter((m) => boundsIntersect(mathBox(m), view));
   }, [visibleMathElements, cullViewport, canvasSize]);
 
+  const culledCodeElements = useMemo(() => {
+    const view = viewportBounds(cullViewport, canvasSize, CULL_MARGIN_PX);
+    return visibleCodeElements.filter((c) => boundsIntersect(codeBox(c), view));
+  }, [visibleCodeElements, cullViewport, canvasSize]);
+
   // ────────── GEOMETRY & DERIVED SELECTION ──────────────────────────────
   // Board-space bounds of all content, for fit-to-content.
   const contentBounds = (): Bounds | null =>
@@ -933,6 +1010,7 @@ export function useBoardElements(
         maxY: n.position.y,
       })),
       ...visibleMathElements.map(mathBox),
+      ...visibleCodeElements.map(codeBox),
     ]);
 
   // Phase 7 — current board-space box of an element by id, across every kind, used
@@ -962,13 +1040,25 @@ export function useBoardElements(
         const mEl = visibleMathElements.find((x) => x.id === elId);
         if (mEl) return mathBox(mEl);
       }
+      if (!kind || kind === "code") {
+        const cEl = visibleCodeElements.find((x) => x.id === elId);
+        if (cEl) return codeBox(cEl);
+      }
       if (!kind || kind === "note") {
         const n = visibleNotes.find((x) => x.id === elId);
         if (n) return { minX: n.position.x, minY: n.position.y, maxX: n.position.x, maxY: n.position.y };
       }
       return null;
     },
-    [visiblePaths, visibleShapes, visibleTextElements, visibleImages, visibleMathElements, visibleNotes]
+    [
+      visiblePaths,
+      visibleShapes,
+      visibleTextElements,
+      visibleImages,
+      visibleMathElements,
+      visibleCodeElements,
+      visibleNotes,
+    ]
   );
 
   // Board-space boxes of every selected element (mixed kinds), and their union
@@ -982,6 +1072,7 @@ export function useBoardElements(
     for (const img of visibleImages) if (ids.has(img.id)) boxes.push(imgBox(img));
     for (const el of visibleTextElements) if (ids.has(el.id)) boxes.push(textBox(el));
     for (const mEl of visibleMathElements) if (ids.has(mEl.id)) boxes.push(mathBox(mEl));
+    for (const cEl of visibleCodeElements) if (ids.has(cEl.id)) boxes.push(codeBox(cEl));
     return boxes;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -991,6 +1082,7 @@ export function useBoardElements(
     visibleImages,
     visibleTextElements,
     visibleMathElements,
+    visibleCodeElements,
   ]);
   const selectionUnion = useMemo(() => unionBounds(selectedBoxes), [selectedBoxes]);
 
@@ -1019,6 +1111,18 @@ export function useBoardElements(
       const el = visibleTextElementsRef.current[i];
       if (boundsContainPoint(textBox(el), point, SELECT_TAP_PADDING)) {
         return { id: el.id, kind: "text" };
+      }
+    }
+    // Month 6 — code elements. Ordered here because the hit-test walks
+    // top-down and code renders directly above math in the SVG tree (see
+    // DrawingCanvas) — the newest "rich content" kind painting on top of the
+    // others within the SVG, still under the text overlay above. Box
+    // containment, same reasoning as math's own comment below: sparse glyphs
+    // shouldn't make selecting a snippet fiddly.
+    for (let i = visibleCodeElementsRef.current.length - 1; i >= 0; i--) {
+      const cEl = visibleCodeElementsRef.current[i];
+      if (boundsContainPoint(codeBox(cEl), point, SELECT_TAP_PADDING)) {
+        return { id: cEl.id, kind: "code" };
       }
     }
     // Month 6 — math elements. Ordered here because the hit-test walks
@@ -1090,6 +1194,7 @@ export function useBoardElements(
         ...visibleImagesRef.current.map((img) => img.id),
         ...visibleTextElementsRef.current.map((el) => el.id),
         ...visibleMathElementsRef.current.map((mEl) => mEl.id),
+        ...visibleCodeElementsRef.current.map((cEl) => cEl.id),
       ],
       "elements"
     );
@@ -1163,6 +1268,7 @@ export function useBoardElements(
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
     const mathUpdates: { id: string; data: any }[] = [];
+    const codeUpdates: { id: string; data: any }[] = [];
 
     // Compute from current state (not inside a setState updater, which can run
     // twice and double-enqueue the batch). The move drag never mutated these
@@ -1207,11 +1313,22 @@ export function useBoardElements(
       mathUpdates.push({ id: mEl.id, data: { x, y, bbox } });
       return { ...mEl, x, y, bbox };
     });
+    // Month 6 — code elements. A move is pure geometry: `code`/`language`
+    // are untouched, so no re-layout happens here.
+    const nextCode = codeElements.map((cEl) => {
+      if (!ids.has(cEl.id)) return cEl;
+      const x = cEl.x + dx;
+      const y = cEl.y + dy;
+      const bbox = translateBounds(codeBox(cEl), dx, dy);
+      codeUpdates.push({ id: cEl.id, data: { x, y, bbox } });
+      return { ...cEl, x, y, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
     setMathElements(nextMath);
+    setCodeElements(nextCode);
 
     try {
       await Promise.all([
@@ -1220,6 +1337,7 @@ export function useBoardElements(
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
         mathService.batchUpdateMathElements(boardId, mathUpdates),
+        codeService.batchUpdateCodeElements(boardId, codeUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1359,6 +1477,7 @@ export function useBoardElements(
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
     const mathUpdates: { id: string; data: any }[] = [];
+    const codeUpdates: { id: string; data: any }[] = [];
     const nextPaths = paths.map((p) => {
       if (!ids.has(p.id)) return p;
       const points = p.points.map((pt) => scalePointAbout(pt, anchor, sx, sy));
@@ -1417,11 +1536,29 @@ export function useBoardElements(
       mathUpdates.push({ id: mEl.id, data: { x: np.x, y: np.y, width, height, scale, bbox } });
       return { ...moved, bbox };
     });
+    // Month 6 — code elements. Box scales independently on each axis (like
+    // TextElement's own resize, not math's uniform-glyph-outline scaling):
+    // width/height by sx/sy directly, fontSize by sy — a resize can leave the
+    // box and the text disagreeing, same accepted tradeoff as text (see
+    // CodeElement's type comment). Floored at MIN_CODE_FONT_SIZE so a
+    // collapsed block stays selectable.
+    const nextCode = codeElements.map((cEl) => {
+      if (!ids.has(cEl.id)) return cEl;
+      const np = scalePointAbout({ x: cEl.x, y: cEl.y }, anchor, sx, sy);
+      const width = cEl.width * sx;
+      const height = cEl.height * sy;
+      const fontSize = Math.max(MIN_CODE_FONT_SIZE, Math.round(cEl.fontSize * sy));
+      const moved = { ...cEl, x: np.x, y: np.y, width, height, fontSize };
+      const bbox = codeBoxOf(moved);
+      codeUpdates.push({ id: cEl.id, data: { x: np.x, y: np.y, width, height, fontSize, bbox } });
+      return { ...moved, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
     setMathElements(nextMath);
+    setCodeElements(nextCode);
     try {
       await Promise.all([
         pathService.batchUpdatePaths(boardId, pathUpdates),
@@ -1429,6 +1566,7 @@ export function useBoardElements(
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
         mathService.batchUpdateMathElements(boardId, mathUpdates),
+        codeService.batchUpdateCodeElements(boardId, codeUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1449,6 +1587,7 @@ export function useBoardElements(
     const textUpdates: { id: string; data: any }[] = [];
     const imageUpdates: { id: string; data: any }[] = [];
     const mathUpdates: { id: string; data: any }[] = [];
+    const codeUpdates: { id: string; data: any }[] = [];
     const nextPaths = paths.map((p) => {
       if (!ids.has(p.id)) return p;
       const points = p.points.map((pt) => rotatePointAbout(pt, center, theta));
@@ -1520,11 +1659,28 @@ export function useBoardElements(
       mathUpdates.push({ id: mEl.id, data: { x, y, bbox } });
       return { ...moved, bbox };
     });
+    // Month 6 — code elements. Box-like, same as images/shapes: orbit the
+    // center about the group pivot and accumulate rotation — a code element
+    // DOES carry a real `rotation` field (unlike math; see CodeElement's
+    // type comment).
+    const nextCode = codeElements.map((cEl) => {
+      if (!ids.has(cEl.id)) return cEl;
+      const oc = { x: cEl.x + cEl.width / 2, y: cEl.y + cEl.height / 2 };
+      const nc = rotatePointAbout(oc, center, theta);
+      const x = nc.x - cEl.width / 2;
+      const y = nc.y - cEl.height / 2;
+      const rotation = (cEl.rotation ?? 0) + deg;
+      const moved = { ...cEl, x, y, rotation };
+      const bbox = codeBoxOf(moved);
+      codeUpdates.push({ id: cEl.id, data: { x, y, rotation, bbox } });
+      return { ...moved, bbox };
+    });
     setPaths(nextPaths);
     setShapes(nextShapes);
     setTextElements(nextText);
     setImages(nextImages);
     setMathElements(nextMath);
+    setCodeElements(nextCode);
     try {
       await Promise.all([
         pathService.batchUpdatePaths(boardId, pathUpdates),
@@ -1532,6 +1688,7 @@ export function useBoardElements(
         pathService.batchUpdateTextElements(boardId, textUpdates),
         imageService.batchUpdateImages(boardId, imageUpdates),
         mathService.batchUpdateMathElements(boardId, mathUpdates),
+        codeService.batchUpdateCodeElements(boardId, codeUpdates),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -1727,20 +1884,25 @@ export function useBoardElements(
       const mathIds = visibleMathElementsRef.current
         .filter((mEl) => idSet.has(mEl.id))
         .map((mEl) => mEl.id);
-      // Whatever is left over is a stroke. Month 6: `mathIds` has to be
-      // subtracted here as well, or every deleted equation would ALSO be
-      // issued as a delete against the `paths` collection.
+      const codeIds = visibleCodeElementsRef.current
+        .filter((cEl) => idSet.has(cEl.id))
+        .map((cEl) => cEl.id);
+      // Whatever is left over is a stroke. Month 6: `mathIds`/`codeIds` have
+      // to be subtracted here as well, or every deleted equation/snippet
+      // would ALSO be issued as a delete against the `paths` collection.
       const pathIds = ids.filter(
         (i) =>
           !shapeIds.includes(i) &&
           !textIds.includes(i) &&
           !imageIds.includes(i) &&
-          !mathIds.includes(i)
+          !mathIds.includes(i) &&
+          !codeIds.includes(i)
       );
       setShapes((prev) => prev.filter((s) => !idSet.has(s.id)));
       setTextElements((prev) => prev.filter((el) => !idSet.has(el.id)));
       setImages((prev) => prev.filter((img) => !idSet.has(img.id)));
       setMathElements((prev) => prev.filter((mEl) => !idSet.has(mEl.id)));
+      setCodeElements((prev) => prev.filter((cEl) => !idSet.has(cEl.id)));
       setPaths((prev) => prev.filter((p) => !idSet.has(p.id)));
       try {
         await Promise.all([
@@ -1749,6 +1911,7 @@ export function useBoardElements(
           pathService.batchDeleteTextElements(boardId, textIds),
           imageService.batchDeleteImages(boardId, imageIds),
           mathService.batchDeleteMathElements(boardId, mathIds),
+          codeService.batchDeleteCodeElements(boardId, codeIds),
         ]);
         onScheduleSave();
         // Month 5 — anchor cascade (the other half of the orphan fix): any
@@ -1827,6 +1990,20 @@ export function useBoardElements(
           })
       );
     }
+    // Month 6 — code elements. `saveCodeElement`, not `createCodeElement`:
+    // the copy's width/height are already laid out, so duplicating a
+    // snippet is one Firestore write with no layout call at all.
+    for (const cEl of codeElements) {
+      if (!ids.has(cEl.id)) continue;
+      const { id: _i, createdAt: _c, bbox: _b, ...rest } = cEl;
+      tasks.push(
+        codeService
+          .saveCodeElement(boardId, { ...rest, x: cEl.x + off, y: cEl.y + off })
+          .then((nid) => {
+            newIds.push(nid);
+          })
+      );
+    }
     try {
       await Promise.all(tasks);
       selection.setMany(newIds, "elements");
@@ -1845,6 +2022,8 @@ export function useBoardElements(
     shapes,
     textElements,
     images,
+    mathElements,
+    codeElements,
     onEditText,
     onScheduleSave,
     onError,
@@ -1893,8 +2072,16 @@ export function useBoardElements(
       const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = mEl;
       items.push({ kind: "math", data: rest });
     }
+    // Month 6 — code elements. Stripped the same way as every other kind
+    // above; the already-laid-out width/height travel with it, so paste
+    // never re-lays-out — see `pasteClipboard`'s code branch.
+    for (const cEl of codeElements) {
+      if (!ids.has(cEl.id)) continue;
+      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = cEl;
+      items.push({ kind: "code", data: rest });
+    }
     setClipboard(items);
-  }, [selection.selectedIds, paths, shapes, textElements, images, mathElements]);
+  }, [selection.selectedIds, paths, shapes, textElements, images, mathElements, codeElements]);
 
   // Paste the clipboard onto the *current* board (cross-board safe): re-stamp
   // boardId + the pasting user, cascade the offset down-right, and select the
@@ -1950,6 +2137,19 @@ export function useBoardElements(
           tasks.push(
             mathService
               .saveMathElement(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "code") {
+          // Month 6 — code elements. `saveCodeElement`, not
+          // `createCodeElement`: the clip item already carries laid-out
+          // geometry (`copySelected` only strips identity), so paste is one
+          // Firestore write and no layout call — mirrors
+          // `duplicateSelected`'s code branch.
+          tasks.push(
+            codeService
+              .saveCodeElement(boardId, { ...off.data, boardId, userId: uid })
               .then((nid) => {
                 newIds.push(nid);
               })
@@ -2159,7 +2359,9 @@ export function useBoardElements(
   // Math elements are deliberately absent from every plan below: `MathElement`
   // has no `z` (see its type comment), so Bring to Front / Send to Back is a
   // no-op on an equation and equations always render in creation order. Not
-  // an omission — there is nothing to plan for that kind.
+  // an omission — there is nothing to plan for that kind. Code elements, in
+  // contrast, DO carry a `z` and participate here exactly like shapes/images
+  // (see CodeElement's type comment for why the two diverge).
   const reorderSelected = async (dir: "front" | "back") => {
     const ids = selection.selectedIds;
     if (ids.size === 0) return;
@@ -2167,21 +2369,25 @@ export function useBoardElements(
     const shapePlan = planZOrder(shapes, ids, dir);
     const textPlan = planZOrder(textElements, ids, dir);
     const imagePlan = planZOrder(images, ids, dir);
+    const codePlan = planZOrder(codeElements, ids, dir);
     const zMap = (plan: { id: string; z: number }[]) => new Map(plan.map((p) => [p.id, p.z]));
     const pm = zMap(pathPlan);
     const sm = zMap(shapePlan);
     const tm = zMap(textPlan);
     const im = zMap(imagePlan);
+    const cm = zMap(codePlan);
     setPaths((prev) => prev.map((p) => (pm.has(p.id) ? { ...p, z: pm.get(p.id) } : p)));
     setShapes((prev) => prev.map((s) => (sm.has(s.id) ? { ...s, z: sm.get(s.id) } : s)));
     setTextElements((prev) => prev.map((el) => (tm.has(el.id) ? { ...el, z: tm.get(el.id) } : el)));
     setImages((prev) => prev.map((img) => (im.has(img.id) ? { ...img, z: im.get(img.id) } : img)));
+    setCodeElements((prev) => prev.map((c) => (cm.has(c.id) ? { ...c, z: cm.get(c.id) } : c)));
     try {
       await Promise.all([
         pathService.batchUpdatePaths(boardId, pathPlan.map((p) => ({ id: p.id, data: { z: p.z } }))),
         shapeService.batchUpdateShapes(boardId, shapePlan.map((p) => ({ id: p.id, data: { z: p.z } }))),
         pathService.batchUpdateTextElements(boardId, textPlan.map((p) => ({ id: p.id, data: { z: p.z } }))),
         imageService.batchUpdateImages(boardId, imagePlan.map((p) => ({ id: p.id, data: { z: p.z } }))),
+        codeService.batchUpdateCodeElements(boardId, codePlan.map((p) => ({ id: p.id, data: { z: p.z } }))),
       ]);
       onScheduleSave();
     } catch (e) {
@@ -2423,6 +2629,61 @@ export function useBoardElements(
   const latexOfMathElement = (elementId: string): string | null =>
     mathElements.find((mEl) => mEl.id === elementId)?.latex ?? null;
 
+  // ────────── WRITE PATH — CODE ELEMENTS ─────────────────────────────────
+  // Month 6. UNLIKE math, there is no render function to call here at all —
+  // tokenizing is synchronous and local (see `lib/codeRender.ts`'s header)
+  // — so, unlike `createMathElement`/`updateMathLatex`, neither write path
+  // below can fail on the content itself; the only rejection is the write
+  // path guard on an element a collaborator already deleted (mirroring
+  // `updateMathLatex`'s own contract for the composer).
+
+  const createCodeElement = async (
+    point: Point,
+    code: string,
+    language: CodeLanguage
+  ): Promise<string> => {
+    const id = await codeService.createCodeElement({
+      boardId,
+      code,
+      language,
+      x: point.x,
+      y: point.y,
+      userId: authorId,
+    });
+    // Land ready to move, exactly as an inserted image, shape or equation does.
+    selection.select(id);
+    onActivateSelectTool();
+    onScheduleSave();
+    return id;
+  };
+
+  const updateCodeSource = async (
+    elementId: string,
+    code: string,
+    language: CodeLanguage
+  ): Promise<void> => {
+    const current = codeElements.find((cEl) => cEl.id === elementId);
+    // A collaborator deleted this element while the composer was open —
+    // mirrors `updateMathLatex`'s same reasoning: this MUST reject, not
+    // resolve, or the composer would discard the user's edit with no
+    // feedback at all.
+    if (!current) {
+      throw new Error("That code element is no longer on the board.");
+    }
+    await codeService.updateCodeSource(boardId, elementId, code, language, {
+      x: current.x,
+      y: current.y,
+      fontSize: current.fontSize,
+    });
+    onScheduleSave();
+  };
+
+  const codeOfElement = (elementId: string): string | null =>
+    codeElements.find((cEl) => cEl.id === elementId)?.code ?? null;
+
+  const languageOfCodeElement = (elementId: string): CodeLanguage | null =>
+    codeElements.find((cEl) => cEl.id === elementId)?.language ?? null;
+
   // ────────── WRITE PATH — STICKY NOTES (legacy) ────────────────────────
   // --- Text note handlers ---
 
@@ -2518,6 +2779,9 @@ export function useBoardElements(
       // Month 6 — math elements. Nothing is Storage-backed here (the path
       // data lives on the document), so this is a plain subcollection wipe.
       mathService.clearBoardMathElements(boardId),
+      // Month 6 — code elements. Same reasoning as math: nothing Storage-
+      // backed, a plain subcollection wipe.
+      codeService.clearBoardCodeElements(boardId),
     ]);
 
   const resetLocalElements = () => {
@@ -2532,6 +2796,7 @@ export function useBoardElements(
     // badges lingered on screen until the next snapshot caught up.
     setAudioNotes([]);
     setMathElements([]);
+    setCodeElements([]);
     setRedoStack([]);
   };
 
@@ -2597,6 +2862,7 @@ export function useBoardElements(
     images,
     audioNotes,
     mathElements,
+    codeElements,
     visible: {
       paths: culledPaths,
       shapes: culledShapes,
@@ -2606,6 +2872,7 @@ export function useBoardElements(
       // Not viewport-culled — see the BoardElements interface comment.
       audioNotes: visibleAudioNotes,
       mathElements: culledMathElements,
+      codeElements: culledCodeElements,
     },
     loading: !canvasReady,
 
@@ -2684,6 +2951,11 @@ export function useBoardElements(
     createMathElement,
     updateMathLatex,
     latexOfMathElement,
+
+    createCodeElement,
+    updateCodeSource,
+    codeOfElement,
+    languageOfCodeElement,
 
     insertImage,
     scanDocument,

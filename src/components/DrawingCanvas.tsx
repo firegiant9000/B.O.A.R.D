@@ -2,8 +2,9 @@ import React, { useRef, useMemo, useEffect, useCallback } from "react";
 import { View, StyleSheet, Dimensions, Platform } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Svg, { Path, G, Rect, Ellipse, Line, Polygon, Circle, Defs, Pattern, Image as SvgImage } from "react-native-svg";
-import { DrawPath, ImageElement, MathElement, BackgroundTemplate } from "../types";
+import { DrawPath, ImageElement, MathElement, CodeElement, BackgroundTemplate } from "../types";
 import MathElementView from "./board/MathElementView";
+import CodeElementView from "./board/CodeElementView";
 import { Viewport, Point, Bounds, screenToBoard } from "../lib/viewport";
 import {
   ShapeDraft,
@@ -33,6 +34,10 @@ interface DrawingCanvasProps {
    *  ordinary `<Path>` nodes — which is what makes an equation selectable,
    *  transformable, exportable and printable with no special-casing. */
   mathElements?: MathElement[];
+  /** Persisted code elements (Month 6), rendered in the SVG element tree.
+   *  Unlike math, a code element is an ordinary positioned text box (real
+   *  rotation, real z-order) — see `CodeElement`'s type comment. */
+  codeElements?: CodeElement[];
   /** In-progress shape being dragged out, in board-space. */
   shapeDraft?: ShapeDraft | null;
   /** Smart-guide lines (board-space) to overlay during a shape drag. */
@@ -439,6 +444,7 @@ function DrawingCanvas(
     shapes,
     images,
     mathElements,
+    codeElements,
     shapeDraft,
     guides,
     selectedIds,
@@ -737,6 +743,22 @@ function DrawingCanvas(
                 </G>
               ) : (
                 <MathElementView key={m.id} element={m} />
+              )
+            )}
+            {/* Code elements (Month 6) render directly above math — the same
+                "newest rich-content kind paints on top" ordering
+                `useBoardElements.hitTestAny`'s own comment describes, still
+                under the text overlay above. `selected` (not the live group
+                transform's `isSel` alone) gates the copy-code badge so it
+                only shows for a lone selection, mirroring
+                `CodeElementView.test.tsx`'s own convention. */}
+            {codeElements?.map((c) =>
+              offsetTransform && isSel(c.id) ? (
+                <G key={c.id} transform={offsetTransform}>
+                  <CodeElementView element={c} selected={isSel(c.id)} />
+                </G>
+              ) : (
+                <CodeElementView key={c.id} element={c} selected={isSel(c.id)} />
               )
             )}
             {/* Per-element selection outlines (board-space), shifted with the

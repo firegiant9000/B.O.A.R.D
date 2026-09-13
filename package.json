@@ -16,33 +16,6 @@
     "functions:test": "npm --prefix functions test",
     "functions:serve": "npm --prefix functions run serve"
   },
-  "jest": {
-    "preset": "jest-expo",
-    "setupFilesAfterEnv": [
-      "<rootDir>/jest.setup.ts"
-    ],
-    "modulePathIgnorePatterns": [
-      "<rootDir>/node_modules/react-native-key-command/"
-    ],
-    "testPathIgnorePatterns": [
-      "<rootDir>/node_modules/",
-      "<rootDir>/firestore-tests/",
-      "<rootDir>/functions/"
-    ],
-    "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|firebase|@firebase/.*|rbush|quickselect))"
-    ],
-    "collectCoverageFrom": [
-      "src/services/**/*.ts",
-      "!src/services/**/__tests__/**"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "lines": 60,
-        "statements": 60
-      }
-    }
-  },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -81,7 +54,8 @@
     "react-native-safe-area-context": "~5.6.2",
     "react-native-screens": "~4.23.0",
     "react-native-svg": "15.15.3",
-    "react-native-web": "^0.21.0"
+    "react-native-web": "^0.21.0",
+    "shiki": "^4.4.3"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",

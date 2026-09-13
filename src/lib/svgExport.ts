@@ -1,9 +1,17 @@
 import { Point } from "./viewport";
-import { ArrowheadStyle, AudioElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
+import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
 import { renderParamsFor, calligraphyWidthRange } from "./penStyles";
 import { calligraphyPathD } from "./calligraphy";
 import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
 import { MATH_DEFAULT_COLOR, mathTransform } from "./mathInk";
+import {
+  CODE_BACKGROUND_COLOR,
+  CODE_BORDER_COLOR,
+  CODE_DEFAULT_FOREGROUND,
+  codeTransform,
+  layoutCodeBox,
+  tokenizeCode,
+} from "./codeRender";
 
 /**
  * Month 6 — pure SVG export serializer.
@@ -38,15 +46,19 @@ import { MATH_DEFAULT_COLOR, mathTransform } from "./mathInk";
  * falls short of that.
  *
  * ELEMENT KINDS: `SvgExportElement`'s `kind` tag covers every element kind
- * that exists on the board today (path/shape/text/note/image/audio/math).
- * `math` (Month 6) is the cheapest of them all: an equation is stored as flat
- * SVG path data already, so exporting one is emitting the `<path>` it
+ * that exists on the board today (path/shape/text/note/image/audio/math/
+ * code). `math` (Month 6) is the cheapest of them all: an equation is stored
+ * as flat SVG path data already, so exporting one is emitting the `<path>` it
  * literally is. That is the entire reason LaTeX is rendered to path data in a
  * Cloud Function rather than displayed in a WebView — a WebView would have
- * left this module with nothing exportable at all. NOTE for whoever adds the
- * next kind: the `default` branch below SKIPS anything it hasn't been taught,
- * silently, which is right for a non-visual kind and wrong for a visual one.
- * Math would have exported as nothing without the case added here. Voice
+ * left this module with nothing exportable at all. `code` (Month 6) reuses
+ * the SAME tokenize-then-lay-out pure functions the live canvas does
+ * (`lib/codeRender.ts`), so a printed snippet is colored identically to the
+ * one on screen with no separate export-only highlighting path to drift.
+ * NOTE for whoever adds the next kind: the `default` branch below SKIPS
+ * anything it hasn't been taught, silently, which is right for a non-visual
+ * kind and wrong for a visual one. Math and code would have exported as
+ * nothing without their cases added here. Voice
  * notes (`kind: "audio"`) are a canvas AFFORDANCE — a mic/speaker badge a
  * viewer taps to play (`AudioAffordance.tsx`) — not board content the way a
  * stroke or shape is: they carry no drawable geometry of their own, only an
@@ -84,7 +96,8 @@ export type SvgExportElement =
   | { kind: "note"; data: TextNote }
   | { kind: "image"; data: ImageElement }
   | { kind: "audio"; data: AudioElement }
-  | { kind: "math"; data: MathElement };
+  | { kind: "math"; data: MathElement }
+  | { kind: "code"; data: CodeElement };
 
 /** The board's per-kind element arrays — exactly `useBoardElements`'s own
  *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/
@@ -100,6 +113,7 @@ export interface BoardElementSets {
   images: ImageElement[];
   audioNotes: AudioElement[];
   mathElements: MathElement[];
+  codeElements: CodeElement[];
 }
 
 /**
@@ -126,6 +140,11 @@ export function toSvgExportElements(elements: BoardElementSets): SvgExportElemen
     // reachable from untyped JS call sites, and a board that predates math
     // must still export rather than throw on a missing array.
     ...(elements.mathElements ?? []).map((data): SvgExportElement => ({ kind: "math", data })),
+    // Code sits directly above math, matching DrawingCanvas's own SVG tree
+    // order — both are content rendered inside the SVG tree (unlike text,
+    // which is an RN overlay layered above the whole canvas). Same `?? []`
+    // tolerance as `mathElements` above, for a board that predates code.
+    ...(elements.codeElements ?? []).map((data): SvgExportElement => ({ kind: "code", data })),
     ...elements.notes.map((data): SvgExportElement => ({ kind: "note", data })),
     ...elements.texts.map((data): SvgExportElement => ({ kind: "text", data })),
     ...elements.audioNotes.map((data): SvgExportElement => ({ kind: "audio", data })),
@@ -450,6 +469,43 @@ function mathNode(m: MathElement): string {
   );
 }
 
+/** A code element (Month 6) — the SAME tokenize-then-lay-out pure functions
+ *  the live canvas uses (`lib/codeRender.ts`), so an exported snippet is
+ *  colored identically to the one on screen. `escapeXmlText` runs on every
+ *  token's content (unlike `mathNode`'s single opaque path datum, this is
+ *  real user text and could contain `<`/`&`); `layoutCodeBox` here supplies
+ *  line metrics ONLY (padding/lineHeight), not the box — `width`/`height`
+ *  come from the element itself, same split `CodeElementView` makes and for
+ *  the same reason (a resize can leave the two disagreeing). */
+function codeNode(c: CodeElement): string {
+  const width = Number.isFinite(c.width) && c.width > 0 ? c.width : 1;
+  const height = Number.isFinite(c.height) && c.height > 0 ? c.height : 1;
+  const x = Number.isFinite(c.x) ? c.x : 0;
+  const y = Number.isFinite(c.y) ? c.y : 0;
+  const fontSize = Number.isFinite(c.fontSize) && c.fontSize > 0 ? c.fontSize : 14;
+  const layout = layoutCodeBox(c.code ?? "", fontSize);
+  const lines = tokenizeCode(c.code ?? "", c.language);
+  const textX = x + layout.padding;
+  const firstY = y + layout.padding + layout.lineHeight * 0.8;
+  const lineTspans = lines
+    .map((line, i) => {
+      const dy = i === 0 ? 0 : layout.lineHeight;
+      const runs = line
+        .map(
+          (run) =>
+            `<tspan fill="${escapeXmlAttr(run.color || CODE_DEFAULT_FOREGROUND)}">${escapeXmlText(run.content)}</tspan>`
+        )
+        .join("");
+      return `<tspan x="${textX}" dy="${dy}">${runs || " "}</tspan>`;
+    })
+    .join("");
+  const body =
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="${CODE_BACKGROUND_COLOR}" stroke="${CODE_BORDER_COLOR}" stroke-width="1" />` +
+    `<text x="${textX}" y="${firstY}" font-family="monospace" font-size="${fontSize}">${lineTspans}</text>`;
+  const transform = codeTransform(c);
+  return transform ? `<g transform="${escapeXmlAttr(transform)}">${body}</g>` : body;
+}
+
 function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): string {
   switch (el.kind) {
     case "path":
@@ -464,6 +520,8 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
       return imageNode(el.data, opts);
     case "math":
       return mathNode(el.data);
+    case "code":
+      return codeNode(el.data);
     case "audio":
       // A voice-note badge is a canvas affordance, not drawable board
       // content — see this module's header. Deliberately no node.
@@ -471,12 +529,13 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
     default: {
       // Exhaustiveness guard for this file's own union. At runtime this also
       // catches any element kind this module hasn't been taught about yet
-      // (a future poll/code kind reaching here before its own case is added)
-      // — skipped the same way `audio` is, never thrown on, so one
+      // (a future poll kind reaching here before its own case is added) —
+      // skipped the same way `audio` is, never thrown on, so one
       // unrecognized element never makes an otherwise-exportable board fail
       // to export at all. That leniency is a TRAP for a visual kind: `math`
-      // (Month 6) would have exported as nothing at all, silently, if its
-      // case above had been left out. Add the case when the kind draws.
+      // and `code` (Month 6) would have exported as nothing at all,
+      // silently, if their cases above had been left out. Add the case when
+      // the kind draws.
       const _exhaustive: never = el;
       void _exhaustive;
       return "";

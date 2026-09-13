@@ -878,3 +878,67 @@ export interface MathElement {
   bbox?: Bounds;
   createdAt: Date;
 }
+
+// Month 6 — code elements (syntax-highlighted source, tokenized client-side).
+// Unlike MathElement, there is NO Cloud Function here and nothing cached:
+// Shiki's fine-grained core (a JS-regex grammar engine, no WASM — see
+// `lib/codeRender.ts`'s header for why that matters on this stack) tokenizes
+// entirely on-device, synchronously, so `code`/`language` are the only source
+// of truth and every viewer re-tokenizes locally from the same two fields.
+// That is also why there is no `svgPath`-style cached-output pair to keep in
+// sync — a re-render is just calling the same pure function again, not an
+// unmetered network round-trip the way `updateMathLatex` is.
+//
+// Bundled grammars are exactly the brief's nine — see
+// `lib/codeRender.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
+// grammar Shiki ships," which would pull the full grammar set into the
+// client bundle for no board-content benefit.
+//
+// GEOMETRY. A full canvas primitive — move/resize/rotate/z-order/duplicate/
+// copy-paste all apply, the same as ShapeElement/ImageElement (unlike
+// MathElement, which deliberately opts out of rotation and z — see its own
+// type comment for why that doesn't apply here: a code block has no baked
+// path data to orbit around, it is ordinary positioned text). `width`/
+// `height` start as the box `lib/codeRender.ts`'s pure monospace line-layout
+// computes for `code` at `fontSize` (see `layoutCodeBox`); a resize then
+// scales them independently, exactly like TextElement, so the box and the
+// text can drift apart under a non-uniform drag the same way a resized text
+// box already can — that is accepted existing behavior here, not a new gap.
+// Editing `code`/`language` (not resizing) re-derives width/height from the
+// new source at the CURRENT `fontSize`, mirroring how `updateMathLatex`
+// re-derives its box from a new render at the current `scale`.
+//
+// Every numeric field here is a stored number a corrupt document could
+// poison (`typeof NaN === "number"`) — `codeService.mapCodeDoc` fails them
+// closed on read, mirroring `mathService.mapMathDoc`.
+//
+// `schemaVersion: 1` from inception; readers tolerate a missing/partial doc
+// (`data?.field ?? default`), like every other element kind here.
+export type CodeLanguage = "ts" | "js" | "py" | "java" | "c" | "cpp" | "sql" | "json" | "bash";
+
+export interface CodeElement {
+  id: string;
+  schemaVersion: 1;
+  /** Discriminator, carried on the document as well as in this type so a
+   *  mixed-kind reader (export, print) can tell a code element apart without
+   *  knowing which subcollection it came from. */
+  type: "code";
+  boardId: string;
+  userId: string;
+  /** The editable source of truth — tokenized locally, never on a server. */
+  code: string;
+  language: CodeLanguage;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  /** Degrees, about the box center (matches ShapeElement/ImageElement's
+   *  convention); absent/undefined reads as 0, same migration tolerance. */
+  rotation?: number;
+  bbox?: Bounds;
+  // Z-order within the codeElements layer (see DrawPath.z) — a normal
+  // participant in Bring to Front / Send to Back, unlike MathElement.
+  z?: number;
+  createdAt: Date;
+}

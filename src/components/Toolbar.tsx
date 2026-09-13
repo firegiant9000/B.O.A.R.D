@@ -99,6 +99,21 @@ interface ToolbarProps {
    * actually stop the write.
    */
   canInsertMath?: boolean;
+  /** Month 6 — insert a code element. Opens the code composer; the element's
+   *  board-space position is chosen by the caller (the screen centers it in
+   *  the current viewport), exactly like the equation button. */
+  onInsertCode: () => void;
+  /**
+   * Month 6 — whether the code button shows at all. Defaults to true. The
+   * screen passes `codeService.isCodeConfigured()` (the build-time feature
+   * flag) — UNLIKE `canInsertMath`/`canInsertPoll`, this is NOT also
+   * conditioned on `!embedMode`: firestore.rules' `codeElements` match
+   * carries the same `isEmbedEditor` disjunct paths/shapes/textElements do
+   * (a code element needs no callable and no Storage bytes), so an embed
+   * editor's write here is reachable exactly like a shape's already is, and
+   * hiding the button for one would be hiding an affordance nothing denies.
+   */
+  canInsertCode?: boolean;
   onUndo: () => void;
   onRedo?: () => void;
   canRedo?: boolean;
@@ -159,6 +174,8 @@ export default function Toolbar({
   canInsertPoll = true,
   onInsertMath,
   canInsertMath = true,
+  onInsertCode,
+  canInsertCode = true,
   onUndo,
   onRedo,
   canRedo,
@@ -312,6 +329,17 @@ export default function Toolbar({
               icon="calculator-outline"
               active={false}
               onPress={onInsertMath}
+            />
+          )}
+          {/* Month 6 — code elements. The board's ONE insert entry point for
+              a snippet (editing an existing one is a tap on the element
+              itself, BoardCanvas, exactly like the equation button above). */}
+          {canInsertCode && (
+            <ToolButton
+              testID="toolbar-insert-code"
+              icon="code-slash-outline"
+              active={false}
+              onPress={onInsertCode}
             />
           )}
         </View>

@@ -103,3 +103,23 @@ export const BOARD_QA_ENABLED =
  */
 export const MATH_ENABLED =
   process.env.EXPO_PUBLIC_MATH === "1" || process.env.EXPO_PUBLIC_MATH === "true";
+
+/**
+ * Month 6 — code elements (syntax-highlighted source, tokenized on-device).
+ *
+ * Gates the toolbar's code button. Default OFF; flip to "1" via the build
+ * env to expose it.
+ *
+ * UNLIKE every AI flag above and LIKE `MATH_ENABLED`, this does NOT depend on
+ * `AI_GATEWAY_ENABLED`: Shiki tokenizes entirely client-side (no Cloud
+ * Function, no provider, no per-call spend — see `lib/codeRender.ts`'s
+ * header), so it is neither gated by the gateway cutover nor metered against
+ * the workspace's AI-call quota.
+ *
+ * Like every flag here it is inlined into the client bundle and therefore
+ * public and patchable — it hides the ENTRY POINT, nothing more. What
+ * actually stops an unauthorized write is firestore.rules on the
+ * `codeElements` subcollection, server-side.
+ */
+export const CODE_ENABLED =
+  process.env.EXPO_PUBLIC_CODE === "1" || process.env.EXPO_PUBLIC_CODE === "true";

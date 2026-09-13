@@ -13,7 +13,11 @@ import { Bounds } from "./viewport";
 // ordinary box-shaped element as far as this index is concerned, which is
 // precisely why it can be indexed, marquee-selected and transformed like the
 // other four rather than needing a layer of its own.
-export type ElementKind = "path" | "shape" | "text" | "image" | "math";
+//
+// "code" (Month 6) is a syntax-highlighted snippet — same reasoning as
+// "math": an ordinary box-shaped element to this index, indexed by its own
+// x/y/width/height like a shape or image.
+export type ElementKind = "path" | "shape" | "text" | "image" | "math" | "code";
 
 export interface IndexEntry {
   minX: number;
