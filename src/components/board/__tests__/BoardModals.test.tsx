@@ -159,7 +159,9 @@ function renderModals(opts: {
   canManageWorkspace?: boolean;
   workspaceSwatches?: string[];
   onAddSwatch?: jest.Mock;
+  onRemoveSwatch?: jest.Mock;
   onRequestPaletteUpgrade?: jest.Mock;
+  opacityControlDisabled?: boolean;
   pollComposerVisible?: boolean;
   // Month 6 — the equation composer.
   mathComposerVisible?: boolean;
@@ -185,6 +187,7 @@ function renderModals(opts: {
   // The diagram prompt is already open — the exact scenario under test.
   const ai = makeAi({ diagramEnabled: true, diagramOpen: true, ...opts.ai });
   const onAddSwatch = opts.onAddSwatch ?? jest.fn();
+  const onRemoveSwatch = opts.onRemoveSwatch ?? jest.fn();
   const onRequestPaletteUpgrade = opts.onRequestPaletteUpgrade ?? jest.fn();
   const onClosePollComposer = jest.fn();
   const onCreatePoll = jest.fn();
@@ -241,7 +244,9 @@ function renderModals(opts: {
       canManageWorkspace={opts.canManageWorkspace ?? true}
       workspaceSwatches={opts.workspaceSwatches ?? []}
       onAddSwatch={onAddSwatch}
+      onRemoveSwatch={onRemoveSwatch}
       onRequestPaletteUpgrade={onRequestPaletteUpgrade}
+      opacityControlDisabled={opts.opacityControlDisabled ?? false}
       widthPickerVisible={false}
       onCloseWidthPicker={jest.fn()}
       activeStrokeWidth={5}
@@ -277,6 +282,7 @@ function renderModals(opts: {
     comments,
     ai,
     onAddSwatch,
+    onRemoveSwatch,
     onRequestPaletteUpgrade,
     onClosePollComposer,
     onCreatePoll,
@@ -346,6 +352,22 @@ describe("BoardModals — colour + stroke polish wiring (Month 5, ROADMAP items 
 
     mockColorPickerProps.onUpgradeRequested();
     expect(onRequestPaletteUpgrade).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix Wave F7 — same shape as onAddSwatch's own test just above.
+  it("ColorPickerModal's onRemoveSwatch is the caller-supplied handler, not re-derived here", () => {
+    const onRemoveSwatch = jest.fn();
+    renderModals({ presenterLocksContentCreation: false, onRemoveSwatch });
+
+    mockColorPickerProps.onRemoveSwatch("#abcdef");
+    expect(onRemoveSwatch).toHaveBeenCalledWith("#abcdef");
+  });
+
+  // Fix Wave F5 — passes useBoardElements#selectionOpacityInert straight
+  // through, the same way `plan`/`workspaceSwatches` do above.
+  it("passes opacityControlDisabled straight through to ColorPickerModal", () => {
+    renderModals({ presenterLocksContentCreation: false, opacityControlDisabled: true });
+    expect(mockColorPickerProps.opacityControlDisabled).toBe(true);
   });
 
   it("passes the active stroke width straight through to StrokeWidthModal", () => {

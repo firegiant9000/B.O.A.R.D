@@ -58,6 +58,13 @@ export interface ColorPickerModalProps {
   canManageWorkspace: boolean;
   workspaceSwatches: string[];
   onAddSwatch: (hex: string) => void;
+  /** Fix Wave F7 — long-press a workspace swatch to free its slot
+   *  (`workspaceService.ts#removeWorkspaceSwatch`). Same `canManageWorkspace`
+   *  role gate as adding; NOT plan-gated — removing frees capacity rather
+   *  than spending it, so a downgraded workspace can still tidy its existing
+   *  swatches (see that function's own comment for why removal carries no
+   *  Pro check). */
+  onRemoveSwatch: (hex: string) => void;
   /** Called when a free-tier user taps the locked "add swatch" affordance,
    *  routing to the real upsell flow (UpsellModal, via
    *  `upsellResource="customPalette"`) — mirrors `AudioAffordance`'s
@@ -68,6 +75,13 @@ export interface ColorPickerModalProps {
    *  surface neither of the store-compliance source scans cover (this file
    *  is in neither list). Required means there is exactly one. */
   onUpgradeRequested: () => void;
+  /** Fix Wave F5 — `useBoardElements#selectionOpacityInert`: true when the
+   *  current selection is non-empty but has nothing the alpha slider would
+   *  actually change (no paths, or only eraser paths). Disables the alpha
+   *  track instead of leaving it a silent no-op. Defaults to false — every
+   *  existing caller that predates this prop keeps today's always-enabled
+   *  behavior. */
+  opacityControlDisabled?: boolean;
 }
 
 export default function ColorPickerModal({
@@ -81,7 +95,9 @@ export default function ColorPickerModal({
   canManageWorkspace,
   workspaceSwatches,
   onAddSwatch,
+  onRemoveSwatch,
   onUpgradeRequested,
+  opacityControlDisabled = false,
 }: ColorPickerModalProps) {
   const [hexText, setHexText] = useState(color);
   useEffect(() => {
@@ -203,16 +219,24 @@ export default function ColorPickerModal({
           </View>
 
           <Text style={styles.sectionLabel}>Alpha: {Math.round(localAlpha * 100)}%</Text>
+          {/* Fix Wave F5 — honest, not just silent: the selection has
+              nothing this control would change (see
+              `useBoardElements#selectionOpacityInert`'s own comment). A
+              SEPARATE Text (not nested inside the label above) so the label
+              itself stays a single plain-text node either way. */}
+          {opacityControlDisabled && (
+            <Text style={styles.alphaDisabledNote}>Selection has no strokes to change.</Text>
+          )}
           <View
             testID="color-picker-alpha-track"
-            style={styles.alphaTrack}
+            style={[styles.alphaTrack, opacityControlDisabled && styles.alphaTrackDisabled]}
             onLayout={onTrackLayout}
-            onStartShouldSetResponder={() => true}
-            onMoveShouldSetResponder={() => true}
-            onResponderGrant={onAlphaGrant}
-            onResponderMove={onAlphaMove}
-            onResponderRelease={commitAlpha}
-            onResponderTerminate={commitAlpha}
+            onStartShouldSetResponder={() => !opacityControlDisabled}
+            onMoveShouldSetResponder={() => !opacityControlDisabled}
+            onResponderGrant={opacityControlDisabled ? undefined : onAlphaGrant}
+            onResponderMove={opacityControlDisabled ? undefined : onAlphaMove}
+            onResponderRelease={opacityControlDisabled ? undefined : commitAlpha}
+            onResponderTerminate={opacityControlDisabled ? undefined : commitAlpha}
           >
             <View
               testID="color-picker-alpha-thumb"
@@ -259,8 +283,20 @@ export default function ColorPickerModal({
                 testID={`color-picker-swatch-${hex}`}
                 style={[styles.swatch, { backgroundColor: hex }]}
                 onPress={() => onChange(hex, localAlpha)}
+                // Fix Wave F7 — long-press to remove, the same role gate as
+                // adding (firestore.rules restricts `swatches` writes to
+                // owner/admin regardless of plan; see `onRemoveSwatch`'s own
+                // prop doc for why this carries no separate PLAN gate). A
+                // plain member sees the same swatch with no long-press
+                // affordance at all, same silent-disable `canAddSwatch`
+                // already uses for adding.
+                onLongPress={canManageWorkspace ? () => onRemoveSwatch(hex) : undefined}
                 accessibilityRole="button"
-                accessibilityLabel={`Use workspace swatch ${hex}`}
+                accessibilityLabel={
+                  canManageWorkspace
+                    ? `Use workspace swatch ${hex}. Long-press to remove it.`
+                    : `Use workspace swatch ${hex}`
+                }
               />
             ))}
             <TouchableOpacity
@@ -371,6 +407,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#e5e7eb",
     justifyContent: "center",
     marginBottom: 10,
+  },
+  alphaTrackDisabled: {
+    opacity: 0.4,
+  },
+  alphaDisabledNote: {
+    fontWeight: "400",
+    fontStyle: "italic",
   },
   alphaThumb: {
     position: "absolute",

@@ -3,9 +3,11 @@ import { StickyColor } from "../types";
 /**
  * Month 6 — sticky-note polish (8 colours, 3 sizes). Pure constants + the
  * tolerant-reader guards for both, used by `TextNoteOverlay.tsx` (rendering
- * + the colour/size picker) and by nothing else — `lib/svgExport.ts`
- * deliberately does NOT import this module; see that file's `noteNode`
- * comment for why sticky-note export stays visually unchanged for now.
+ * + the colour/size picker) and, as of Fix Wave F4, by `lib/svgExport.ts`'s
+ * `noteNode` too — the exporter resolves a note's colour/size metrics through
+ * these SAME helpers rather than a second implementation, so the two cannot
+ * drift onto different looks for the same note. (Markdown rendering stays
+ * overlay-only; see `noteNode`'s own comment for that boundary.)
  *
  * COLOUR REUSE DECISION: this is a small, fixed, always-free palette,
  * independent of `ColorPickerModal`'s custom per-workspace swatch system

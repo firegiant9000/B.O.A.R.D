@@ -16,7 +16,12 @@ import {
   unlockPhrase,
   type UpsellModalProps,
 } from "./upsellCopy";
-import { PENDING_PRO_PRICE_LABEL } from "../lib/pricingCopy";
+import {
+  PENDING_PRO_PRICE_LABEL,
+  BILLING_LIVE,
+  canCheckoutNow,
+  checkoutCtaLabel,
+} from "../lib/pricingCopy";
 import type { Plan } from "../types";
 
 // Web body of the plan-limit upsell — the platform-extension DEFAULT (bare
@@ -50,8 +55,21 @@ export default function UpsellModal({ visible, resource, onDismiss, plan, worksp
   const [busy, setBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
 
+  // Fix Wave F3 — this button used to ignore BILLING_LIVE entirely: pressing
+  // it while checkout genuinely isn't reachable (G3 — no live Stripe account
+  // yet, see this file's own header) fell through to `startCheckout` ->
+  // `assertStripeConfigured` -> a `failed-precondition` error, surfacing to
+  // the user as though something had gone wrong rather than the honest "not
+  // available yet" `PricingBody.tsx:117` already shows for the exact same
+  // gate. `canCheckoutNow`/`checkoutCtaLabel` are REUSED from
+  // `lib/pricingCopy.ts`, not re-derived, so the two checkout entry points
+  // can never disagree about when checkout is actually reachable or what to
+  // call the button while it isn't.
+  const canCheckout = canCheckoutNow(BILLING_LIVE, !!workspaceId);
+  const ctaLabel = checkoutCtaLabel(BILLING_LIVE, !!workspaceId);
+
   const handleUpgrade = async () => {
-    if (!workspaceId || busy) return;
+    if (!canCheckout || !workspaceId || busy) return;
     setBusy(true);
     setCheckoutError(null);
     try {
@@ -124,14 +142,15 @@ export default function UpsellModal({ visible, resource, onDismiss, plan, worksp
               <TouchableOpacity
                 testID="upsell-web-upgrade-button"
                 accessibilityRole="button"
-                style={styles.primaryButton}
+                accessibilityState={{ disabled: busy || !canCheckout }}
+                style={[styles.primaryButton, !canCheckout && styles.primaryButtonDisabled]}
                 onPress={handleUpgrade}
-                disabled={busy}
+                disabled={busy || !canCheckout}
               >
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.primaryButtonText}>Upgrade to Pro</Text>
+                  <Text style={styles.primaryButtonText}>{ctaLabel}</Text>
                 )}
               </TouchableOpacity>
             </>
@@ -211,6 +230,9 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 15,
     fontWeight: "700",
+  },
+  primaryButtonDisabled: {
+    backgroundColor: "#93c5fd",
   },
   secondaryButton: {
     alignSelf: "flex-start",

@@ -33,6 +33,7 @@ const baseProps = {
   canManageWorkspace: true,
   workspaceSwatches: ["#123456"],
   onAddSwatch: jest.fn(),
+  onRemoveSwatch: jest.fn(),
   onUpgradeRequested: jest.fn(),
 };
 
@@ -168,6 +169,55 @@ describe("alpha slider drag (fix round 1, item 2 — must not write on every mov
     fireEvent(track, "responderTerminate", { nativeEvent: { locationX: 100 } });
 
     expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.5);
+  });
+});
+
+describe("alpha control disabled when the selection has nothing it would change (Fix Wave F5)", () => {
+  it("by default (opacityControlDisabled omitted) the alpha track still responds to a drag", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0} />);
+    const track = screen.getByTestId("color-picker-alpha-track");
+    fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
+    fireEvent(track, "responderGrant", { nativeEvent: { locationX: 100 } });
+    fireEvent(track, "responderRelease", { nativeEvent: { locationX: 100 } });
+    expect(baseProps.onChange).toHaveBeenCalledWith("#3366ff", 0.5);
+  });
+
+  it("when disabled, a drag on the track calls neither onChange nor changes the shown percentage", () => {
+    render(<ColorPickerModal {...baseProps} alpha={0} opacityControlDisabled />);
+    const track = screen.getByTestId("color-picker-alpha-track");
+    fireEvent(track, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 28 } } });
+    fireEvent(track, "responderGrant", { nativeEvent: { locationX: 100 } });
+    fireEvent(track, "responderRelease", { nativeEvent: { locationX: 100 } });
+    expect(baseProps.onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Alpha: 0%")).toBeTruthy();
+  });
+
+  it("shows an explanatory note only while disabled", () => {
+    const { rerender } = render(<ColorPickerModal {...baseProps} opacityControlDisabled={false} />);
+    expect(screen.queryByText(/no strokes/i)).toBeNull();
+    rerender(<ColorPickerModal {...baseProps} opacityControlDisabled />);
+    expect(screen.getByText(/no strokes/i)).toBeTruthy();
+  });
+});
+
+describe("removing a workspace swatch (Fix Wave F7)", () => {
+  it("long-pressing a swatch calls onRemoveSwatch when the caller can manage the workspace", () => {
+    render(<ColorPickerModal {...baseProps} canManageWorkspace />);
+    fireEvent(screen.getByTestId("color-picker-swatch-#123456"), "longPress");
+    expect(baseProps.onRemoveSwatch).toHaveBeenCalledWith("#123456");
+  });
+
+  it("a plain member (canManageWorkspace=false) cannot remove a swatch via long-press", () => {
+    render(<ColorPickerModal {...baseProps} canManageWorkspace={false} />);
+    fireEvent(screen.getByTestId("color-picker-swatch-#123456"), "longPress");
+    expect(baseProps.onRemoveSwatch).not.toHaveBeenCalled();
+  });
+
+  it("long-pressing still leaves a plain tap free to apply the colour", () => {
+    render(<ColorPickerModal {...baseProps} canManageWorkspace />);
+    fireEvent.press(screen.getByTestId("color-picker-swatch-#123456"));
+    expect(baseProps.onChange).toHaveBeenCalledWith("#123456", 1);
+    expect(baseProps.onRemoveSwatch).not.toHaveBeenCalled();
   });
 });
 

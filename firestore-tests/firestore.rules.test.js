@@ -1021,14 +1021,20 @@ describe("sessions inherit workspace", () => {
     );
   });
 
-  // Fix round 3, A (CRITICAL vector, same shape as `classes`' C1) — this
-  // arm was the pre-C1 shape verbatim: `hasAll(prev)` + `size==prev+1` +
+  // Fix round 3, A (same MECHANISM as `classes`' C1, NOT the same severity —
+  // see firestore.rules' own corrected comment on this arm) — this arm was
+  // the pre-C1 shape verbatim: `hasAll(prev)` + `size==prev+1` +
   // `hasAny([caller])`, with no check that the caller wasn't ALREADY a
   // participant. `evil` is already in sessCodedWithParticipant's
   // `participantIds`, so (pre-fix) `evil` could add ANY third uid: already
   // in `prev`, so trivially in `next` too, and nothing pinned the ADDED
-  // element to `evil` specifically.
-  it("CRITICAL: denies an ALREADY-joined participant from adding an arbitrary third party", async () => {
+  // element to `evil` specifically. Not CRITICAL: this arm only fires when
+  // `joinCode != null`, and the read rule already grants read to any
+  // signed-in user in exactly that case, so the injection grants no read
+  // that wasn't already available — the real harm is participant-LIST
+  // injection (schedule/history queries, push tokens, recap), not a read
+  // exposure.
+  it("denies an ALREADY-joined participant from adding an arbitrary third party (participant-list injection)", async () => {
     await assertFails(
       updateDoc(doc(db(EVIL), "sessions/sessCodedWithParticipant"), {
         participantIds: [EVIL, "stranger"],

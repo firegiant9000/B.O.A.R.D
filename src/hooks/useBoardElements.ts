@@ -457,6 +457,13 @@ export interface BoardElements {
    *  eraser path has neither a colour nor an opacity concept). No-op when
    *  nothing is selected, mirroring `applyColor`/`applyStrokeWidth`. */
   applyOpacity: (opacity: number) => void;
+  /** Fix Wave F5 — true when the CURRENT selection is non-empty but contains
+   *  nothing `applyOpacity` would actually update (no paths at all, or only
+   *  eraser paths). Lets a consumer (the alpha control) disable itself
+   *  instead of staying a visible, draggable affordance that silently does
+   *  nothing. Always false for an empty selection — see `applyOpacity`'s own
+   *  comment just above for why that case still has a real effect. */
+  selectionOpacityInert: boolean;
 
   // --- Text elements ---
   createTextElement: (point: Point, color: string) => Promise<void>;
@@ -2575,6 +2582,23 @@ export function useBoardElements(
       });
   };
 
+  // Fix Wave F5 — `applyOpacity` above is a silent no-op whenever the current
+  // selection has nothing it would touch (empty, or shapes/text only — see
+  // its own comment for exactly what's excluded and why). Before this, the
+  // alpha control had no way to know that, so it stayed a visible, draggable
+  // affordance that visibly changed its own % label while doing nothing to
+  // the board. Uses the SAME `ids.has(p.id) && p.tool !== "eraser"` test
+  // `applyOpacity` uses, so the two can never disagree about what counts.
+  // False for an EMPTY selection deliberately: with nothing selected, the
+  // alpha control still has a real effect (it sets the default for the next
+  // NEW stroke — see `onChangeColor`'s `tools.setActiveAlpha` at its one call
+  // site), so there is nothing to warn about in that case.
+  const selectionOpacityInert = useMemo(() => {
+    const ids = selection.selectedIds;
+    if (ids.size === 0) return false;
+    return !paths.some((p) => ids.has(p.id) && p.tool !== "eraser");
+  }, [selection.selectedIds, paths]);
+
   // ────────── WRITE PATH — TEXT ELEMENTS ────────────────────────────────
   // --- Text element handlers ---
 
@@ -3048,6 +3072,7 @@ export function useBoardElements(
     applyColor,
     applyStrokeWidth,
     applyOpacity,
+    selectionOpacityInert,
 
     createTextElement,
     commitTextEdit,

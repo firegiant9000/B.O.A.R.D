@@ -123,7 +123,13 @@ export default function AiSelectionActions({
             x: (u.minX + u.maxX) / 2,
             y: u.maxY,
           });
-          const dy = ocrEnabled ? 52 : 10;
+          // Stack below the OCR button only when it's ACTUALLY rendered —
+          // `ocrEnabled` alone isn't enough: the button's own render
+          // condition above also requires `onRecognizeText` (suppressed
+          // during an active presentation), so keying this off the flag
+          // alone left a 42px gap of dead space above "Explain this" while
+          // presenting with OCR otherwise on (Fix Wave F6).
+          const dy = ocrEnabled && onRecognizeText ? 52 : 10;
           return (
             <View
               style={[styles.explainButton, { left: anchor.x - 60, top: anchor.y + dy }]}
@@ -161,7 +167,14 @@ export default function AiSelectionActions({
             x: (u.minX + u.maxX) / 2,
             y: u.maxY,
           });
-          const dy = (ocrEnabled ? 52 : 0) + (explainEnabled ? 52 : 0) + 10;
+          // Same defect, second site (Fix Wave F6): key off whichever
+          // buttons are ACTUALLY rendered above this one, not off the raw
+          // feature flags — each of those buttons also requires its own
+          // callback to render (suppressed during an active presentation).
+          const dy =
+            (ocrEnabled && onRecognizeText ? 52 : 0) +
+            (explainEnabled && onExplain ? 52 : 0) +
+            10;
           return (
             <View
               style={[styles.flashcardsButton, { left: anchor.x - 74, top: anchor.y + dy }]}

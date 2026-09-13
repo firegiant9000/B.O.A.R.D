@@ -35,8 +35,13 @@ import type { Plan } from "../types";
  * panel simply asks and handles the server's answer. It also breaks the
  * assumption `unlockPhrase` is built on — `boardQaPerPeriod` is FINITE on every
  * plan, so "unlimited" would be a false claim about what upgrading buys.
+ *
+ * `"presenter"` (Fix Wave F2) is `"customPalette"`'s exact shape: a boolean
+ * Pro feature-gate (`workspaceService.ts#canUsePresenter`) with no server-side
+ * enforcement at all, not a countable quota — ROADMAP.md:615's third named
+ * Pro affordance, gated here the same way the other two already were.
  */
-export type UpsellResource = QuotaResource | "customPalette" | "boardQa";
+export type UpsellResource = QuotaResource | "customPalette" | "boardQa" | "presenter";
 
 /**
  * The one props contract BOTH platform variants implement. `tsc` has no
@@ -72,6 +77,7 @@ export const RESOURCE_LABEL: Record<UpsellResource, string> = {
   aiCall: "AI calls per month",
   customPalette: "custom colour swatches",
   boardQa: "board questions per month",
+  presenter: "presenter mode",
 };
 
 /** The plan row board Q&A is capped by. Named here rather than inlined at the
@@ -95,10 +101,11 @@ const BOARD_QA_LIMIT = "boardQaPerPeriod" as const;
  * (which has no entry for it — see `UpsellResource`'s own header): it's
  * "capped" on free (there IS a real Pro feature to sell) and never capped on
  * pro/edu (nothing to upsell to a plan that already has it), the same
- * free-vs-not shape `canUseCustomPalette` uses.
+ * free-vs-not shape `canUseCustomPalette` uses. `"presenter"` (Fix Wave F2)
+ * is the identical shape, mirroring `canUsePresenter`.
  */
 export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
-  if (resource === "customPalette") return plan === "free";
+  if (resource === "customPalette" || resource === "presenter") return plan === "free";
   // Board Q&A is capped on EVERY plan (the one row in the limits table that is
   // finite everywhere), so this is always true for it — but it is read from the
   // table rather than hardcoded `true`, so a future decision to uncap a tier
@@ -112,6 +119,9 @@ export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
 export function limitMessage(resource: UpsellResource, plan: Plan): string {
   if (resource === "customPalette") {
     return "Custom colour swatches are a Pro feature.";
+  }
+  if (resource === "presenter") {
+    return "Presenter mode is a Pro feature.";
   }
   if (resource === "boardQa") {
     return `You've reached the ${plan} plan's limit of ${limitFor(
@@ -142,6 +152,7 @@ export const THROTTLE_MESSAGE =
  */
 export function unlockPhrase(resource: UpsellResource): string {
   if (resource === "customPalette") return "the custom colour swatch palette";
+  if (resource === "presenter") return "presenter mode";
   // `"boardQa"` is capped on Pro too — generously, but really — so the generic
   // "unlimited …" template would be a false claim about what upgrading buys.
   // Upgrading buys a much bigger allowance, and that is what this says.

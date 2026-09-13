@@ -198,11 +198,19 @@ service cloud.firestore {
     //     activity feed is workspace-scoped and so unreachable to a board-scoped
     //     claim. Read this list, not the roadmap, for what is wired.
     //   - IMAGES and AUDIO are excluded even though they are canvas content: their
-    //     bytes live in Cloud Storage, gated on isBoardMember (storage.rules), which
-    //     an embed identity is not. Granting the Firestore document alone would let
-    //     an embed editor create an element pointing at an object it can neither
-    //     upload nor read back — a broken element, not a feature. Re-add here only
-    //     together with a matching storage.rules predicate.
+    //     bytes live in Cloud Storage, gated on isBoardMember by storage.rules'
+    //     matching block — except storage.rules is NOT currently deployed
+    //     (firebase.json has no `storage` entry, same gap
+    //     src/services/audioService.ts's MAX_DURATION_MS comment discloses), so
+    //     that gate is not a compensating control today, just a written-but-inert
+    //     one. The exclusion here still stands even once it is deployed — an embed
+    //     identity is not a board member either way — but until then, nothing is
+    //     actually stopping an embed editor at the Storage layer; only the
+    //     Firestore-side exclusion below does. Granting the Firestore document
+    //     alone would let an embed editor create an element pointing at an object
+    //     it can neither upload nor read back — a broken element, not a feature.
+    //     Re-add here only together with a matching, ACTUALLY DEPLOYED
+    //     storage.rules predicate.
     //   - every other board is unreachable, same as a view embed.
     //
     // The subject behind this uid is asserted by the host, not proved. See the
@@ -908,9 +916,16 @@ service cloud.firestore {
         allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
-      // No embed write: the image BYTES are member-gated in storage.rules, so an
-      // embed editor could only ever create a document pointing at an object it
-      // cannot upload or read. Editor-only until storage.rules matches.
+      // No embed write: the image BYTES are (in principle) member-gated in
+      // storage.rules, so an embed editor could only ever create a document
+      // pointing at an object it cannot upload or read. In practice storage.rules
+      // is not deployed today (no `storage` entry in firebase.json — see
+      // isEmbedEditor's comment above and audioService.ts's MAX_DURATION_MS
+      // comment), so that gate isn't actually in force yet — this deny is still
+      // the right call regardless, since an embed identity should never get this
+      // write either way, but nothing should read this comment as proof the
+      // Storage side is enforced. Editor-only until storage.rules is deployed
+      // and matches.
       match /images/{imageId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
@@ -940,8 +955,10 @@ service cloud.firestore {
       // adds no new read beyond the board+workspace docs isBoardEditor
       // already touches — but it's one more `get()`-bearing predicate on
       // this match, worth knowing about before adding a third.
-      // No embed write, for the same reason as images: the audio bytes are
-      // member-gated in storage.rules.
+      // No embed write, for the same reason as images: the audio bytes are (in
+      // principle) member-gated in storage.rules — not actually in force today,
+      // since storage.rules is not deployed (see the images match's own comment
+      // above), but the right deny regardless.
       match /audio/{audioId} {
         allow read:   if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow create: if isBoardEditor(boardId) && boardOnPaidPlan(boardId);
@@ -1231,18 +1248,33 @@ service cloud.firestore {
       // server-side). Reads, updates, the joinCode self-join and delete are all
       // unchanged. See the deploy-order warning at the top of this file.
       allow create: if false;
-      // Fix round 3, A — this arm was the pre-C1 shape verbatim: `hasAll` +
-      // `size==prev+1` + `hasAny([caller])`, with no check that the caller
-      // wasn't ALREADY a participant. Exactly C1's hole (firestore.rules'
-      // `classes` match block, self-enroll arm): an existing participant
-      // could add an ARBITRARY uid to `participantIds` — they're already
-      // in `prev`, so trivially in `next` too, and nothing pinned the
-      // ADDED element to the caller. `!(caller in prev)` below closes it
-      // the same way, forcing this arm to apply only to a genuinely NEW
-      // join. Caught on a full-file sweep after the `classes` fix, not by
-      // this task's own scope — the same vector, unfixed one match block
-      // away, would have been exactly the "fixed the named instance, not
-      // the class of bug" mistake this branch has already paid for once.
+      // Fix round 3, A — same shape as `classes`' C1, NOT the same severity
+      // (corrected here; an earlier version of this comment overstated it,
+      // matching the test's own now-corrected name in
+      // firestore-tests/firestore.rules.test.js). This arm was the pre-C1
+      // shape verbatim: `hasAll` + `size==prev+1` + `hasAny([caller])`, with
+      // no check that the caller wasn't ALREADY a participant. Exactly C1's
+      // MECHANISM (firestore.rules' `classes` match block, self-enroll arm):
+      // an existing participant could add an ARBITRARY uid to
+      // `participantIds` — they're already in `prev`, so trivially in `next`
+      // too, and nothing pinned the ADDED element to the caller. `!(caller in
+      // prev)` below closes it the same way, forcing this arm to apply only
+      // to a genuinely NEW join.
+      //
+      // Unlike C1, this injection grants no read that wasn't already
+      // available: this arm only fires when `resource.data.joinCode != null`,
+      // and the read rule above already grants read to ANY signed-in user in
+      // exactly that case (`resource.data.joinCode != null`) — so planting a
+      // victim's uid into `participantIds` opens no read the victim's uid
+      // didn't already have. The real, marginal harm is participant-LIST
+      // injection: the victim's uid lands in `array-contains` schedule/
+      // history queries and `sessionService.ts#getParticipantPushTokens`, and
+      // in recap participant lists — plus a durable read if a creator ever
+      // nulls the `joinCode` (nothing in this app's client does that today).
+      // Caught on a full-file sweep after the `classes` fix, not by this
+      // task's own scope — the same vector, unfixed one match block away,
+      // would have been exactly the "fixed the named instance, not the class
+      // of bug" mistake this branch has already paid for once.
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       (

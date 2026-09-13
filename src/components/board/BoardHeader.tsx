@@ -3,7 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } fr
 import { Ionicons } from "@expo/vector-icons";
 import MemberList from "../MemberList";
 import BoardUserBar from "../BoardUserBar";
-import { BoardPresence } from "../../types";
+import { BoardPresence, Plan } from "../../types";
+import { canUsePresenter } from "../../services/workspaceService";
 
 /**
  * The board screen's header bar (Month 5/6 Task 1 — extracted verbatim from
@@ -65,6 +66,18 @@ interface BoardHeaderProps {
   onStopPresenting: () => void;
   onPausePresenting: () => void;
   onResumePresenting: () => void;
+  /** Fix Wave F2 — the workspace's plan, read only for `canUsePresenter`'s
+   *  advisory Pro gate on the toggle just below (ROADMAP.md:615 names
+   *  presenter as Pro alongside voice notes/custom palette, both of which
+   *  already had this; presenter didn't). Defaults to "free" — the same
+   *  fail-closed default every other plan-gated prop in this codebase uses
+   *  when a caller omits it. */
+  plan?: Plan;
+  /** A free-plan admin tapped the presenter toggle's "Pro" badge — routes to
+   *  the upsell the same way `ColorPickerModal`'s `onUpgradeRequested` does
+   *  (`upsellResource="presenter"`). Optional/no-op when omitted, mirroring
+   *  `AudioAffordance`'s identically-optional prop of the same name. */
+  onUpgradeRequested?: () => void;
 }
 
 export default function BoardHeader({
@@ -100,7 +113,12 @@ export default function BoardHeader({
   onStopPresenting,
   onPausePresenting,
   onResumePresenting,
+  plan = "free",
+  onUpgradeRequested,
 }: BoardHeaderProps) {
+  // Fix Wave F2 — see `canUsePresenter`'s own comment (workspaceService.ts)
+  // for why this is advisory-only, client-side, with no firestore.rules gate.
+  const canPresent = canUsePresenter(plan);
   return (
     <View style={styles.header}>
       <TouchableOpacity
@@ -206,7 +224,14 @@ export default function BoardHeader({
                 <Text style={styles.startSessionText}>Session</Text>
               </TouchableOpacity>
             )}
-            {/* Month 5 — presenter toggle, same isAdmin gate as Session above. */}
+            {/* Month 5 — presenter toggle, same isAdmin gate as Session above.
+                Fix Wave F2 — ROADMAP.md:615 names presenter as a Pro
+                affordance alongside voice notes/custom palette, both of
+                which already carried this gate; presenter didn't. A
+                free-plan admin still sees "Present" plus a "Pro" badge, and
+                pressing EITHER routes to the upgrade flow instead of
+                actually starting a presentation — same shape as
+                ColorPickerModal's swatch-cap badge. */}
             {isPresenting ? (
               <>
                 <TouchableOpacity
@@ -226,10 +251,26 @@ export default function BoardHeader({
                 </TouchableOpacity>
               </>
             ) : (
-              <TouchableOpacity style={styles.presentBtn} onPress={onStartPresenting}>
-                <Ionicons name="easel-outline" size={16} color="#fff" />
-                <Text style={styles.startSessionText}>Present</Text>
-              </TouchableOpacity>
+              <View style={styles.presentRow}>
+                <TouchableOpacity
+                  style={styles.presentBtn}
+                  onPress={canPresent ? onStartPresenting : onUpgradeRequested}
+                >
+                  <Ionicons name="easel-outline" size={16} color="#fff" />
+                  <Text style={styles.startSessionText}>Present</Text>
+                </TouchableOpacity>
+                {!canPresent && (
+                  <TouchableOpacity
+                    testID="board-header-presenter-pro-badge"
+                    style={styles.proBadge}
+                    onPress={onUpgradeRequested}
+                    accessibilityRole="button"
+                    accessibilityLabel="Presenter mode is a Pro feature — upgrade to use it"
+                  >
+                    <Text style={styles.proBadgeText}>Pro</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             )}
             <TouchableOpacity
               style={styles.iconBtn}
@@ -300,6 +341,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 8,
   },
+  presentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
   presentBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -308,6 +354,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 8,
+  },
+  proBadge: {
+    backgroundColor: "#7c3aed",
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  proBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
   },
   stopPresentingBtn: {
     flexDirection: "row",

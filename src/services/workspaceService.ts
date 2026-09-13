@@ -197,6 +197,21 @@ export async function addWorkspaceSwatch(workspaceId: string, hex: string): Prom
   });
 }
 
+/** Removes `hex` from the workspace's shared swatch row. Fix Wave F7 — this
+ *  was exported with no caller anywhere in `src/`: a workspace that filled
+ *  all `MAX_WORKSPACE_SWATCHES` slots had no in-app way to free one. Now
+ *  called from `ColorPickerModal`'s existing workspace-swatch row via a
+ *  long-press (see that component's `onRemoveSwatch` prop) — the smaller fix
+ *  chosen over designing a new swatch-management surface, since the row
+ *  already renders exactly the affordance removal needs.
+ *
+ *  Deliberately carries the SAME role gate as `addWorkspaceSwatch` above
+ *  (`canManageWorkspace`/`MANAGER_ROLES`, enforced by firestore.rules'
+ *  `workspaces/{id}` update rule) but NOT `canUseCustomPalette`'s plan gate:
+ *  removing frees capacity rather than spending it, so a workspace that has
+ *  since downgraded to free must still be able to tidy its existing
+ *  swatches down to fit under the cap — gating removal behind Pro would trap
+ *  a downgraded workspace at whatever count it happened to have. */
 export async function removeWorkspaceSwatch(workspaceId: string, hex: string): Promise<void> {
   await updateDoc(doc(db, "workspaces", workspaceId), {
     swatches: arrayRemove(hex),
@@ -234,5 +249,22 @@ export async function removeWorkspaceSwatch(workspaceId: string, hex: string): P
 // touches firestore.rules) — do not add a plan predicate to firestore.rules
 // here, and do not treat this function as enforcement anywhere it's called.
 export function canUseCustomPalette(plan: Plan): boolean {
+  return plan !== "free";
+}
+
+// Fix Wave F2 — ROADMAP.md:615 names three Pro-only feature affordances:
+// presenter, voice notes, custom palette. The other two were both gated in
+// UI and service layer (`audioService.ts#canRecordVoiceNotes`,
+// `canUseCustomPalette` immediately above); this predicate did not exist at
+// all before this fix, so `BoardHeader.tsx`'s presenter toggle was reachable
+// by every plan. Same advisory-only shape as `canUseCustomPalette`: nothing
+// server-side enforces this. Presenting is a `presenting: true` flag on the
+// presenter's own cursor doc (`useBoardCollab.ts#startPresenting`, written
+// via `cursorService.publishCursor`), gated in firestore.rules' `cursors`
+// match only by board membership and `isOwner(userId)` — no `plan`
+// predicate. Adding one is explicitly out of scope for this fix wave
+// (client-side gate only, per its own scope limit) — do not add it to
+// firestore.rules as part of wiring this predicate in.
+export function canUsePresenter(plan: Plan): boolean {
   return plan !== "free";
 }

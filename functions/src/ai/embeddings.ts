@@ -24,12 +24,15 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 // SCOPE NOTE: this file is the memoized write itself — `embedElement` is
 // deliberately safe to call as often as a caller likes, since an unchanged
 // hash is a no-op. ROADMAP.md:1048 requires this be driven "via Cloud
-// Function trigger" — that trigger (five explicit bindings, one per canvas-
-// content subcollection) and the rate-limit/plan-quota metering around each
-// real embed all live in `functions/src/triggers/embeddings.ts`, which wraps
-// this file's `embedElement` rather than folding any of that in here. This
-// file stays ignorant of debouncing, metering, and which collections exist —
-// it only knows how to memoize one element's embed.
+// Function trigger" — that trigger (SIX explicit bindings: one per canvas-
+// content subcollection — notes, textElements, paths, shapes, images — PLUS
+// comments, which is not canvas content but is named explicitly by
+// ROADMAP.md's board Q&A scope, see that file's own comment on
+// `onCommentWritten`) and the rate-limit/plan-quota metering around each real
+// embed all live in `functions/src/triggers/embeddings.ts`, which wraps this
+// file's `embedElement` rather than folding any of that in here. This file
+// stays ignorant of debouncing, metering, and which collections exist — it
+// only knows how to memoize one element's embed.
 //
 // RULES NOTE: this collection has NO match block in firestore.rules at all —
 // mirroring flashcardCache.ts's precedent, not ocrCache.ts's. No client

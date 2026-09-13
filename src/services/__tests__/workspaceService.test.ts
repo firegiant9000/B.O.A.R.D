@@ -265,3 +265,17 @@ describe("canUseCustomPalette — advisory Pro gate (mirrors canRecordVoiceNotes
     expect(workspaceService.canUseCustomPalette("edu")).toBe(true);
   });
 });
+
+// Fix Wave F2 — mirrors the sibling test above exactly (same shape as
+// canRecordVoiceNotes/canUseCustomPalette): ROADMAP.md:615's third Pro
+// affordance had no predicate at all before this.
+describe("canUsePresenter — advisory Pro gate (mirrors canUseCustomPalette / canRecordVoiceNotes)", () => {
+  it("is false for the free plan", () => {
+    expect(workspaceService.canUsePresenter("free")).toBe(false);
+  });
+
+  it("is true for pro and edu", () => {
+    expect(workspaceService.canUsePresenter("pro")).toBe(true);
+    expect(workspaceService.canUsePresenter("edu")).toBe(true);
+  });
+});

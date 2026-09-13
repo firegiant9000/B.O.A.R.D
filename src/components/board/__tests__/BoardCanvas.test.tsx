@@ -159,6 +159,7 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     applyColor: jest.fn(),
     applyStrokeWidth: jest.fn(),
     applyOpacity: jest.fn(),
+    selectionOpacityInert: false,
 
     createTextElement: jest.fn().mockResolvedValue(undefined),
     commitTextEdit: jest.fn().mockResolvedValue(undefined),

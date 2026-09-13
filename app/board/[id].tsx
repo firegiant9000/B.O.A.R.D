@@ -544,6 +544,18 @@ export default function BoardScreen(
       .catch((e) => captureException(e, { op: "board.addWorkspaceSwatch" }));
   };
 
+  // Fix Wave F7 — the removal mirror of `handleAddSwatch` just above: same
+  // optimistic-then-persist shape, so a workspace at the swatch cap has an
+  // in-app way to free a slot (`ColorPickerModal`'s long-press on a swatch).
+  const handleRemoveSwatch = (hex: string) => {
+    setWorkspaceSwatches((prev) => prev.filter((s) => s !== hex));
+    const workspaceId = doc.board?.workspaceId;
+    if (!workspaceId) return;
+    workspaceService
+      .removeWorkspaceSwatch(workspaceId, hex)
+      .catch((e) => captureException(e, { op: "board.removeWorkspaceSwatch" }));
+  };
+
   const handleDeleteSelected = async () => {
     const ids = [...elements.selection.selectedIds];
     if (ids.length === 0) return;
@@ -671,6 +683,8 @@ export default function BoardScreen(
           onStopPresenting={collab.stopPresenting}
           onPausePresenting={collab.pausePresenting}
           onResumePresenting={collab.resumePresenting}
+          plan={doc.boardWorkspace?.plan ?? "free"}
+          onUpgradeRequested={() => setUpsellResource("presenter")}
         />
       )}
 
@@ -931,7 +945,9 @@ export default function BoardScreen(
         )}
         workspaceSwatches={workspaceSwatches}
         onAddSwatch={handleAddSwatch}
+        onRemoveSwatch={handleRemoveSwatch}
         onRequestPaletteUpgrade={() => setUpsellResource("customPalette")}
+        opacityControlDisabled={elements.selectionOpacityInert}
         widthPickerVisible={widthPickerVisible}
         onCloseWidthPicker={() => setWidthPickerVisible(false)}
         activeStrokeWidth={tools.activeStrokeWidth}

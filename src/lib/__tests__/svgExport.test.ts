@@ -1,6 +1,7 @@
 import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
 import { mathTransform } from "../mathInk";
 import { layoutCodeBox } from "../codeRender";
+import { STICKY_COLORS, STICKY_SIZE_METRICS } from "../stickyNotes";
 import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
 
 const bounds: SvgExportBounds = { x: 0, y: 0, width: 800, height: 600 };
@@ -323,6 +324,57 @@ describe("toSvgDocument", () => {
       const heightMatch = doc.match(/<rect[^>]*\bheight="([\d.]+)"/);
       expect(heightMatch).not.toBeNull();
       expect(Number(heightMatch![1])).toBeGreaterThan(70);
+    });
+  });
+
+  describe("sticky note colour/size/position honesty (Fix Wave F4) — noteEl.position is (30, 30)", () => {
+    it("a note with no color/size renders the pre-Month-6 default look: yellow, 200-wide, offset -60/-20", () => {
+      const doc = toSvgDocument([noteEl], bounds);
+      expect(doc).toContain(`fill="${STICKY_COLORS.yellow}"`);
+      expect(doc).toContain('width="200"');
+      // position.x(30) - (200/2 - 40) = 30 - 60 = -30; position.y(30) - 20 = 10.
+      expect(doc).toContain('x="-30"');
+      expect(doc).toContain('y="10"');
+    });
+
+    it("resolves colour from the note's own `color` field, not a hardcoded yellow", () => {
+      const blueNote: SvgExportElement = { kind: "note", data: { ...noteData, color: "blue" } };
+      const doc = toSvgDocument([blueNote], bounds);
+      expect(doc).toContain(`fill="${STICKY_COLORS.blue}"`);
+      expect(doc).not.toContain(`fill="${STICKY_COLORS.yellow}"`);
+    });
+
+    it("resolves width/font-size from the note's own `size` field, not the fixed 200/14px default", () => {
+      const smallNote: SvgExportElement = { kind: "note", data: { ...noteData, size: 12 } };
+      const doc = toSvgDocument([smallNote], bounds);
+      expect(doc).toContain(`width="${STICKY_SIZE_METRICS[12].width}"`);
+      expect(doc).toContain(`font-size="${STICKY_SIZE_METRICS[12].fontSize}"`);
+    });
+
+    it("a size-12 note's exported left offset is 35, matching TextNoteOverlay.tsx's own metrics.width/2-40 — NOT the size-14 default's 60", () => {
+      const smallNote: SvgExportElement = { kind: "note", data: { ...noteData, size: 12 } };
+      const doc = toSvgDocument([smallNote], bounds);
+      // position.x(30) - (150/2 - 40) = 30 - 35 = -5.
+      expect(doc).toContain('x="-5"');
+    });
+
+    it("a size-18 note's exported left offset is 90, matching TextNoteOverlay.tsx's own metrics.width/2-40", () => {
+      const largeNote: SvgExportElement = { kind: "note", data: { ...noteData, size: 18 } };
+      const doc = toSvgDocument([largeNote], bounds);
+      // position.x(30) - (260/2 - 40) = 30 - 90 = -60.
+      expect(doc).toContain('x="-60"');
+      expect(doc).toContain(`width="${STICKY_SIZE_METRICS[18].width}"`);
+    });
+
+    it("a corrupt/unknown stored colour or size degrades to the default look, never a broken or missing render", () => {
+      const corrupt: SvgExportElement = {
+        kind: "note",
+        data: { ...noteData, color: "not-a-real-colour" as any, size: 999 },
+      };
+      const doc = toSvgDocument([corrupt], bounds);
+      expect(doc).toContain(`fill="${STICKY_COLORS.yellow}"`);
+      expect(doc).toContain('width="200"');
+      expect(doc).toContain('x="-30"');
     });
   });
 

@@ -6,24 +6,24 @@ jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null },
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
 jest.mock("firebase/functions", () => ({ httpsCallable: jest.fn() }));
 
-// Mock only the two callable-backed functions; keep the REAL `BillingCallableError`
-// class so `instanceof` checks inside UpsellModal.tsx work against the real
-// identity, not a test double's.
+// Mock only the callable-backed function; the tests below all run against
+// the REAL, currently-`false` BILLING_LIVE (Fix Wave F3), so the CTA never
+// gets far enough to call it — see UpsellModal.mockedCopy.test.tsx for the
+// checkout-wiring tests that mock BILLING_LIVE `true` to actually reach it.
 jest.mock("../../services/billingService", () => ({
   ...jest.requireActual("../../services/billingService"),
   startCheckout: jest.fn(),
-  openBillingPortal: jest.fn(),
 }));
 
 import fs from "fs";
 import path from "path";
 import React from "react";
-import { render, fireEvent, waitFor } from "@testing-library/react-native";
-import { Linking } from "react-native";
+import { render, fireEvent } from "@testing-library/react-native";
 import type { UpsellResource } from "../upsellCopy";
 import { isPlanCapped, limitMessage, unlockPhrase } from "../upsellCopy";
 import { limitFor } from "../../lib/planLimits";
-import { startCheckout, openBillingPortal, BillingCallableError } from "../../services/billingService";
+import { BILLING_LIVE } from "../../lib/pricingCopy";
+import { startCheckout } from "../../services/billingService";
 
 // The load-bearing part of this file: two SEPARATE physical modules, not one
 // module switched by a runtime Platform.OS check.
@@ -54,7 +54,6 @@ const WebUpsellModal: React.ComponentType<
 > = require("../UpsellModal.tsx").default;
 
 const mockStartCheckout = startCheckout as jest.Mock;
-const mockOpenBillingPortal = openBillingPortal as jest.Mock;
 
 const RESOURCES: UpsellResource[] = [
   "board",
@@ -63,6 +62,7 @@ const RESOURCES: UpsellResource[] = [
   "aiCall",
   "customPalette",
   "boardQa",
+  "presenter",
 ];
 
 // The store-compliance guard's strongest layer: read every file the native
@@ -192,6 +192,25 @@ describe("UpsellModal.native.tsx (rendered)", () => {
     expect(queryByText(/pro feature/i)).toBeNull();
   });
 
+  // Fix Wave F2 — same shape as customPalette above, for the presenter gate.
+  it("presenter on free: explains it as a Pro feature, no price or link", () => {
+    const { getByText, toJSON } = render(
+      <NativeUpsellModal visible resource="presenter" plan="free" onDismiss={() => {}} />
+    );
+    expect(getByText(/pro feature/i)).toBeTruthy();
+    const tree = JSON.stringify(toJSON());
+    expect(tree).not.toMatch(/\$\d/);
+    expect(tree).not.toMatch(/https?:\/\//);
+  });
+
+  it("presenter on pro: shows the transient note, not a paywall — the plan already has it", () => {
+    const { getByText, queryByText } = render(
+      <NativeUpsellModal visible resource="presenter" plan="pro" onDismiss={() => {}} />
+    );
+    expect(getByText(/sending requests a little fast/i)).toBeTruthy();
+    expect(queryByText(/pro feature/i)).toBeNull();
+  });
+
   // Month 6 — board Q&A is the one resource this modal covers that is capped on
   // EVERY plan, so it is the one that breaks the "Pro is unlimited, therefore a
   // denial on Pro must be the throttle" arithmetic the other resources rely on.
@@ -253,12 +272,24 @@ describe("UpsellModal.tsx (web, rendered)", () => {
     jest.clearAllMocks();
   });
 
-  it("shows the price and an upgrade action", () => {
-    const { getByText } = render(
+  it("shows the price, with the honest not-yet-available CTA — today's real BILLING_LIVE is false (Fix Wave F3)", () => {
+    expect(BILLING_LIVE).toBe(false); // guards the premise of this test
+    const { getByText, queryByText } = render(
       <WebUpsellModal visible resource="board" onDismiss={() => {}} />
     );
     expect(getByText(/\$5/)).toBeTruthy();
-    expect(getByText(/upgrade/i)).toBeTruthy();
+    expect(getByText(/checkout isn't available yet/i)).toBeTruthy();
+    expect(queryByText(/^Upgrade to Pro$/)).toBeNull();
+  });
+
+  it("the CTA renders disabled, and pressing it does not start a checkout", () => {
+    const { getByTestId } = render(
+      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    const button = getByTestId("upsell-web-upgrade-button");
+    expect(button.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(button);
+    expect(mockStartCheckout).not.toHaveBeenCalled();
   });
 
   it("names the limit that was hit", () => {
@@ -268,13 +299,13 @@ describe("UpsellModal.tsx (web, rendered)", () => {
     expect(getByText(/5 boards/i)).toBeTruthy();
   });
 
-  it("customPalette on free: shows the price + upgrade action, same as a real quota resource", () => {
+  it("customPalette on free: shows the price and the same honest not-yet-available CTA as a real quota resource", () => {
     const { getByText, queryByText } = render(
       <WebUpsellModal visible resource="customPalette" plan="free" onDismiss={() => {}} />
     );
     expect(getByText(/pro feature/i)).toBeTruthy();
     expect(getByText(/\$5/)).toBeTruthy();
-    expect(getByText(/upgrade/i)).toBeTruthy();
+    expect(getByText(/checkout isn't available yet/i)).toBeTruthy();
     // MAX_WORKSPACE_SWATCHES caps every plan, Pro included — "unlocks
     // unlimited custom colour swatches" would overstate that (unlockPhrase's
     // own header explains why this resource gets its own accurate phrase).
@@ -291,76 +322,8 @@ describe("UpsellModal.tsx (web, rendered)", () => {
     expect(queryByTestId("upsell-web-upgrade-button")).toBeNull();
   });
 
-  it("starts checkout with the given workspace and opens the returned URL", async () => {
-    const openURLSpy = jest.spyOn(Linking, "openURL").mockResolvedValue(true as never);
-    mockStartCheckout.mockResolvedValueOnce("https://checkout.stripe.test/s/1");
-
-    const { getByTestId } = render(
-      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
-    );
-    fireEvent.press(getByTestId("upsell-web-upgrade-button"));
-
-    await waitFor(() => expect(mockStartCheckout).toHaveBeenCalledWith("ws-1"));
-    await waitFor(() => expect(openURLSpy).toHaveBeenCalledWith("https://checkout.stripe.test/s/1"));
-    openURLSpy.mockRestore();
-  });
-
-  it("routes on details.canOpenPortal=true by offering the Customer Portal, not a message-text guess", async () => {
-    mockStartCheckout.mockRejectedValueOnce(
-      new BillingCallableError("This workspace's subscription needs attention.", "failed-precondition", {
-        reason: "subscription-exists",
-        canOpenPortal: true,
-      })
-    );
-
-    const { getByTestId, queryByTestId } = render(
-      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
-    );
-    expect(queryByTestId("upsell-web-portal-button")).toBeNull();
-    fireEvent.press(getByTestId("upsell-web-upgrade-button"));
-
-    await waitFor(() => expect(getByTestId("upsell-web-portal-button")).toBeTruthy());
-  });
-
-  it("does NOT offer the portal when details.canOpenPortal=false, even if the message reads like it should", async () => {
-    // The message deliberately mentions "portal" — if routing ever regresses
-    // to sniffing `.message` text instead of `.details.canOpenPortal`, this fails.
-    mockStartCheckout.mockRejectedValueOnce(
-      new BillingCallableError(
-        "Please open the billing portal to resolve this subscription.",
-        "failed-precondition",
-        { reason: "subscription-paused", canOpenPortal: false }
-      )
-    );
-
-    const { getByTestId, queryByTestId, getByText } = render(
-      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
-    );
-    fireEvent.press(getByTestId("upsell-web-upgrade-button"));
-
-    await waitFor(() => expect(getByText(/resolve this subscription/i)).toBeTruthy());
-    expect(queryByTestId("upsell-web-portal-button")).toBeNull();
-  });
-
-  it("pressing the portal action opens the URL from openBillingPortal", async () => {
-    const openURLSpy = jest.spyOn(Linking, "openURL").mockResolvedValue(true as never);
-    mockStartCheckout.mockRejectedValueOnce(
-      new BillingCallableError("needs attention", "failed-precondition", {
-        reason: "subscription-exists",
-        canOpenPortal: true,
-      })
-    );
-    mockOpenBillingPortal.mockResolvedValueOnce("https://billing.stripe.test/p/1");
-
-    const { getByTestId } = render(
-      <WebUpsellModal visible resource="board" onDismiss={() => {}} workspaceId="ws-1" />
-    );
-    fireEvent.press(getByTestId("upsell-web-upgrade-button"));
-    await waitFor(() => getByTestId("upsell-web-portal-button"));
-    fireEvent.press(getByTestId("upsell-web-portal-button"));
-
-    await waitFor(() => expect(mockOpenBillingPortal).toHaveBeenCalledWith("ws-1"));
-    await waitFor(() => expect(openURLSpy).toHaveBeenCalledWith("https://billing.stripe.test/p/1"));
-    openURLSpy.mockRestore();
-  });
+  // Checkout-wiring tests (success, Customer Portal routing) moved to
+  // UpsellModal.mockedCopy.test.tsx — they need BILLING_LIVE mocked `true`
+  // to reach `startCheckout` at all now that the CTA honestly gates on it
+  // (Fix Wave F3).
 });

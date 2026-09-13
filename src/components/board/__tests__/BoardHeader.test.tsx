@@ -1,6 +1,12 @@
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("../../MemberList", () => ({ __esModule: true, default: () => null }));
 jest.mock("../../BoardUserBar", () => ({ __esModule: true, default: () => null }));
+// Mock the whole service module (not firebase/firestore directly) — same
+// convention AudioAffordance.test.tsx uses for its own single-predicate
+// dependency on a firebase-backed service.
+jest.mock("../../../services/workspaceService", () => ({
+  canUsePresenter: jest.fn((plan: string) => plan !== "free"),
+}));
 
 import * as fs from "fs";
 import * as path from "path";
@@ -96,6 +102,57 @@ describe("BoardHeader — board Q&A entry point (Month 6)", () => {
   });
 });
 
+describe("BoardHeader — presenter Pro gate (Fix Wave F2)", () => {
+  it("a free-plan admin sees the Pro badge, and pressing it routes to the upgrade flow instead of presenting", () => {
+    const onStartPresenting = jest.fn();
+    const onUpgradeRequested = jest.fn();
+    const { getByTestId } = renderHeader({
+      isAdmin: true,
+      plan: "free",
+      onStartPresenting,
+      onUpgradeRequested,
+    });
+    expect(getByTestId("board-header-presenter-pro-badge")).toBeTruthy();
+    fireEvent.press(getByTestId("board-header-presenter-pro-badge"));
+    expect(onUpgradeRequested).toHaveBeenCalledTimes(1);
+    expect(onStartPresenting).not.toHaveBeenCalled();
+  });
+
+  it("a free-plan admin pressing the Present button itself ALSO routes to upgrade, not to presenting", () => {
+    // The badge is a second affordance beside the real button, not a
+    // replacement for it — a free user must not be able to dodge the gate
+    // by pressing "Present" instead of the badge.
+    const onStartPresenting = jest.fn();
+    const onUpgradeRequested = jest.fn();
+    const { getByText } = renderHeader({
+      isAdmin: true,
+      plan: "free",
+      onStartPresenting,
+      onUpgradeRequested,
+    });
+    fireEvent.press(getByText("Present"));
+    expect(onUpgradeRequested).toHaveBeenCalledTimes(1);
+    expect(onStartPresenting).not.toHaveBeenCalled();
+  });
+
+  it("a pro-plan admin sees no Pro badge and starts presenting normally", () => {
+    const onStartPresenting = jest.fn();
+    const { getByText, queryByTestId } = renderHeader({
+      isAdmin: true,
+      plan: "pro",
+      onStartPresenting,
+    });
+    expect(queryByTestId("board-header-presenter-pro-badge")).toBeNull();
+    fireEvent.press(getByText("Present"));
+    expect(onStartPresenting).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults to the free plan (and so the gate) when no plan is supplied", () => {
+    const { getByTestId } = renderHeader({ isAdmin: true, plan: undefined });
+    expect(getByTestId("board-header-presenter-pro-badge")).toBeTruthy();
+  });
+});
+
 describe("board Q&A is reachable from the board screen", () => {
   // `app/board/[id].tsx` cannot be imported here (`expo-font` is unresolvable
   // through `@expo/vector-icons`, and `@firebase/util` ships ESM this transform
@@ -115,6 +172,10 @@ describe("board Q&A is reachable from the board screen", () => {
   it("passes the header's Q&A props from the screen", () => {
     expect(screen).toMatch(/boardQaEnabled=\{isBoardQaConfigured\(\)\}/);
     expect(screen).toMatch(/onOpenBoardQa=\{\(\) => setBoardQaVisible\(true\)\}/);
+  });
+
+  it("routes a presenter plan denial to the same upsell as every other quota denial (Fix Wave F2)", () => {
+    expect(screen).toMatch(/onUpgradeRequested=\{\(\) => setUpsellResource\("presenter"\)\}/);
   });
 
   it("passes the panel's visibility and citation wiring from the screen", () => {

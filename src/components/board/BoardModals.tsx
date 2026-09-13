@@ -114,11 +114,20 @@ interface BoardModalsProps {
   canManageWorkspace: boolean;
   workspaceSwatches: string[];
   onAddSwatch: (hex: string) => void;
+  /** Fix Wave F7 — `workspaceService.removeWorkspaceSwatch` wired to the
+   *  swatch row's existing long-press surface: a workspace that fills all
+   *  `MAX_WORKSPACE_SWATCHES` slots had no in-app way to free one. */
+  onRemoveSwatch: (hex: string) => void;
   /** A free-plan member tapped the swatch row's "Pro" badge — routes to the
    *  SAME upsell machinery as the session/AI quota denials above
    *  (`upsellResource="customPalette"`), rather than a bespoke modal. Mirrors
    *  `AudioAffordance`'s `onUpgradeRequested`. */
   onRequestPaletteUpgrade: () => void;
+  /** Fix Wave F5 — `useBoardElements#selectionOpacityInert`: true when the
+   *  current selection has nothing the alpha slider would actually change.
+   *  Lets `ColorPickerModal` disable that control instead of leaving it a
+   *  silent no-op. */
+  opacityControlDisabled: boolean;
 
   widthPickerVisible: boolean;
   onCloseWidthPicker: () => void;
@@ -230,7 +239,9 @@ export default function BoardModals({
   canManageWorkspace,
   workspaceSwatches,
   onAddSwatch,
+  onRemoveSwatch,
   onRequestPaletteUpgrade,
+  opacityControlDisabled,
   widthPickerVisible,
   onCloseWidthPicker,
   activeStrokeWidth,
@@ -378,7 +389,9 @@ export default function BoardModals({
         canManageWorkspace={canManageWorkspace}
         workspaceSwatches={workspaceSwatches}
         onAddSwatch={onAddSwatch}
+        onRemoveSwatch={onRemoveSwatch}
         onUpgradeRequested={onRequestPaletteUpgrade}
+        opacityControlDisabled={opacityControlDisabled}
       />
 
       <StrokeWidthModal

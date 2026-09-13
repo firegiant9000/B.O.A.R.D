@@ -136,10 +136,12 @@ export default function ClassroomHome() {
   // racing another device's removal, or a genuine network failure) was an
   // unhandled promise rejection and a silent dead end — the student stayed
   // in the list with no explanation. A stale "already gone" removal DOES
-  // still succeed as a no-op (see firestore.rules' removal-arm comment for
-  // exactly which OTHER arms grant that, redundantly — not this arm), but
-  // a `catch` is still needed for every genuine failure this can hit
-  // (permission denial, network error).
+  // still succeed as a no-op — not through any dedicated removal rule (there
+  // isn't one in firestore.rules), but redundantly via two OTHER arms of
+  // firestore.rules' `classes` update rule (see that file's own removal-arm
+  // comment, and `classroomService.ts#removeStudentFromClass`'s comment, for
+  // exactly which). But a `catch` is still needed for every genuine failure
+  // this can hit (permission denial, network error).
   const handleRemoveStudent = async (classId: string, uid: string) => {
     setRoster({ classId, loading: false, removingUid: uid });
     setRosterError(null);

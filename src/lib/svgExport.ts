@@ -12,6 +12,7 @@ import {
   layoutCodeBox,
   tokenizeCode,
 } from "./codeRender";
+import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyNotes";
 
 /**
  * Month 6 — pure SVG export serializer.
@@ -38,9 +39,11 @@ import {
  * a `TextElement` has no wrap of its own (this serializer has no real
  * text-measurement pass, so it only respects explicit `\n` line breaks in
  * the source text), while a sticky note DOES estimate a width-driven wrap
- * (`wrapByEstimatedWidth`, below) against its fixed `NOTE_WIDTH`, since
- * ordinary note content routinely exceeds one line at that width and a
- * `\n`-only render would just spill text past the note's coloured rect.
+ * (`wrapByEstimatedWidth`, below) against its OWN size's width
+ * (`lib/stickyNotes.ts#stickySizeMetrics`, the same lookup
+ * `TextNoteOverlay.tsx` renders from), since ordinary note content routinely
+ * exceeds one line at any of the three widths and a `\n`-only render would
+ * just spill text past the note's coloured rect.
  * Neither is a pixel-accurate match for the live editor's own text layout —
  * see `AVG_CHAR_WIDTH_RATIO`'s comment for exactly how the note's estimate
  * falls short of that.
@@ -174,9 +177,10 @@ export interface SvgExportBounds {
  * consumer renders as nothing. `useBoardElements.ts#contentBounds()` can
  * hand this function exactly that today: a board whose only content is one
  * legacy sticky note computes a zero-width/zero-height point bbox for it
- * (`TextNote` carries no persisted width/height — see `NOTE_WIDTH`/
- * `NOTE_MIN_HEIGHT` below for the same gap on this module's own note
- * rendering). `toSvgDocument` clamps to this floor on every call rather than
+ * (`TextNote` carries no persisted width/height — see
+ * `lib/stickyNotes.ts#stickySizeMetrics` for the same gap on this module's
+ * own note rendering, resolved from the note's own `size` field). `toSvgDocument`
+ * clamps to this floor on every call rather than
  * trusting every present and future caller to pass a non-degenerate box —
  * it does not attempt to recover the "true" extent of whatever produced a
  * degenerate box, which is that caller's bbox math to get right, not this
@@ -394,66 +398,62 @@ function textNode(t: TextElement): string {
 }
 
 // TextNote (the legacy sticky note) carries no persisted width/height or
-// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead (fixed
-// `maxWidth: 200`, height grown to fit by real word-wrap). `NOTE_MIN_HEIGHT`
-// is a floor for short content — `noteNode` below grows the rect for
-// longer content instead of using this as a fixed height, so realistic
-// note text doesn't overflow it: at 200 units wide and 14px type, ordinary
-// sticky-note text — as little as ~25-30 characters — already exceeds one
-// line, so a fixed height is wrong for typical content, not just outliers.
+// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead, driven
+// by the note's own `color`/`size` fields through the SAME `lib/stickyNotes.ts`
+// helpers used here (`STICKY_COLORS`/`sanitizeStickyColor`, `stickySizeMetrics`),
+// so the exporter and the live overlay cannot drift onto two different looks
+// for the same note. A corrupt or absent stored `color`/`size` degrades to
+// the pre-Month-6 default (yellow, 14px/200-wide) — the same tolerant-reader
+// guarantee those helpers already provide the overlay, not a second
+// implementation of it here.
 //
-// KNOWN DIVERGENCE (Month 6 — sticky-note polish added colour, size, and
-// markdown to TextNote; this exporter was deliberately NOT taught any of the
-// three). These constants used to describe an honest mirror of
-// TextNoteOverlay.tsx's own fixed layout; they no longer do, and this note
-// replaces an earlier comment that still claimed one. Concretely:
-//   - EVERY exported note renders at this fixed width/font-size, regardless
-//     of its own `size` field (`NOTE_WIDTH`/`NOTE_FONT_SIZE` below correspond
-//     to the "md"/14px default only — see `lib/stickyNotes.ts`).
-//   - EVERY exported note renders in `NOTE_FILL` (yellow), regardless of its
-//     own `color` field.
-//   - `content` is written out AS TYPED — `**bold**`, `- list`,
-//     `[text](url)` and friends appear as literal characters in the exported
-//     text, not as bold/italic `<tspan>`s, bullets, or links. `content` is
-//     passed through `wrapByEstimatedWidth`/`tspansFor` completely unaware
-//     that `lib/markdown.ts` exists.
-//   - A non-default-size note ALSO exports at the wrong position, not merely
-//     the wrong size: `NOTE_LEFT_OFFSET` (60) matches `TextNoteOverlay.tsx`'s
-//     own `metrics.width / 2 - 40` only at the 14px/200-wide default — a
-//     size-12 note's live left offset is 35, a size-18 note's is 90, so the
-//     exported rect lands beside, not under, where the note actually renders
-//     on the board. (`NOTE_TOP_OFFSET` is unaffected: the overlay's own top
-//     offset is a fixed -20 regardless of size.)
-// This was a deliberate scope decision, not an oversight: colour/size are
-// straightforward to add (a lookup by the note's own fields instead of a
-// bare constant), but rendering bold/italic in SVG `<tspan>`s and, further,
-// list bullets and tappable links is real additional work this task chose
-// not to take on. Anyone teaching this module the new fields should start
-// there, and should decide markdown support deliberately (partial support —
-// e.g. bold/italic only — is fine as long as the limit is stated here, same
-// as this comment now does for the current, even smaller, feature set).
-const NOTE_LEFT_OFFSET = 60;
+// FIXED WAVE F4 (this note replaces an earlier "KNOWN DIVERGENCE" comment
+// that accurately described three real bugs — colour, size, and left-offset
+// position — now corrected):
+//   - Colour and width/font-size now come from the note's own fields, not a
+//     fixed yellow/200px/14px triple.
+//   - `NOTE_LEFT_OFFSET_ADJUST` mirrors `TextNoteOverlay.tsx`'s own
+//     `metrics.width / 2 - 40` exactly (see that file's `leftOffset`): a
+//     non-default-size note's real on-board left offset is size-dependent
+//     (35 at size 12, 60 at the 14px default, 90 at size 18) — it was never
+//     the fixed 60 this function used to hardcode regardless of size.
+//     `NOTE_TOP_OFFSET` stays a plain constant: the overlay's own
+//     `top: y - 20` genuinely does not scale with size, so one number is
+//     correct for every size there.
+//
+// MARKDOWN STAYS UNRENDERED HERE, DELIBERATELY — this part of the old
+// comment is still true and is NOT this fix's job. `content` is written out
+// AS TYPED — `**bold**`, `- list`, `[text](url)` and friends appear as
+// literal characters in the exported text, not as bold/italic `<tspan>`s,
+// bullets, or links. `content` is passed through
+// `wrapByEstimatedWidth`/`tspansFor` completely unaware that
+// `lib/markdown.ts` exists. Rendering markdown in SVG (bold/italic
+// `<tspan>`s, list bullets, tappable links) is real additional work,
+// deliberately not taken on here. Anyone teaching this module to do so
+// should decide the supported subset deliberately (partial support — e.g.
+// bold/italic only — is fine as long as the limit is stated here, the same
+// way this comment states the current, still-smaller, feature set).
+const NOTE_LEFT_OFFSET_ADJUST = 40;
 const NOTE_TOP_OFFSET = 20;
-const NOTE_WIDTH = 200;
-const NOTE_MIN_HEIGHT = 70;
-const NOTE_FILL = "#FFF9C4";
 const NOTE_TEXT_COLOR = "#333333";
-const NOTE_FONT_SIZE = 14;
 const NOTE_PADDING = 10;
-const NOTE_LINE_HEIGHT = NOTE_FONT_SIZE * 1.2;
 
 function noteNode(n: TextNote): string {
   const content = n.content ?? "";
-  const x = n.position.x - NOTE_LEFT_OFFSET;
+  const color = STICKY_COLORS[sanitizeStickyColor(n.color)];
+  const metrics = stickySizeMetrics(n.size);
+  const leftOffset = metrics.width / 2 - NOTE_LEFT_OFFSET_ADJUST;
+  const x = n.position.x - leftOffset;
   const y = n.position.y - NOTE_TOP_OFFSET;
   const textX = x + NOTE_PADDING;
-  const textY = y + NOTE_PADDING + NOTE_FONT_SIZE;
-  const lines = wrapByEstimatedWidth(content, NOTE_WIDTH - NOTE_PADDING * 2, NOTE_FONT_SIZE);
-  const height = Math.max(NOTE_MIN_HEIGHT, NOTE_PADDING * 2 + lines.length * NOTE_LINE_HEIGHT);
+  const textY = y + NOTE_PADDING + metrics.fontSize;
+  const lineHeight = metrics.fontSize * 1.2;
+  const lines = wrapByEstimatedWidth(content, metrics.width - NOTE_PADDING * 2, metrics.fontSize);
+  const height = Math.max(metrics.minHeight, NOTE_PADDING * 2 + lines.length * lineHeight);
   return (
     `<g aria-label="${escapeXmlAttr(content)}">` +
-    `<rect x="${x}" y="${y}" width="${NOTE_WIDTH}" height="${height}" rx="6" fill="${NOTE_FILL}" stroke="none" />` +
-    `<text x="${textX}" y="${textY}" font-size="${NOTE_FONT_SIZE}" fill="${NOTE_TEXT_COLOR}">${tspansFor(lines, textX, NOTE_FONT_SIZE)}</text>` +
+    `<rect x="${x}" y="${y}" width="${metrics.width}" height="${height}" rx="6" fill="${escapeXmlAttr(color)}" stroke="none" />` +
+    `<text x="${textX}" y="${textY}" font-size="${metrics.fontSize}" fill="${NOTE_TEXT_COLOR}">${tspansFor(lines, textX, metrics.fontSize)}</text>` +
     `</g>`
   );
 }
