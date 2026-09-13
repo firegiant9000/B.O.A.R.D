@@ -56,6 +56,19 @@ interface ToolbarProps {
    * exists to avoid for read-only viewers.
    */
   canInsertImage?: boolean;
+  /** Month 6 — camera capture + OCR (descoped scanner: capture + crop + OCR,
+   *  no `expo-document-scanner` — see `scanService`'s header). Opens the
+   *  camera and, on a shot, uploads it as an ordinary image element and runs
+   *  the existing OCR pipeline on it. */
+  onScanDocument: () => void;
+  /**
+   * Month 6 — whether the scan button shows at all. Defaults to true. Mirrors
+   * `canInsertImage`'s embed-session caveat exactly, for the identical reason:
+   * a scan lands through the same `images` write path, which carries no
+   * `isEmbedEditor` disjunct in firestore.rules, so an embed editor could
+   * never create one regardless of scope.
+   */
+  canScanDocument?: boolean;
   /** Insert a poll (Month 6) — opens PollComposer; position is chosen by the
    *  caller (BoardCanvas centers it in the current viewport). */
   onInsertPoll: () => void;
@@ -124,6 +137,8 @@ export default function Toolbar({
   onOpenWidthPicker,
   onInsertImage,
   canInsertImage = true,
+  onScanDocument,
+  canScanDocument = true,
   onInsertPoll,
   canInsertPoll = true,
   onUndo,
@@ -246,6 +261,16 @@ export default function Toolbar({
               icon="image-outline"
               active={false}
               onPress={onInsertImage}
+            />
+          )}
+          {/* Month 6 — camera capture + OCR (descoped scanner). The board's
+              one reachable entry point for `scanDocument`; see Toolbar.tsx's
+              `onScanDocument` doc comment for the embed-session caveat. */}
+          {canScanDocument && (
+            <ToolButton
+              icon="scan-outline"
+              active={false}
+              onPress={onScanDocument}
             />
           )}
           {/* Month 6 — polls, quiz sequencing, dot voting. Opens PollComposer;

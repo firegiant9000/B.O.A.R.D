@@ -24,6 +24,7 @@ const baseProps = {
   onOpenColorPicker: jest.fn(),
   onOpenWidthPicker: jest.fn(),
   onInsertImage: jest.fn(),
+  onScanDocument: jest.fn(),
   onInsertPoll: jest.fn(),
   onUndo: jest.fn(),
   onClear: jest.fn(),
@@ -102,6 +103,24 @@ describe("Toolbar — canInsertImage (Month 5, embed edit sessions)", () => {
       <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canInsertImage={false} />
     );
     expect(screen.queryByText("image-outline")).toBeNull();
+  });
+});
+
+describe("Toolbar — canScanDocument (Month 6, camera capture + OCR)", () => {
+  it("shows the scan button by default, wired to onScanDocument — the board's one reachable entry point", () => {
+    const onScanDocument = jest.fn();
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} onScanDocument={onScanDocument} />
+    );
+    fireEvent.press(screen.getByText("scan-outline"));
+    expect(onScanDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the scan button when canScanDocument is false (embed edit sessions)", () => {
+    render(
+      <Toolbar {...baseProps} activeTool="pen" onToolChange={jest.fn()} canScanDocument={false} />
+    );
+    expect(screen.queryByText("scan-outline")).toBeNull();
   });
 });
 

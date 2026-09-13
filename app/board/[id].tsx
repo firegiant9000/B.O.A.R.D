@@ -239,6 +239,9 @@ export default function BoardScreen(
     onActivateSelectTool: tools.activateSelect,
     onScheduleSave: doc.scheduleSave,
     onError: showError,
+    // Month 6 — Scan's OCR step shares the same "aiCall" quota (and the same
+    // upsell) as the toolbar's OCR/explain/diagram affordances below.
+    onQuotaExceeded: () => setUpsellResource("aiCall"),
   });
 
   // Month 5 — resolved before `useBoardCollab` (which needs it as an input,
@@ -795,6 +798,8 @@ export default function BoardScreen(
           onOpenColorPicker={() => setColorPickerVisible(true)}
           onOpenWidthPicker={() => setWidthPickerVisible(true)}
           onInsertImage={elements.insertImage}
+          onScanDocument={elements.scanDocument}
+          canScanDocument={!embedMode}
           onInsertPoll={() => setPollComposerVisible(true)}
           canInsertPoll={!embedMode}
           onUndo={elements.undo}

@@ -160,11 +160,21 @@ export const extractTextElement: ElementExtractor = async (_db, _boardId, elemen
 
 // `paths`/`shapes` carry no native text field (`DrawPath`, `ShapeElement` in
 // src/types/index.ts — geometry only, never a text/label property).
-// `ImageElement` DOES carry an `alt: string` field, but it is populated from
-// the uploaded file's NAME (imageService), not descriptive text about the
-// image's content — embedding a filename would not answer a board Q&A
-// question, so it is skipped for the same reason as shapes, not because the
-// field doesn't exist. A single STROKE's transcription, once run, already
+// `ImageElement` DOES carry an `alt: string` field. For an ordinary upload it
+// is populated from the file's NAME (imageService) — not descriptive text
+// about the image's content, so embedding it would not answer a board Q&A
+// question. Month 6's camera-capture path (scanService.ts) is a SECOND writer
+// of this same field, though: a scanned photo's OCR'd text (when any was
+// recognized) lands on its own `alt` too, via imageService.updateImage — see
+// scanService.ts's own header. `alt` today conflates both meanings with NO
+// discriminator between them, so `extractImage` below still deliberately
+// stays a no-op rather than reading `alt` blindly: doing so would index real
+// board content for a scan, but would COINCIDENTALLY ALSO index ordinary
+// photo filenames for every other image — the exact regression this note
+// originally warned against. Giving scanned OCR text real Q&A coverage needs
+// (at minimum) a way to tell the two apart, and is a deliberate scope
+// decision for whoever next owns board Q&A, not an oversight here. A single
+// STROKE's transcription, once run, already
 // lands as a NEW `textElements` document instead (`useBoardAI.ts`'s
 // `recognizeText`/`acceptOcr` → `placeOcrText`), which `extractTextElement`
 // above already embeds — duplicating that text onto the stroke's own
@@ -188,12 +198,32 @@ export const extractPath: ElementExtractor = async (db, boardId, elementId, data
   return { element: { id: elementId, elementType: "path", text: cached.text }, authorUid: authorOf(data) };
 };
 
-// No OCR or captioning runs against a whole SHAPE or IMAGE element today
-// (OCR runs only against a user-selected STROKE region — useBoardAI.ts —
-// never a shape or an image). Explicit no-op extractors (not simply omitted
-// bindings) so the canvas bindings below stay exactly the element-subcollection
-// set firestore.rules names, ready to gain a real extractor the moment one
-// of these sources gains embeddable text. Audio transcripts (Whisper,
+// No captioning runs against a whole SHAPE today, and `extractShape` stays a
+// true no-op for it (`ShapeElement` carries no text field at all — see the
+// `paths`/`shapes` note above).
+//
+// A whole IMAGE is different since Month 6: `scanService.ts`'s camera-capture
+// path DOES now run OCR against a captured image (via the same
+// `recognizeHandwriting` callable `extractPath`'s stroke-selection OCR uses)
+// and writes the result onto that image's own `alt` field. `extractImage`
+// stays a no-op anyway — not because no such text exists, but because `alt`
+// conflates that OCR text with an ordinary upload's filename with no
+// discriminator (see the `alt` note above), so reading it here would also
+// index every plain photo's filename as if it were board content. That, plus
+// sending previously-local OCR text to the embeddings provider, is a real
+// data-scope change (see the `comments` extractor's own "WHAT THIS CHANGES
+// ABOUT WHERE BOARD DATA GOES" note for the shape such a change should take)
+// — a decision for whoever next gives `alt` a real/filename discriminator,
+// not a silent side effect of this trigger. Concretely: board Q&A cannot
+// today retrieve a scanned page's recognized text ("what did we cover on
+// this board" has no path to it) — "snap a page and hit Explain" is
+// unaffected, since `explainSelection` sends a screenshot of the selection
+// straight to a vision model and never reads `alt`.
+//
+// Both stay explicit no-op extractors (not simply omitted bindings) so the
+// canvas bindings below stay exactly the element-subcollection set
+// firestore.rules names, ready to gain a real extractor the moment one of
+// these sources gains INDEXABLE embeddable text. Audio transcripts (Whisper,
 // ROADMAP.md) are expected to join the binding set NEXT, as a SEVENTH binding
 // alongside the five canvas ones and `comments` — this list is not written to
 // calcify as exhaustive.

@@ -161,6 +161,7 @@ function makeElements(overrides: Partial<BoardElements> = {}): BoardElements {
     deleteNote: jest.fn().mockResolvedValue(undefined),
 
     insertImage: jest.fn(),
+    scanDocument: jest.fn().mockResolvedValue(undefined),
 
     createDiagram: jest.fn().mockResolvedValue([]),
 

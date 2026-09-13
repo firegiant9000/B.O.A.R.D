@@ -49,6 +49,7 @@ import {
 import * as pathService from "../services/pathService";
 import * as shapeService from "../services/shapeService";
 import * as imageService from "../services/imageService";
+import * as scanService from "../services/scanService";
 import * as audioService from "../services/audioService";
 import * as snapshotService from "../services/snapshotService";
 import { captureException } from "../lib/errorReporting";
@@ -111,7 +112,7 @@ import { useThrottledValue } from "./useThrottledValue";
  *  1327  WRITE PATH — SHAPES & DIAGRAMS                 saveShapeFromDraft, createDiagram
  *  1391  WRITE PATH — GROUP OPERATIONS                  deleteSelected, duplicateSelected
  *  1499  WRITE PATH — CLIPBOARD                         copySelected, pasteClipboard, shortcutPaste, DOM paste listener
- *  1596  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, pasteExternalImage
+ *  1596  WRITE PATH — IMAGES                            uploadPreparedImage, insertImage, scanDocument, pasteExternalImage
  *  1735  WRITE PATH — Z-ORDER                           reorderSelected, bringToFront, sendToBack
  *  1771  WRITE PATH — STYLE                             applyColor, applyStrokeWidth
  *  1848  WRITE PATH — TEXT ELEMENTS                     create/commitEdit/resize/delete/saveTextElement
@@ -263,6 +264,15 @@ export interface BoardElementsOptions {
   onScheduleSave: () => void;
   /** Surface a user-facing failure in the screen's error banner. */
   onError: (message: string) => void;
+  /** Month 6 — a scan's OCR step was denied `resource-exhausted` (the AI-call
+   *  quota or the workspace rate throttle; the server doesn't distinguish
+   *  them). The SAME callback `useBoardAI`'s `BoardAIBridge.onQuotaExceeded`
+   *  uses, so Scan and the toolbar's "Recognize text" show one consistent
+   *  upsell instead of two different behaviors for the same underlying
+   *  denial. Never fired for any other OCR failure (disabled, no legible
+   *  text, network) — those stay silent, matching `scanDocument`'s "a failed
+   *  OCR never blocks or undoes the capture" contract. */
+  onQuotaExceeded: () => void;
 }
 
 export interface BoardElements {
@@ -421,6 +431,10 @@ export interface BoardElements {
   // --- Images ---
   /** The toolbar image button: web goes straight to a file dialog, native asks. */
   insertImage: () => void;
+  /** Month 6 — camera capture + OCR (descoped scanner; see `scanService`'s own
+   *  header for why). Opens the camera, uploads the shot as an ordinary
+   *  `ImageElement`, then runs it through the existing OCR pipeline. */
+  scanDocument: () => Promise<void>;
 
   /**
    * Write a parsed diagram as real shape + text docs at a board-space origin
@@ -460,6 +474,7 @@ export function useBoardElements(
     onActivateSelectTool,
     onScheduleSave,
     onError,
+    onQuotaExceeded,
   } = opts;
 
   // Uid stamped on new docs — every write site fell back to an empty string
@@ -1810,6 +1825,40 @@ export function useBoardElements(
     ]);
   };
 
+  // Month 6 — camera capture + OCR (descoped scanner). Shares `insertImage`'s
+  // busy gate (`insertingImage`) since both end in the same upload pipeline;
+  // `scanService` owns capture → upload → OCR, this just supplies the
+  // board-space placement center and adopts the result the same way every
+  // other insert path here does (select tool, select the element, schedule a
+  // save). A canceled camera / denied permission resolves to null and no-ops,
+  // matching `insertImageFrom`. `result.ocrQuotaExceeded` routes to the same
+  // `onQuotaExceeded` upsell `useBoardAI`'s "Recognize text" uses for the
+  // identical resource-exhausted denial — the image itself already landed
+  // either way, so this never gates the capture, only the OCR notice.
+  const scanDocument = async () => {
+    if (insertingImage) return;
+    setInsertingImage(true);
+    try {
+      const center = screenToBoard(viewport, {
+        x: canvasSize.width / 2,
+        y: canvasSize.height / 2,
+      });
+      const result = await scanService.scanDocument(boardId, authorId, center);
+      if (!result) return; // canceled / permission denied
+      onActivateSelectTool();
+      selection.select(result.imageId, "elements");
+      onScheduleSave();
+      // The image landed regardless; this only decides whether the upsell
+      // shows for the OCR half — same denial, same modal as "Recognize text".
+      if (result.ocrQuotaExceeded) onQuotaExceeded();
+    } catch (e) {
+      captureException(e, { op: "board.scanDocument" });
+      onError("Failed to scan the document.");
+    } finally {
+      setInsertingImage(false);
+    }
+  };
+
   // Web: an image on the system clipboard (a screenshot / copied photo) lands as
   // a first-class image element through the same downscale → upload pipeline as
   // the toolbar picker (Phase 9).
@@ -2363,6 +2412,7 @@ export function useBoardElements(
     deleteNote,
 
     insertImage,
+    scanDocument,
 
     createDiagram,
 
