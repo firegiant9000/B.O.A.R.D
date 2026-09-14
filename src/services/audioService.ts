@@ -44,12 +44,13 @@ const ID_ALPHABET =
  *  check only — rules cannot measure audio duration, only Storage object
  *  *size* (a rough proxy, not the real thing) via storage.rules' matching
  *  `isValidAudioUpload`, once that file is deployed — as of this writing
- *  `firebase.json` has no `storage` entry, so storage.rules (this block and
- *  the Month 2 image rules alike) has never been deployed and enforces
- *  nothing yet. Even once it is, a raw SDK call that skips `saveVoiceNote`
- *  entirely could still write a longer note under that byte ceiling (e.g. a
- *  lower-bitrate recording). Closing that fully needs a Cloud Function on
- *  this write path — not added here. */
+ *  storage.rules (this block and the Month 2 image rules alike) is wired into
+ *  `firebase.json` and covered by firestore-tests/storage.rules.test.js, but
+ *  has still never been pushed to the bucket, so it enforces nothing yet; see
+ *  the banner at the top of that file. Even once it is, a raw SDK call that
+ *  skips `saveVoiceNote` entirely could still write a longer note under that
+ *  byte ceiling (e.g. a lower-bitrate recording). Closing that fully needs a
+ *  Cloud Function on this write path — not added here. */
 export const MAX_DURATION_MS = 60_000;
 
 function storagePathFor(boardId: string, audioId: string): string {
@@ -100,14 +101,14 @@ export interface SaveVoiceNoteInput {
  *
  * Bytes land in Storage before the doc is written (the doc's `downloadUrl`
  * needs the object to already exist), which briefly creates the exact class
- * of stranded object this task was chartered to eliminate: storage.rules
- * isn't referenced by `firebase.json` and so enforces nothing today (see
- * `canRecordVoiceNotes`'s header below), leaving firestore.rules' `audio`
- * match (editor, ON A PAID PLAN as of Month 6) as the only real gate, so a
- * caller whose upload succeeds and whose doc write is denied — a
- * viewer/commenter (see AudioAffordance's `canEdit` gate) or a free-plan
- * editor (see its `canRecord` gate, both of which exist precisely to make
- * this rare) — would otherwise leave the object behind with nothing ever
+ * of stranded object this task was chartered to eliminate: storage.rules is
+ * referenced by `firebase.json` now but has never been deployed, and so still
+ * enforces nothing today (see `canRecordVoiceNotes`'s header below), leaving
+ * firestore.rules' `audio` match (editor, ON A PAID PLAN as of Month 6) as
+ * the only real gate, so a caller whose upload succeeds and whose doc write
+ * is denied — a viewer/commenter (see AudioAffordance's `canEdit` gate) or a
+ * free-plan editor (see its `canRecord` gate, both of which exist precisely
+ * to make this rare) — would otherwise leave the object behind with nothing ever
  * referencing it. Any failure from here on — `getDownloadURL` or `setDoc` —
  * deletes the just-uploaded object (best-effort) before rethrowing, so a
  * denied/failed write never strands bytes the way a *lost* one would.
@@ -271,14 +272,17 @@ export function subscribeToBoardAudio(
 // this module entirely still hits that rule on the actual write.
 //
 // storage.rules' `boards/{id}/audio/...` match is NOT part of that fix, and
-// unlike firestore.rules above, it is not deployed AT ALL today (see
-// MAX_DURATION_MS's comment: no `storage` entry exists in `firebase.json`),
-// so it enforces nothing — not even membership, let alone plan. A denied
-// Firestore doc write can still leave an uploaded Storage object behind
-// either way; closing that fully needs actually deploying storage.rules (and
-// probably a Cloud Function on top), tracked separately. `saveVoiceNote`
-// above already deletes the object on a failed doc write for exactly this
-// reason, which now includes "denied by the plan gate," not just
+// unlike firestore.rules above, it is not deployed AT ALL today — it is now
+// wired into `firebase.json` and has emulator coverage
+// (firestore-tests/storage.rules.test.js), but nobody has pushed it to the
+// bucket, deliberately: see the banner at the top of storage.rules for why the
+// first push has to be `firebase deploy --only storage` after reading the
+// console. Until then it enforces nothing — not even membership, let alone
+// plan. A denied Firestore doc write can still leave an uploaded Storage
+// object behind either way; closing that fully needs actually deploying
+// storage.rules (and probably a Cloud Function on top), tracked separately.
+// `saveVoiceNote` above already deletes the object on a failed doc write for
+// exactly this reason, which now includes "denied by the plan gate," not just
 // network/permission failures.
 //
 // `plan` is `Plan | undefined`, not just `Plan` — the same correction

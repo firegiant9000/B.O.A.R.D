@@ -222,8 +222,9 @@ service cloud.firestore {
     //   - IMAGES and AUDIO are excluded even though they are canvas content: their
     //     bytes live in Cloud Storage, gated on isBoardMember by storage.rules'
     //     matching block — except storage.rules is NOT currently deployed
-    //     (firebase.json has no `storage` entry, same gap
-    //     src/services/audioService.ts's MAX_DURATION_MS comment discloses), so
+    //     (firebase.json now HAS a `storage` entry and the ruleset is covered by
+    //     firestore-tests/storage.rules.test.js, but nobody has pushed it to the
+    //     bucket yet — see the banner at the top of storage.rules), so
     //     that gate is not a compensating control today, just a written-but-inert
     //     one. The exclusion here still stands even once it is deployed — an embed
     //     identity is not a board member either way — but until then, nothing is
@@ -1006,13 +1007,13 @@ service cloud.firestore {
       // No embed write: the image BYTES are (in principle) member-gated in
       // storage.rules, so an embed editor could only ever create a document
       // pointing at an object it cannot upload or read. In practice storage.rules
-      // is not deployed today (no `storage` entry in firebase.json — see
-      // isEmbedEditor's comment above and audioService.ts's MAX_DURATION_MS
-      // comment), so that gate isn't actually in force yet — this deny is still
-      // the right call regardless, since an embed identity should never get this
-      // write either way, but nothing should read this comment as proof the
-      // Storage side is enforced. Editor-only until storage.rules is deployed
-      // and matches.
+      // is not deployed today (it is now wired into firebase.json and tested, but
+      // not yet pushed to the bucket — see isEmbedEditor's comment above and the
+      // banner atop storage.rules), so that gate isn't actually in force yet —
+      // this deny is still the right call regardless, since an embed identity
+      // should never get this write either way, but nothing should read this
+      // comment as proof the Storage side is enforced. Editor-only until
+      // storage.rules is deployed and matches.
       match /images/{imageId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
@@ -1025,8 +1026,10 @@ service cloud.firestore {
       // enforces it server-side now (see the updated header on
       // src/services/audioService.ts's `canRecordVoiceNotes` — it is an
       // affordance gate now, not the only enforcement). The matching
-      // storage.rules block for the audio bytes still carries the old
-      // caveat; closing that is tracked separately.
+      // storage.rules block for the audio bytes does NOT carry this plan
+      // check and is not meant to: its own comment now describes that split
+      // (document gated on membership + plan, bytes on membership alone) and
+      // why the worst case is an orphaned object rather than a tier bypass.
       //
       // Gated on CREATE only, not update/delete: a workspace that downgrades
       // after notes already exist must still let its editors delete (or, if

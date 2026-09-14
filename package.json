@@ -10,7 +10,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-board-rules \"jest --config firestore-tests/jest.config.js --runInBand\"",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-board-rules \"jest --config firestore-tests/jest.config.js --runInBand\"",
     "migrate:workspaces": "node scripts/migrate-workspaces.js",
     "functions:build": "npm --prefix functions run build",
     "functions:test": "npm --prefix functions test",

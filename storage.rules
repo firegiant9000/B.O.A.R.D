@@ -1,5 +1,31 @@
 rules_version = '2';
 
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ ⚠ THIS RULESET HAS NEVER BEEN DEPLOYED. READ BEFORE YOU DEPLOY ANYTHING. │
+// └──────────────────────────────────────────────────────────────────────────┘
+//
+// This file sat in the repo from Month 2 with no `storage` key in
+// `firebase.json`, so no deploy ever pushed it. That key now exists (it is what
+// makes this file testable, and it is how it will eventually ship), which
+// changes what a BARE `firebase deploy` does: from here on, deploying
+// everything ALSO pushes this ruleset to the live bucket.
+//
+// The live bucket's CURRENT rules are unknown from inside this repo — nobody
+// has looked at them in the Firebase console. They are whatever Firebase's
+// default was when the bucket was created, plus any console edit since. So the
+// first push of this file is not a no-op refinement of a known state; it
+// replaces an unread one. It could either open access that is currently closed,
+// or lock out every image and voice note already in the bucket.
+//
+// Therefore, the first deploy must be:
+//
+//     1. Read the bucket's current rules in the Firebase console.
+//     2. firebase deploy --only storage      ← NOT a bare `firebase deploy`.
+//
+// Until someone has done step 1, treat this file as tested-but-inert: the suite
+// in firestore-tests/storage.rules.test.js proves it behaves as written against
+// the emulator, which is a statement about this file, not about production.
+//
 // Firebase Storage rules (Month 2, Phase 9 — image elements; Month 5 adds
 // voice notes below).
 //
@@ -44,10 +70,25 @@ service firebase.storage {
     //
     // NOTE: this rule, like the image block above, gates on board membership
     // ONLY — it does not check plan. Voice notes are billed as Pro-tier
-    // (ROADMAP.md item 9) but that is enforced NOWHERE server-side today; see
-    // audioService.ts's `canRecordVoiceNotes` header for the full advisory-only
-    // rationale. Do not read this rule's presence as proof the tier is
-    // enforced.
+    // (ROADMAP.md item 9), and as of Month 6 that IS enforced server-side, just
+    // not here: firestore.rules' `boards/{boardId}/audio` match allows create
+    // only `if isBoardEditor(boardId) && boardOnPaidPlan(boardId)`. So the two
+    // halves of a voice note are gated differently — the DOCUMENT on membership
+    // AND plan, these BYTES on membership alone.
+    //
+    // The consequence of that split is storage hygiene, not a tier bypass. A
+    // free-plan member could upload an object here and then have the matching
+    // document create denied by firestore.rules, leaving an orphaned blob. What
+    // it does NOT give them is the feature: an audio note is unreachable in the
+    // app without its document — nothing enumerates Storage directly — so the
+    // upload buys them bytes in a bucket, not a voice note. (`saveVoiceNote` in
+    // audioService.ts already best-effort deletes the object when the doc write
+    // fails, precisely to keep that window small.)
+    //
+    // See audioService.ts's `canRecordVoiceNotes` header for the fuller
+    // picture, including why the 60s duration cap remains client-side only.
+    // Do not read this rule's presence as proof the tier is enforced HERE — it
+    // is enforced next door, on the document.
     function isValidAudioUpload() {
       return request.resource.size < 2 * 1024 * 1024 &&
              request.resource.contentType.matches('audio/.*');
