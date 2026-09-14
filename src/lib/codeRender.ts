@@ -178,6 +178,37 @@ export function tokenizeCode(code: string, language: CodeLanguage): CodeTokenLin
   const { tokens } = getHighlighter().codeToTokens(code, {
     lang: language,
     theme: "github-light",
+    // ── WHY THE TIME LIMIT IS DISABLED ────────────────────────────────────
+    // Shiki defaults `tokenizeTimeLimit` to 500 (ms, PER LINE — see
+    // `@shikijs/primitive`'s `_tokenizeWithTheme`, which destructures that
+    // default and hands it to `grammar.tokenizeLine2`). When a line exceeds
+    // it, `vscode-textmate`'s `_tokenizeString` returns early with
+    // `stoppedEarly: true` and every character it had not scanned yet
+    // collapses into ONE token carrying whatever scope was open at the time.
+    // `codeToTokens` does not surface `stoppedEarly`, so a caller cannot
+    // distinguish a truncated line from a correctly tokenized one — the
+    // failure is silent and renders as a plausible-looking solid-colored
+    // line.
+    //
+    // That budget is charged the ONE-TIME cost of compiling a grammar's
+    // rules on first use (each Oniguruma pattern converted to a native
+    // RegExp by `oniguruma-to-es`, then compiled by V8), because TextMate
+    // compiles rules lazily as it reaches them. So it is only ever the FIRST
+    // tokenization with a given grammar that can blow the budget, and it
+    // does so on a cold, not-yet-JIT-compiled process — which is exactly
+    // what CI and a cold app launch are, and is not what a warm dev machine
+    // is. `sql` surfaced it first because it carries the longest single
+    // pattern of the nine (9,925 chars, converting to a 9,921-char RegExp),
+    // but this is not sql-specific: `cpp` compiles 2,534 patterns and
+    // already measured 603 ms on a warm machine, i.e. past the same cliff.
+    //
+    // 0 disables the limit, so tokenizing always runs to completion. The
+    // cost is that a pathological line has no wall-clock escape hatch; the
+    // benefit is that this module can never again hand a renderer a line it
+    // silently failed to tokenize. A visibly slow first render is
+    // recoverable and self-evident; a permanently mis-colored one is
+    // neither.
+    tokenizeTimeLimit: 0,
   });
   return tokens.map((line) =>
     line.map((t) => ({ content: t.content, color: t.color ?? CODE_DEFAULT_FOREGROUND }))

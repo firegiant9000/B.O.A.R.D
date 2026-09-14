@@ -80,6 +80,51 @@ describe("tokenizeCode", () => {
     const lines = tokenizeCode(SAMPLES.py, "py");
     expect(lines).toHaveLength(2);
   });
+
+  it("disables shiki's per-line tokenization time limit", () => {
+    // Shiki's default is 500ms PER LINE, and a line that exceeds it is
+    // returned with everything unscanned collapsed into one token and no
+    // error — `stoppedEarly` is not surfaced by `codeToTokens` (see
+    // codeRender.ts's comment at the call site). The budget is charged the
+    // one-time grammar rule-compile, so only the FIRST tokenization with a
+    // grammar is at risk. This asserts the option itself because that is the
+    // fix; the behaviour it prevents is wall-clock dependent and cannot be
+    // reproduced deterministically on a fast machine.
+    let captured: Record<string, unknown> | undefined;
+    jest.isolateModules(() => {
+      jest.doMock("shiki/core", () => ({
+        createHighlighterCoreSync: () => ({
+          codeToTokens: (_code: string, opts: Record<string, unknown>) => {
+            captured = opts;
+            return { tokens: [[{ content: "SELECT", color: "#D73A49" }]] };
+          },
+        }),
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require("../codeRender") as typeof import("../codeRender");
+      mod.tokenizeCode(SAMPLES.sql, "sql");
+    });
+    jest.dontMock("shiki/core");
+    expect(captured).toBeDefined();
+    expect(captured?.tokenizeTimeLimit).toBe(0);
+  });
+
+  it("tokenizes sql identically on a cold highlighter and on a warm one", () => {
+    // The defect this guards: on a cold process the first tokenization with
+    // a grammar paid its rule-compile cost inside shiki's per-line time
+    // budget, so it could return a truncated line while every later call
+    // returned the full one. Observed on the Linux CI runner as 3 runs
+    // followed by 10 for this exact input. A fast machine compiles well
+    // inside the old budget, so this is an invariant guard, not a
+    // reproduction — it goes red only where the defect actually occurs.
+    let cold: unknown;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require("../codeRender") as typeof import("../codeRender");
+      cold = mod.tokenizeCode(SAMPLES.sql, "sql");
+    });
+    expect(cold).toEqual(tokenizeCode(SAMPLES.sql, "sql"));
+  });
 });
 
 describe("layoutCodeBox", () => {
