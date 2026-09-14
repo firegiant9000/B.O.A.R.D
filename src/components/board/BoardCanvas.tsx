@@ -52,8 +52,14 @@ interface BoardCanvasProps {
   /** The board's workspace plan — Month 5's voice notes are the first
    *  consumer (the advisory Pro gate in AudioAffordance, threaded through
    *  BoardOverlayLayer). Passed down rather than read here so this stays
-   *  props-only, same as every other value on this interface. */
-  plan: Plan;
+   *  props-only, same as every other value on this interface.
+   *
+   *  `undefined` — NOT `"free"` — is the honest value while the board's
+   *  workspace is unresolved, absent (a legacy board), or its fetch failed.
+   *  The caller must pass `boardWorkspace?.plan` straight through; a
+   *  `?? "free"` here withdraws voice notes from a paying customer for a
+   *  whole board session. See `audioService.ts#canRecordVoiceNotes`. */
+  plan: Plan | undefined;
   /** Effective board role can write (doc.canEdit, app/board/[id].tsx). Gates
    *  the voice-note record-entry-point (`newVoiceNoteAnchor` below): without
    *  it, a viewer/commenter could see the mic and record, uploading real

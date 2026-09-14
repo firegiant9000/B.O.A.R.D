@@ -109,6 +109,50 @@ describe("getWorkspaceUsage", () => {
     expect(result.collaborators).toMatchObject({ used: 2, limit: 4, unlimited: false });
   });
 
+  // Month 6's two added plan rows. Both are counted out of the SAME
+  // `aiUsage/{period}` document this function already fetches for `aiCalls`
+  // — `byFeature[feature].calls`, the exact field the server's own gates
+  // read (functions/src/ai/usage.ts#readFeatureCalls) — so they cost no
+  // extra read and cannot drift from what enforcement counts.
+  it("returns the board Q&A and embeddings rows from byFeature, the same counter the server gates on", async () => {
+    getCountFromServer.mockResolvedValueOnce(makeCountSnap(1));
+    mockDocsByPath({
+      "/usage/": { sessions: 0, updatedAt: 0 },
+      "/aiUsage/": {
+        calls: 9,
+        tokens: 900,
+        costUsd: 0.01,
+        byFeature: {
+          boardQa: { calls: 2, tokens: 400, costUsd: 0.005 },
+          embeddings: { calls: 7, tokens: 500, costUsd: 0.005 },
+        },
+      },
+      "workspaces/ws1": { plan: "free", members: { alice: "owner" } },
+    });
+
+    const result = await getWorkspaceUsage("ws1", "free");
+
+    expect(result.boardQa).toEqual({ used: 2, limit: 3, remaining: 1, fraction: 2 / 3, unlimited: false });
+    expect(result.embeddings).toMatchObject({ used: 7, limit: 2000, unlimited: false });
+  });
+
+  // `boardQaPerPeriod` is the one row finite on EVERY plan, Pro included —
+  // which is the whole reason this page needs to show it: it is the only
+  // metered resource a paying customer can exhaust with nowhere else in the
+  // product to see why.
+  it("keeps board Q&A finite on Pro, unlike every other Pro-unlimited row", async () => {
+    getCountFromServer.mockResolvedValueOnce(makeCountSnap(0));
+    mockDocsByPath({
+      "/aiUsage/": { calls: 0, tokens: 0, costUsd: 0, byFeature: { boardQa: { calls: 5 } } },
+      "workspaces/ws1": { plan: "pro", members: { alice: "owner" } },
+    });
+
+    const result = await getWorkspaceUsage("ws1", "pro");
+
+    expect(result.aiCalls.unlimited).toBe(true);
+    expect(result.boardQa).toMatchObject({ used: 5, limit: 200, unlimited: false });
+  });
+
   it("reports every plan-unlimited resource as unlimited, with no Infinity/NaN on the finite ones", async () => {
     getCountFromServer.mockResolvedValueOnce(makeCountSnap(40));
     mockDocsByPath({

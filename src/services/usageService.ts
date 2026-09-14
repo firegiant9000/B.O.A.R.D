@@ -12,8 +12,11 @@ import { limitFor, UNLIMITED } from "../lib/planLimits";
 import type { Plan } from "../types";
 
 // Month 5/6 — the usage dashboard's read path. Extends the M4 AI
-// meter (aiUsageService.ts) with the other three plan resources: boards,
-// sessions, and workspace headroom in general. UI components (app/ai-usage.tsx)
+// meter (aiUsageService.ts) with the other five plan resources: boards,
+// sessions, collaborators, board Q&A and embeddings — every `LimitedResource`
+// except `workspaces`, whose cap is per-OWNER rather than per-workspace and so
+// has no honest place in this module's contract (see `getWorkspaceUsage`).
+// UI components (app/ai-usage.tsx)
 // call only this module, never Firestore directly (Global Constraint).
 //
 // Every number here is DISPLAY, not enforcement. The real gates are the
@@ -159,7 +162,7 @@ export async function readSessionUsage(workspaceId: string, period: string): Pro
 }
 
 /** The workspace's own member count, read fresh (not passed in) so this
- *  module's four-resource contract holds from `workspaceId` alone. Used as
+ *  module's whole-contract promise holds from `workspaceId` alone. Used as
  *  the "used" figure for the collaborators-per-board limit: this page has
  *  no active board (it's a workspace-wide dashboard, reached from Profile
  *  with no boardId), so there is no single board to measure against. A
@@ -180,13 +183,48 @@ export interface WorkspaceUsage {
   sessions: Headroom;
   aiCalls: Headroom;
   collaborators: Headroom;
+  /** Month 6. `boardQaPerPeriod` — the one plan row that is FINITE on every
+   *  plan, Pro included, which is exactly why it has to be visible: a paying
+   *  customer can exhaust it, and until this row existed there was nowhere in
+   *  the product to see why the panel had started refusing. */
+  boardQa: Headroom;
+  /** Month 6. `embeddingsPerPeriod` — the element-embedding trigger's own
+   *  cap. Not user-initiated (nobody "spends" an embedding deliberately), so
+   *  it is a diagnostic rather than an entitlement; see app/ai-usage.tsx's
+   *  row for the wording that makes that distinction on screen. */
+  embeddings: Headroom;
 }
 
-/** All four plan resources' headroom for `workspaceId` on `plan`. The period
+/** Reads one feature's call count out of a period's `byFeature` map — the
+ *  SAME field the server's own gates count from
+ *  (functions/src/ai/usage.ts#readFeatureCalls, reading
+ *  `workspaces/{id}/aiUsage/{period}`, which is byte-for-byte the document
+ *  `getAiUsage` fetches here). Going through the same field rather than a
+ *  parallel counter is what keeps this display honest: if the two ever
+ *  disagreed, the dashboard would be explaining a denial the server did not
+ *  make. `aiUsageService`'s mapper already defaults a missing feature entry's
+ *  `calls` to 0, and a missing map to `{}`, so an unused feature reads as 0
+ *  rather than undefined. */
+function featureCalls(byFeature: Record<string, { calls: number }>, feature: string): number {
+  return byFeature[feature]?.calls ?? 0;
+}
+
+/** All six plan resources' headroom for `workspaceId` on `plan`. The period
  *  for both the AI-usage read and the session-usage read comes from the
  *  SAME existing helper (`periodFor`, aiUsageService.ts) — never re-derived
  *  — so this always reads the doc the Functions side is writing this month
  *  (Global Constraint: monthly buckets have exactly one implementation).
+ *
+ *  `boardQa` and `embeddings` cost no extra read: both are counted out of
+ *  `byFeature` on the aiUsage document already fetched for `aiCalls`, which
+ *  is the same document and the same field the server's `checkFeatureQuota`
+ *  / `checkFeatureOnlyQuota` gate on. The feature keys (`"boardQa"`,
+ *  `"embeddings"`) are string literals here because they have to be: they
+ *  are declared on the FUNCTIONS side, one per callable/trigger
+ *  (`askBoard.ts`'s `BOARD_QA_FEATURE`, `embeddings.ts`'s inline
+ *  `feature: "embeddings"`), in a package this bundle cannot import. There
+ *  is no shared enumeration to derive them from, and inventing one that
+ *  spanned both packages is a bigger change than this row warrants.
  *
  *  Does NOT cover `workspaces` (the 5th `LimitedResource`), and the reason is
  *  scope rather than enforcement — that cap IS enforced now, by the
@@ -209,5 +247,10 @@ export async function getWorkspaceUsage(workspaceId: string, plan: Plan): Promis
     sessions: toHeadroom(sessionsUsed, limitFor(plan, "sessionsPerPeriod")),
     aiCalls: toHeadroom(aiUsage.calls, limitFor(plan, "aiCallsPerPeriod")),
     collaborators: toHeadroom(membersUsed, limitFor(plan, "collaboratorsPerBoard")),
+    boardQa: toHeadroom(featureCalls(aiUsage.byFeature, "boardQa"), limitFor(plan, "boardQaPerPeriod")),
+    embeddings: toHeadroom(
+      featureCalls(aiUsage.byFeature, "embeddings"),
+      limitFor(plan, "embeddingsPerPeriod")
+    ),
   };
 }

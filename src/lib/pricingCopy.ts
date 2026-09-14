@@ -88,7 +88,9 @@ function describeCount(value: number, singular: string, plural: string): string 
  * figure here is a retyped literal, so this can never quietly drift from
  * what the plan table actually says.
  *
- * Two deliberate choices, both required reading before touching this list:
+ * Four deliberate choices, all required reading before touching this list.
+ * Three of them are `LimitedResource` rows this list does NOT render; the
+ * fourth is why the AI-calls row it DOES render carries a qualifier:
  *  - `workspaces` is NOT rendered anywhere. The cap itself is real and
  *    server-enforced (the `createWorkspace` callable counts the workspaces
  *    the caller owns and denies past the plan's number; firestore.rules
@@ -99,6 +101,38 @@ function describeCount(value: number, singular: string, plural: string): string 
  *    same call app/ai-usage.tsx makes, where it is prose beside the metered
  *    rows rather than a row of its own. If it is ever listed here, it needs
  *    wording that says "you own", not a bare "1 workspace".
+ *  - `embeddingsPerPeriod` is NOT rendered either, and unlike the two rows
+ *    below it that is not a phrasing problem — it is not an entitlement at
+ *    all. Nothing a user does spends it directly: it meters the element-
+ *    embedding TRIGGER (functions/src/triggers/embeddings.ts), an automatic
+ *    re-index of board content that exists so board Q&A has something to
+ *    search. It is a spend ceiling on our own background job, deliberately
+ *    finite on every plan for that reason (see the row's comment in
+ *    functions/src/billing/limits.ts), and a user cannot plan around a
+ *    number they never spend. It stays off the card. The usage dashboard
+ *    (app/ai-usage.tsx) DOES show it, which is the right place for it: a
+ *    diagnostic for a denial already suffered, not a thing being sold.
+ *  - `boardQaPerPeriod` is not rendered as a row of its own either, but it
+ *    could not simply be omitted, because omitting it made the card LIE.
+ *    `aiCallsPerPeriod` is UNLIMITED on Pro and Edu, so the AI-calls row
+ *    read "Unlimited AI calls per month" while `boardQaPerPeriod` was 200 on
+ *    Pro and enforced server-side (functions/src/ai/usage.ts's
+ *    `checkFeatureQuota`, on top of the workspace-wide cap). A Pro customer
+ *    asking a 201st board question this month is denied a feature this page
+ *    told them was unlimited. `src/components/upsellCopy.ts` had already
+ *    reached this conclusion for the upsell surface — "`boardQaPerPeriod` is
+ *    FINITE on every plan, so 'unlimited' would be a false claim about what
+ *    upgrading buys" — and this is the pricing page honouring it.
+ *
+ *    It is a QUALIFIER on the existing row rather than a fifth row: a
+ *    pricing card's job is to be read, and board Q&A's cap is a sub-cap of
+ *    the AI-calls line, not a peer of it. The qualifier names the actual
+ *    number so it is something a user can plan against, and it is read from
+ *    `PLAN_LIMITS` like every other figure here, never retyped. It is
+ *    rendered on EVERY plan, not just where the parent row says "Unlimited":
+ *    the row is finite everywhere, a free user's 3 is as real a ceiling as a
+ *    Pro user's 200, and a qualifier that appeared only on some cards would
+ *    read as a Pro-only restriction rather than a product-wide one.
  *  - `collaboratorsPerBoard` is phrased "per board", never "per workspace"
  *    or bare "collaborators" — the cap genuinely applies board-by-board
  *    (each board's own `roles` map), not to a workspace's total membership.
@@ -108,9 +142,25 @@ export function planFeatures(plan: Plan): string[] {
   return [
     describeCount(limits.boards, "board", "boards"),
     describeCount(limits.sessionsPerPeriod, "session per month", "sessions per month"),
-    describeCount(limits.aiCallsPerPeriod, "AI call per month", "AI calls per month"),
+    `${describeCount(limits.aiCallsPerPeriod, "AI call per month", "AI calls per month")}${describeBoardQaSubCap(limits)}`,
     `${describeCount(limits.collaboratorsPerBoard, "collaborator", "collaborators")} per board`,
   ];
+}
+
+/** The board Q&A sub-cap clause appended to the AI-calls line — see
+ *  `planFeatures`' third bullet for why it is a qualifier rather than a row.
+ *
+ *  Returns "" if `boardQaPerPeriod` is ever UNLIMITED. That branch is dead
+ *  against today's table (the row is finite on all three plans, on purpose)
+ *  and is not defensive padding: without it, a future table where board Q&A
+ *  really is unlimited would render "Unlimited AI calls per month (board
+ *  Q&A: Infinity)" — the exact `String(Infinity)` defect `describeCount`
+ *  exists to prevent — or, worse, a qualifier claiming a limit that no
+ *  longer exists. Dropping the clause is the correct copy in that world,
+ *  because then the unqualified "unlimited" is simply true. */
+function describeBoardQaSubCap(limits: PlanLimits): string {
+  if (limits.boardQaPerPeriod === UNLIMITED) return "";
+  return ` (board Q&A: up to ${limits.boardQaPerPeriod})`;
 }
 
 export interface PlanCardCopy {

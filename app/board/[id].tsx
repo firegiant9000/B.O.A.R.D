@@ -535,22 +535,35 @@ export default function BoardScreen(
     [comments, elements, tools]
   );
 
+  // The `workspaceId` guard runs BEFORE the optimistic state write, not
+  // after it. With the order reversed, a board with no `workspaceId` would
+  // add the swatch to local state and then bail without persisting anything
+  // — an optimistic update with no operation to be optimistic about, which
+  // survives until the screen unmounts and silently disappears on the next
+  // board open. Not reachable today (`ColorPickerModal` only calls this from
+  // `canAddSwatch`, which requires `canManageWorkspace`, which is false
+  // whenever `doc.boardWorkspace` is null), so this is ordering hygiene
+  // rather than a live bug — but the guard belongs above the write on its
+  // own merits, and `handleRemoveSwatch` below mirrors it for the same
+  // reason.
   const handleAddSwatch = (hex: string) => {
-    setWorkspaceSwatches((prev) => (prev.includes(hex) ? prev : [...prev, hex]));
     const workspaceId = doc.board?.workspaceId;
     if (!workspaceId) return;
+    setWorkspaceSwatches((prev) => (prev.includes(hex) ? prev : [...prev, hex]));
     workspaceService
       .addWorkspaceSwatch(workspaceId, hex)
       .catch((e) => captureException(e, { op: "board.addWorkspaceSwatch" }));
   };
 
   // Fix Wave F7 — the removal mirror of `handleAddSwatch` just above: same
-  // optimistic-then-persist shape, so a workspace at the swatch cap has an
-  // in-app way to free a slot (`ColorPickerModal`'s long-press on a swatch).
+  // guard-then-optimistic-then-persist shape, so a workspace at the swatch
+  // cap has an in-app way to free a slot (`ColorPickerModal`'s long-press on
+  // a swatch). See `handleAddSwatch` for why the guard precedes the state
+  // write.
   const handleRemoveSwatch = (hex: string) => {
-    setWorkspaceSwatches((prev) => prev.filter((s) => s !== hex));
     const workspaceId = doc.board?.workspaceId;
     if (!workspaceId) return;
+    setWorkspaceSwatches((prev) => prev.filter((s) => s !== hex));
     workspaceService
       .removeWorkspaceSwatch(workspaceId, hex)
       .catch((e) => captureException(e, { op: "board.removeWorkspaceSwatch" }));
@@ -729,7 +742,7 @@ export default function BoardScreen(
         isAdmin={doc.isAdmin}
         backgroundTemplate={doc.board?.backgroundTemplate ?? "blank"}
         blockedIds={blockedIds}
-        plan={doc.boardWorkspace?.plan ?? "free"}
+        plan={doc.boardWorkspace?.plan}
         canEdit={doc.canEdit}
         canComment={doc.canComment}
         enablePanZoom={ENABLE_PAN_ZOOM}

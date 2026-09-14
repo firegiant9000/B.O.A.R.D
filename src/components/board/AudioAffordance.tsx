@@ -22,7 +22,10 @@ export interface AudioAffordanceProps {
   userId: string;
   x: number;
   y: number;
-  plan: Plan;
+  /** `undefined` means "plan not known yet" (unresolved/absent/failed
+   *  workspace fetch), which fails OPEN — see
+   *  `audioService.canRecordVoiceNotes`'s header. Not the same as `"free"`. */
+  plan: Plan | undefined;
   /** Counter-scale factor (typically `1 / viewport.scale`, from the caller)
    *  so the badge holds a constant on-screen size through zoom — same
    *  technique CommentPinLayer uses, applied to THIS component's own

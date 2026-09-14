@@ -21,7 +21,7 @@ import { OPENAI_API_KEY } from "../config";
 // explicit and binding: "each element gets an embedding on create/update
 // VIA CLOUD FUNCTION TRIGGER" — this file is that trigger.
 //
-// SIX EXPLICIT BINDINGS, NOT A WILDCARD. A single
+// SIX SOURCES, TWELVE EXPLICIT BINDINGS, NOT A WILDCARD. A single
 // `boards/{boardId}/{collectionId}/{elementId}` binding looks tempting but is
 // wrong on three counts: (a) it fires on every OTHER subcollection under a
 // board too — ocrCache, flashcardCache, polls/*/votes, reactions, aiUsage,
@@ -31,13 +31,29 @@ import { OPENAI_API_KEY } from "../config";
 // an element — a self-feedback loop; (c) it bills an invocation for every
 // vote/reaction/tally write on the board, pure waste against the spec's own
 // "first unbounded AI feature" warning (ROADMAP.md's board Q&A section). So:
-// one binding per source that actually carries embeddable text — the five
-// canvas-content subcollections firestore.rules names (paths/notes/
-// textElements/shapes/images — firestore.rules:888-914) plus `comments`, which
-// ROADMAP.md's board Q&A scope ("board content + session history + comments")
-// names explicitly. All six are built from a shared factory, so a SEVENTH
-// source (Whisper transcripts on audio notes, expected next per the roadmap)
-// is a one-line addition, not a rewrite.
+// explicit bindings, TWO PER SOURCE that actually carries embeddable text —
+// a write binding (the `makeWriteTrigger` exports at the end of this file)
+// to index the content, and a paired delete binding (the `makeDeleteTrigger`
+// exports below those) to drop the embedding when the element goes, since a
+// surviving embedding is a citation pointing at nothing (see the
+// deletion-cleanup section's own comment). Six sources × two = twelve
+// bindings; count the two export blocks rather than trusting this sentence.
+//
+// The six sources are the five canvas-content subcollections firestore.rules
+// names — the `paths`, `notes`, `textElements` and `shapes` blocks under
+// `match /boards/{boardId}`, which share one member-read/editor-write gate,
+// plus the `images` block just after them, which carries the same read gate
+// but denies embed-identity writes — together with `comments`, which
+// ROADMAP.md's board Q&A scope ("board content + session history +
+// comments") names explicitly. Named by rule block rather than by line
+// range on purpose: that citation was a `firestore.rules:888-914` range and
+// has now been stale twice over, once from a canvas change and once from a
+// security commit, while the block names have never moved.
+//
+// All twelve are built from two shared factories, so a SEVENTH source
+// (Whisper transcripts on audio notes, expected next per the roadmap) is a
+// two-line addition — one per factory — not a rewrite. Adding only the write
+// half is the mistake to watch for; it is what leaves stale embeddings behind.
 //
 // Note what changed and what did not: `comments` moved from example (a)'s list
 // of things a wildcard would WRONGLY catch into a deliberate binding of its
@@ -98,7 +114,7 @@ import { OPENAI_API_KEY } from "../config";
 // version of this file added a time-based cooldown here, justified against
 // `useBoardDocument.ts`'s 2000ms `scheduleSave` debounce. That justification
 // was wrong: `scheduleSave` debounces the BOARD document's own `updatedAt`
-// bump, which none of these ten bindings watch. The collections this file
+// bump, which none of these twelve bindings watch. The collections this file
 // DOES watch are commit-on-finish, not stream-of-keystrokes: `notes` has no
 // update function at all (`pathService.saveTextNote` only creates), and
 // `textElements` is created with `text: ""` then written ONCE, complete,
@@ -224,8 +240,10 @@ export const extractPath: ElementExtractor = async (db, boardId, elementId, data
 // canvas bindings below stay exactly the element-subcollection set
 // firestore.rules names, ready to gain a real extractor the moment one of
 // these sources gains INDEXABLE embeddable text. Audio transcripts (Whisper,
-// ROADMAP.md) are expected to join the binding set NEXT, as a SEVENTH binding
-// alongside the five canvas ones and `comments` — this list is not written to
+// ROADMAP.md) are expected to join the binding set NEXT, as a SEVENTH SOURCE
+// alongside the five canvas ones and `comments` — and so as the thirteenth
+// and fourteenth bindings, since every source carries a write binding and a
+// delete binding (see this file's header). This list is not written to
 // calcify as exhaustive.
 export const extractShape: ElementExtractor = async () => null;
 export const extractImage: ElementExtractor = async () => null;

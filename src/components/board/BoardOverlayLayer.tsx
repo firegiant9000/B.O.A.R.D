@@ -133,8 +133,10 @@ interface BoardOverlayLayerProps {
   // Voice notes (Month 5, ROADMAP.md:583-587)
   boardId: string;
   /** The workspace's plan — the advisory Pro gate AudioAffordance reads
-   *  (see audioService.canRecordVoiceNotes's header). */
-  plan: Plan;
+   *  (see audioService.canRecordVoiceNotes's header). `undefined` means the
+   *  plan is not known yet and must fail OPEN, which is a different fact
+   *  from `"free"`; do not coerce it on the way through. */
+  plan: Plan | undefined;
   /** Every existing voice note the viewer can see (blocked-user filtered by
    *  the caller), each paired with its LIVE render position; rendered as a
    *  play/pause + long-press-delete badge — not viewport-culled, like

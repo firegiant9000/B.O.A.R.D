@@ -266,6 +266,18 @@ describe("canRecordVoiceNotes (advisory Pro gate)", () => {
     expect(audioService.canRecordVoiceNotes("pro")).toBe(true);
     expect(audioService.canRecordVoiceNotes("edu")).toBe(true);
   });
+
+  // Mirrors `canUsePresenter`'s own undefined case exactly (see
+  // workspaceService.test.ts) — `undefined` means the caller does not yet
+  // KNOW the plan, which is a different fact from "known to be on the free
+  // plan," and must fail OPEN. `useBoardDocument.ts` sets `boardWorkspace`
+  // to `null` on a `getWorkspace` rejection and `loadBoard` runs once per
+  // boardId with no retry, so coercing that to `"free"` showed a paying
+  // customer a locked mic for the whole board session — and every board
+  // load showed it transiently, before the fetch resolved.
+  it("is true for an unknown plan (undefined) — fails open, unlike the free plan", () => {
+    expect(audioService.canRecordVoiceNotes(undefined)).toBe(true);
+  });
 });
 
 describe("deleteVoiceNotesForElements (anchor cascade)", () => {

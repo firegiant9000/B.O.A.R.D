@@ -66,6 +66,38 @@ describe("planFeatures — driven by PLAN_LIMITS, never retyped", () => {
     expect(proFeatures).not.toMatch(/Infinity/i);
   });
 
+  // The defect this pins: `aiCallsPerPeriod` is UNLIMITED on Pro, so the card
+  // read "Unlimited AI calls per month" while `boardQaPerPeriod` was 200 and
+  // enforced server-side (functions/src/ai/usage.ts#checkFeatureQuota). A Pro
+  // customer asking a 201st board question was denied a feature the pricing
+  // page had called unlimited. `upsellCopy.ts` had already identified exactly
+  // this hazard — "`boardQaPerPeriod` is FINITE on every plan, so 'unlimited'
+  // would be a false claim about what upgrading buys" — and acted on it; this
+  // is the pricing page catching up.
+  it("never leaves the AI-calls line claiming an unqualified 'unlimited' while board Q&A carries a finite sub-cap", () => {
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(PLAN_LIMITS[plan].boardQaPerPeriod).not.toBe(UNLIMITED);
+      const aiLine = planFeatures(plan).find((f) => /AI calls? per month/.test(f));
+      expect(aiLine).toBeDefined();
+      expect(aiLine).toMatch(
+        new RegExp(`board Q&A[^0-9]*${PLAN_LIMITS[plan].boardQaPerPeriod}`, "i")
+      );
+    }
+  });
+
+  // Same load-bearing property as the drift test above, applied to the
+  // qualifier: mutate the SAME object planFeatures reads and assert the
+  // sub-cap figure moves with it, so this can never become a retyped "200".
+  it("reads the board Q&A sub-cap from PLAN_LIMITS rather than retyping it", () => {
+    const original = { ...PLAN_LIMITS.pro };
+    try {
+      PLAN_LIMITS.pro.boardQaPerPeriod = 1234;
+      expect(planFeatures("pro").join(" | ")).toMatch(/board Q&A[^0-9]*1234/i);
+    } finally {
+      Object.assign(PLAN_LIMITS.pro, original);
+    }
+  });
+
   it("phrases the collaborator cap as per-board, never per-workspace — the cap applies board by board", () => {
     for (const plan of ["free", "pro", "edu"] as const) {
       const features = planFeatures(plan).join(" | ");

@@ -40,18 +40,48 @@ import type { Subscription } from "../src/types";
 // Read-only usage dashboard (Month 4 Phase 2 AI meter, extended Month 5/6
 // with boards, sessions and overall plan headroom). Surfaces this
 // period's AI calls / tokens / $ estimate + a per-feature breakdown + recent
-// calls, plus used/limit for every metered plan resource. Owner/admin only —
+// calls, plus used/limit for every metered plan resource. That claim is
+// exact, and `getWorkspaceUsage` (usageService.ts) is what makes it hold:
+// every `LimitedResource` except `workspaces` gets a bar here, and
+// `workspaces` is prose below the bars because its cap is scoped per-OWNER
+// rather than per-workspace (see that row's own comment). If a new row is
+// added to PLAN_LIMITS and not to this screen, this sentence becomes a lie —
+// it has been one before, for the two rows Month 6 added. Owner/admin only —
 // mirrors the aiUsage/aiLog/usage/billing read rules in firestore.rules.
 //
 // Every number on this screen is DISPLAY, not enforcement — the real gates
 // are the Cloud Functions and firestore.rules (see usageService.ts). Nothing
 // here denies a create; a plan can still be exceeded between page loads.
 
+/**
+ * Display names for the `feature` string recorded on every metered AI call.
+ * Both lookups below fall through to `FEATURE_LABELS[feature] ?? feature`, so
+ * a key missing here does not break the page — it renders the raw camelCase
+ * identifier to the user, which is how `flashcards`, `boardQa` and
+ * `embeddings` shipped visible in the breakdown.
+ *
+ * This list is hand-maintained, and that is forced rather than chosen: there
+ * is no shared definition site to derive it from. Each key is declared on the
+ * FUNCTIONS side, privately, one per callable or trigger —
+ * `generateSummary.ts`/`recognizeHandwriting.ts`/`explainSelection.ts`/
+ * `textToDiagram.ts`/`generateFlashcards.ts` each with their own
+ * `const FEATURE`, `askBoard.ts` with `BOARD_QA_FEATURE`, and
+ * `triggers/embeddings.ts` with an inline `feature: "embeddings"` — in a
+ * package this bundle cannot import. All seven are listed here. `unknown` is
+ * the eighth entry but not an eighth feature: it is `aiUsageService.ts`'s own
+ * fallback for a log row written without a `feature` field, so it belongs
+ * here even though nothing server-side ever emits it.
+ *
+ * Adding a metered feature means adding its label here in the same change.
+ */
 const FEATURE_LABELS: Record<string, string> = {
   summary: "Session summaries",
   ocr: "Handwriting OCR",
   explain: "Explain selection",
   diagram: "Text → diagram",
+  flashcards: "Flashcards",
+  boardQa: "Board Q&A",
+  embeddings: "Board indexing",
   unknown: "Other",
 };
 
@@ -252,6 +282,26 @@ export default function AiUsageScreen() {
             />
             <HeadroomRow label="Sessions this period" headroom={workspaceUsage.sessions} />
             <HeadroomRow label="AI calls this period" headroom={workspaceUsage.aiCalls} />
+
+            {/* Month 6's two added plan rows. `boardQaPerPeriod` is the ONLY
+                metered row finite on every plan, Pro included — so it is the
+                one a paying customer can actually exhaust, and this page is
+                where they come to find out why board Q&A started refusing.
+                Its own cap sits UNDER the AI-calls row above it, not beside
+                it: `checkFeatureQuota` requires both, so board Q&A stops at
+                whichever runs out first. The note says so, because "3 of 200"
+                next to an unlimited AI-calls row otherwise invites the
+                opposite reading. */}
+            <HeadroomRow
+              label="Board Q&A this period"
+              headroom={workspaceUsage.boardQa}
+              note="Board Q&A has its own monthly cap on top of your AI calls — it stops at whichever of the two runs out first, so this limit applies even on a plan with unlimited AI calls."
+            />
+            <HeadroomRow
+              label="Board indexing this period"
+              headroom={workspaceUsage.embeddings}
+              note="Runs automatically when board content changes, so board Q&A has something to search — you don't spend these directly. Shown because reaching this limit stops new and edited content being indexed, which makes board Q&A answer from a stale board rather than fail outright."
+            />
 
             {/* Collaborators is a PER-BOARD cap (collaboratorsPerBoard), but
                 this page has no active board to measure it against — it's a

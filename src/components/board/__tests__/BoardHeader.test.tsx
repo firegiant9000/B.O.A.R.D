@@ -174,17 +174,27 @@ describe("BoardHeader — presenter gate reached via the real boardWorkspace der
   // `useBoardDocument.ts`'s `boardWorkspace`, and `plan` is computed the
   // exact way `app/board/[id].tsx:686` computes it post-fix —
   // `workspace?.plan`, with NO `?? "free"` fallback. That is what
-  // distinguishes these four from the plain-literal tests above: they prove
+  // distinguishes these three from the plain-literal tests above: they prove
   // the gate behaves correctly for the actual *shapes* `boardWorkspace`
-  // takes on in production (null while unresolved, null forever for a
-  // legacy board, or a resolved `Workspace`), not just for a hand-picked
-  // `plan` string.
+  // takes on in production (`null`, however it got there, or a resolved
+  // `Workspace`), not just for a hand-picked `plan` string.
 
-  it("(1) an unresolved workspace (getWorkspace still in flight) can present, with no Pro badge", () => {
+  // (1) Previously two tests, "(1) an unresolved workspace (getWorkspace
+  // still in flight)" and "(2) a legacy board with no workspace at all",
+  // whose fixtures were byte-identical — two names claiming two coverages
+  // that one fixture provided. Merged rather than made distinct, because
+  // there is nothing to distinguish: `useBoardDocument.ts` initialises
+  // `boardWorkspace` to `null` (:115), sets it to `null` in the
+  // `getWorkspace` rejection path (:167) AND in the no-`workspaceId` branch
+  // (:171). All three production shapes reach this component as exactly one
+  // value, so one fixture is the honest coverage — driving (1) through a
+  // pending fetch would only prove that `null` is still `null` while the
+  // promise is open.
+  it("(1) a null workspace — unresolved, failed, or legacy alike — can present, with no Pro badge", () => {
     // Cast (not a plain `const x: T | null = null`) so TS types this as the
     // union, not narrows it to the `null` literal — the point is to mirror
     // `boardWorkspace?.plan`'s real, not-yet-narrowed shape.
-    const workspace = null as { plan: "free" | "pro" | "edu" } | null; // not yet resolved
+    const workspace = null as { plan: "free" | "pro" | "edu" } | null;
     const onStartPresenting = jest.fn();
     const { getByText, queryByTestId } = renderHeader({
       isAdmin: true,
@@ -196,20 +206,7 @@ describe("BoardHeader — presenter gate reached via the real boardWorkspace der
     expect(onStartPresenting).toHaveBeenCalledTimes(1);
   });
 
-  it("(2) a legacy board with no workspace at all can present", () => {
-    const workspace = null as { plan: "free" | "pro" | "edu" } | null; // no workspaceId, ever
-    const onStartPresenting = jest.fn();
-    const { getByText, queryByTestId } = renderHeader({
-      isAdmin: true,
-      plan: workspace?.plan,
-      onStartPresenting,
-    });
-    expect(queryByTestId("board-header-presenter-pro-badge")).toBeNull();
-    fireEvent.press(getByText("Present"));
-    expect(onStartPresenting).toHaveBeenCalledTimes(1);
-  });
-
-  it('(3) a workspace KNOWN to be "free" still gates — the gap F2 closed stays closed', () => {
+  it('(2) a workspace KNOWN to be "free" still gates — the gap F2 closed stays closed', () => {
     const workspace = { plan: "free" as const };
     const onStartPresenting = jest.fn();
     const onUpgradeRequested = jest.fn();
@@ -225,7 +222,7 @@ describe("BoardHeader — presenter gate reached via the real boardWorkspace der
     expect(onStartPresenting).not.toHaveBeenCalled();
   });
 
-  it("(4) a Pro workspace is still ungated", () => {
+  it("(3) a Pro workspace is still ungated", () => {
     const workspace = { plan: "pro" as const };
     const onStartPresenting = jest.fn();
     const { getByText, queryByTestId } = renderHeader({
@@ -270,12 +267,40 @@ describe("board Q&A is reachable from the board screen", () => {
     );
   });
 
-  it("leaves the custom-palette and upsell-surface plan reads on \"?? free\" unchanged (C1 confinement)", () => {
-    // The two other `doc.boardWorkspace?.plan` reads (BoardCanvas's custom-
-    // palette gate, ColorPickerModal's plan prop) pre-existed C1 and never
-    // withdrew a working feature, so they are explicitly out of scope —
-    // this pins that they still coerce an unresolved workspace to "free".
-    expect(screen.match(/plan=\{doc\.boardWorkspace\?\.plan \?\? "free"\}/g)).toHaveLength(2);
+  it("passes the voice-note plan without the \"?? free\" fallback (fails open on unknown)", () => {
+    // The second call site of the SAME defect C1 was convened to remove. The
+    // screen's `plan` prop on BoardCanvas is threaded to BoardOverlayLayer
+    // and on to AudioAffordance, where `audioService.canRecordVoiceNotes` is
+    // the ONLY gate on the mic — so coercing an unresolved workspace to
+    // "free" here showed a paying customer a locked mic for the entire board
+    // session (`useBoardDocument.ts`'s `loadBoard` nulls `boardWorkspace` on
+    // a `getWorkspace` rejection and runs once per boardId with no retry),
+    // and showed it transiently on every board load.
+    expect(screen).toMatch(
+      /plan=\{doc\.boardWorkspace\?\.plan\}\s*\n\s*canEdit=\{doc\.canEdit\}/
+    );
+  });
+
+  it("leaves the custom-palette plan read on \"?? free\" unchanged (C1 confinement)", () => {
+    // ONE read still coerces, and this pins that it is deliberate rather
+    // than missed. It is ColorPickerModal's `plan` prop, and it is genuinely
+    // unlike the two above: the affordance it feeds is
+    // `canAddSwatch = canUseSwatches && canManageWorkspace && !atSwatchCap`
+    // (ColorPickerModal.tsx), and `canManageWorkspace` is computed on this
+    // same screen from `doc.boardWorkspace ? getWorkspaceRole(...) :
+    // undefined` → `canManageMembers(undefined)` → `false`. So while the
+    // workspace is unresolved the add-swatch button is already disabled by
+    // the ROLE gate, whatever the plan says — the coercion cannot withdraw a
+    // working feature the way the presenter and voice-note ones did.
+    //
+    // What it DOES change is the disabled button's accessibility label:
+    // `!canUseSwatches` wins the ternary, so a Pro admin mid-fetch is told
+    // "Custom swatches are a Pro feature" rather than "Only a workspace
+    // owner or admin can add swatches". A wrong REASON on an
+    // already-disabled control, not a lost capability — which is why it is
+    // out of scope here rather than fine. Do not raise the count back to 2
+    // to "match" the others; the other two are fixed.
+    expect(screen.match(/plan=\{doc\.boardWorkspace\?\.plan \?\? "free"\}/g)).toHaveLength(1);
   });
 
   it("passes the panel's visibility and citation wiring from the screen", () => {

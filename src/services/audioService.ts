@@ -280,6 +280,26 @@ export function subscribeToBoardAudio(
 // above already deletes the object on a failed doc write for exactly this
 // reason, which now includes "denied by the plan gate," not just
 // network/permission failures.
-export function canRecordVoiceNotes(plan: Plan): boolean {
+//
+// `plan` is `Plan | undefined`, not just `Plan` — the same correction
+// `workspaceService.ts#canUsePresenter` already carries, arrived at for the
+// same reason and deliberately given the same shape. `undefined` means the
+// caller does not yet KNOW the plan (the board's workspace hasn't resolved,
+// the board has no workspace at all, or the `getWorkspace` fetch failed —
+// see `useBoardDocument.ts`'s `boardWorkspace`), and that is a different
+// fact from "known to be on the free plan." This fails OPEN on the unknown
+// case: `plan !== "free"` already does, because `undefined !== "free"`, so
+// only a plan actually known to be `"free"` is gated.
+//
+// The widening is the point, not a formality. The runtime expression was
+// already correct; what reintroduced the regression at this call site was
+// the NARROW signature — declaring `plan: Plan` forced `app/board/[id].tsx`
+// to write `?? "free"` to satisfy the type-checker, which is how a paying
+// customer whose workspace fetch failed got a locked mic for an entire
+// board session (`loadBoard` runs once per boardId with no retry), and how
+// every board load showed one transiently before the fetch resolved. Do not
+// collapse the unknown case to `"free"` at any call site, and do not narrow
+// this parameter back — the narrow type IS the trap.
+export function canRecordVoiceNotes(plan: Plan | undefined): boolean {
   return plan !== "free";
 }
