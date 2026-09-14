@@ -652,9 +652,31 @@ service cloud.firestore {
       // `allow delete` below lets an owner delete a workspace, which FREES a
       // slot. That is intended — the cap is on how many you hold at once, not
       // on how many you have ever made.
+      //
+      // Month 6 adds a THIRD pinned field, `welcomeSessionGrantUsed`, for the
+      // same structural reason. The onboarding seed's demo session is created
+      // un-metered exactly once per workspace (functions/src/callable/
+      // createSession.ts), and the only thing stopping that from being an
+      // unlimited free-session tap is this marker: the callable's transaction
+      // refuses the grant once the field is `true`. A client that could write
+      // the field could set it back to `false` and re-claim the grant every
+      // month — a strictly worse leak than the 1-in-3 tax the grant was added
+      // to remove. Setting it to `true` themselves would only deny themselves
+      // the grant, and is harmless, but the pin is on the field CHANGING
+      // rather than on a direction, exactly as with `plan` above: a rule that
+      // reasons about which way a value moved is a rule with a case it has not
+      // thought about yet.
+      //
+      // Pinning it breaks nothing, and that was checked rather than assumed:
+      // the only writer in the repo is that callable's transaction, Admin SDK,
+      // which bypasses these rules. The onboarding seed's own client write
+      // (src/services/onboardingService.ts) touches `sampleSeededAt` and
+      // nothing else, so it stays on the owner/admin arm below untouched —
+      // and `sampleSeededAt` is deliberately NOT pinned, because that one IS
+      // a client write and pinning it would break seeding outright.
       allow create: if false;
       allow update: if isSignedIn() &&
-                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan', 'ownerId']) && (
+                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan', 'ownerId', 'welcomeSessionGrantUsed']) && (
                       resource.data.members[request.auth.uid] in ['owner', 'admin'] ||
                       (request.auth.uid in resource.data.members &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']))
@@ -1332,7 +1354,11 @@ service cloud.firestore {
       // Creating a session is Cloud-Function-only (functions/src/callable/createSession.ts).
       // The function bumps the workspace's monthly session counter and writes the
       // session in one transaction, then writes with the Admin SDK, which bypasses
-      // these rules. Denied here for two reasons a rules predicate cannot cover:
+      // these rules. One exception, also decided inside that transaction: Month 6's
+      // welcome-session grant creates the onboarding seed's demo session un-metered,
+      // at most once per workspace ever, bounded by the `welcomeSessionGrantUsed`
+      // marker this file pins on the workspace `update` rule above.
+      // Denied here for two reasons a rules predicate cannot cover:
       // rules cannot read a monthly counter to enforce sessions/period, and a
       // client create could pick its own `joinCode` (the function generates one
       // server-side). Reads, updates, the joinCode self-join and delete are all

@@ -10,7 +10,15 @@ function reqFor(uid: string | undefined, data: unknown) {
   return { auth: uid ? { uid } : undefined, data } as never;
 }
 
-const deps = (opts: { plan?: string; sessions?: number; member?: boolean }) => {
+const deps = (opts: {
+  plan?: string;
+  sessions?: number;
+  member?: boolean;
+  /** Month 6 — the workspace's stored `welcomeSessionGrantUsed` marker.
+   *  Omitted (undefined) is the shape every pre-grant test already had: a
+   *  workspace that has never taken the grant. */
+  grantUsed?: boolean;
+}) => {
   // Typed explicitly (mirrors createBoard.test.ts's `deps`) so the ternary's
   // `{}` branch doesn't widen to `{ u1?: undefined }` and fail to satisfy
   // CreateSessionDeps' `Record<string, string>` members type.
@@ -19,6 +27,7 @@ const deps = (opts: { plan?: string; sessions?: number; member?: boolean }) => {
     getWorkspace: jest.fn(async () => ({
       plan: opts.plan ?? "free",
       members,
+      welcomeSessionGrantUsed: opts.grantUsed,
     })),
     runCreate: jest.fn(async () => ({ sessionId: "s1", joinCode: "ABC123" })),
     readSessionCount: jest.fn(async () => opts.sessions ?? 0),
@@ -170,6 +179,88 @@ describe("handleCreateSession", () => {
     expect(participantIds).toContain("u1");
     expect(participantIds).toContain("u2");
   });
+
+  // ── Month 6: the welcome-session grant, at the handler level ───────────────
+  //
+  // The handler does not DECIDE the grant — `runCreate`'s transaction does, by
+  // re-reading the workspace. What the handler owns is two things worth
+  // pinning: it forwards the request faithfully, and it skips its own fail-fast
+  // cap pre-check when the grant looks available, because that pre-check would
+  // otherwise deny a never-seeded workspace sitting at 3/3 before the
+  // transaction ever got the chance to honour the grant.
+
+  /** Reads the 5th positional argument (`welcomeSessionGrant`) off a runCreate
+   *  call, as `unknown`, for the same reason `sessionDocArgOf` above reads the
+   *  2nd: the mock factory's inferred (parameter-less) call-tuple type doesn't
+   *  describe the real runtime arguments. */
+  function grantArgOf(mock: jest.Mock, callIndex = 0): unknown {
+    return mock.mock.calls[callIndex][4];
+  }
+
+  it("forwards a welcomeSessionGrant request to runCreate", async () => {
+    const d = deps({ sessions: 0 });
+    await handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: true }), d, 0);
+    expect(grantArgOf(d.runCreate)).toBe(true);
+  });
+
+  it("tells runCreate an ordinary create is NOT a grant request", async () => {
+    const d = deps({ sessions: 0 });
+    await handleCreateSession(reqFor("u1", base), d, 0);
+    expect(grantArgOf(d.runCreate)).toBe(false);
+  });
+
+  it("treats a non-`true` welcomeSessionGrant as no request at all", async () => {
+    // The check is `=== true`, not truthiness: a string, a 1, or an object
+    // smuggled into `req.data` must not read as a request for a free session.
+    const d = deps({ sessions: 3 });
+    await expect(
+      handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: "yes" }), d, 0)
+    ).rejects.toMatchObject({ code: "resource-exhausted" });
+    expect(d.runCreate).not.toHaveBeenCalled();
+  });
+
+  it("skips the fail-fast cap pre-check when the grant looks available — a workspace AT the cap is still seedable", async () => {
+    // The whole point of the grant: 3/3 on free, never seeded, must still get
+    // its demo session. `readSessionCount` is not even consulted, so this
+    // cannot be an accident of the count happening to pass.
+    const d = deps({ sessions: 3 });
+    await expect(
+      handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: true }), d, 0)
+    ).resolves.toMatchObject({ sessionId: "s1" });
+    expect(d.readSessionCount).not.toHaveBeenCalled();
+    expect(grantArgOf(d.runCreate)).toBe(true);
+  });
+
+  it("still runs the cap pre-check when the workspace has already used its grant", async () => {
+    // Second ask on the same workspace: the grant is gone, so this is an
+    // ordinary create and the ordinary cap applies, fail-fast and all.
+    const d = deps({ sessions: 3, grantUsed: true });
+    await expect(
+      handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: true }), d, 0)
+    ).rejects.toMatchObject({ code: "resource-exhausted" });
+    expect(d.readSessionCount).toHaveBeenCalled();
+    expect(d.runCreate).not.toHaveBeenCalled();
+  });
+
+  it("still creates for a used-grant workspace that is genuinely under the cap", async () => {
+    // The marker must cost nothing but the grant itself — a workspace that has
+    // spent it is an ordinary workspace, not a penalised one.
+    const d = deps({ sessions: 1, grantUsed: true });
+    await expect(
+      handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: true }), d, 0)
+    ).resolves.toMatchObject({ sessionId: "s1" });
+    // Still forwarded: the handler's read of the marker is a stale pre-flight,
+    // so the transaction — not this — makes the final call.
+    expect(grantArgOf(d.runCreate)).toBe(true);
+  });
+
+  it("never writes welcomeSessionGrant onto the session document", async () => {
+    // It is a request about METERING, not a property of the session. A session
+    // document must not be readable later as "this one was free".
+    const d = deps({ sessions: 0 });
+    await handleCreateSession(reqFor("u1", { ...base, welcomeSessionGrant: true }), d, 0);
+    expect(sessionDocArgOf(d.runCreate)).not.toHaveProperty("welcomeSessionGrant");
+  });
 });
 
 // ── the real transactional core ───────────────────────────────────────────────
@@ -188,16 +279,29 @@ describe("handleCreateSession", () => {
 
 const T = Date.UTC(2026, 8, 9, 12, 0, 0); // 2026-09-09
 
-function fakeTransactionalDb(usage: SessionUsageDoc | undefined) {
+function fakeTransactionalDb(
+  usage: SessionUsageDoc | undefined,
+  // Month 6 — the workspace document the grant branch reads. Defaults to an
+  // existing workspace with no marker, which is what every pre-grant test
+  // already implied; `null` models a workspace deleted between the handler's
+  // pre-flight and this transaction. `tx.get` now dispatches on the ref path
+  // instead of answering every read with the usage doc, so the two reads can
+  // differ — no pre-existing test reads the workspace ref at all, since none
+  // of them request the grant.
+  workspace: Record<string, unknown> | null = {}
+) {
   let writesStarted = false;
   const tx = {
-    get: jest.fn(async (_ref: { path: string }) => {
+    get: jest.fn(async (ref: { path: string }) => {
       if (writesStarted) {
         throw new Error("fake tx: read attempted after a write — violates Firestore's ordering rule");
       }
-      return usage === undefined ? { exists: false } : { exists: true, data: () => usage };
+      if (ref.path.includes("/usage/")) {
+        return usage === undefined ? { exists: false } : { exists: true, data: () => usage };
+      }
+      return workspace === null ? { exists: false } : { exists: true, data: () => workspace };
     }),
-    set: jest.fn((_ref: { path: string }, _data: unknown) => {
+    set: jest.fn((_ref: { path: string }, _data: unknown, _options?: unknown) => {
       writesStarted = true;
     }),
   };
@@ -332,6 +436,273 @@ describe("makeRunCreate (the real transactional core)", () => {
     const runCreate = makeRunCreate(db);
     await expect(runCreate("ws1", sessionDocFixture, T, "free")).resolves.toMatchObject({
       sessionId: expect.any(String),
+    });
+  });
+
+  it("does not read the workspace document at all on an ordinary create", async () => {
+    // The grant's extra read is conditional on the request, so every ordinary
+    // create keeps costing exactly one transactional read — the usage doc.
+    const { db, tx } = fakeTransactionalDb({ sessions: 1, updatedAt: 0 });
+    const runCreate = makeRunCreate(db);
+
+    await runCreate("ws1", sessionDocFixture, T, "free");
+
+    expect(tx.get).toHaveBeenCalledTimes(1);
+    expect(tx.get.mock.calls[0][0].path).toBe(`workspaces/ws1/usage/${currentPeriod(T)}`);
+  });
+});
+
+// ── Month 6: the welcome-session grant, in the transaction that decides it ────
+//
+// This is where the grant is actually adjudicated (the handler only forwards
+// the request), so this is where the two properties that matter have to be
+// proved: the grant does not touch the counter, and it can be taken AT MOST
+// ONCE per workspace — because the marker recording it is written in the same
+// transaction as the un-metered session, not after it.
+
+const USAGE_PATH = `workspaces/ws1/usage/${currentPeriod(T)}`;
+const WORKSPACE_PATH = "workspaces/ws1";
+
+const pathsSetBy = (tx: { set: jest.Mock }): string[] =>
+  tx.set.mock.calls.map(([ref]) => (ref as { path: string }).path);
+
+const setCallFor = (tx: { set: jest.Mock }, path: string) =>
+  tx.set.mock.calls.find(([ref]) => (ref as { path: string }).path === path);
+
+describe("makeRunCreate — the welcome-session grant", () => {
+  it("creates the session, skips the counter, and marks the workspace — all in ONE transaction", async () => {
+    const { db, tx } = fakeTransactionalDb({ sessions: 0, updatedAt: 0 }, {});
+    const runCreate = makeRunCreate(db);
+
+    const res = await runCreate("ws1", sessionDocFixture, T, "free", true);
+
+    expect(res.sessionId).toBeTruthy();
+    expect(db.runTransaction).toHaveBeenCalledTimes(1);
+
+    const paths = pathsSetBy(tx);
+    expect(paths.some((p) => p.startsWith("sessions/"))).toBe(true);
+    // The counter is the whole point: it must NOT move.
+    expect(paths).not.toContain(USAGE_PATH);
+    // ...and the marker must land, in this same transaction, alongside the
+    // session write. Both `tx.set`s happen inside the one `runTransaction`
+    // callback above, which is what makes "two concurrent requests cannot both
+    // claim the grant" true rather than merely intended.
+    expect(paths).toContain(WORKSPACE_PATH);
+    expect(paths).toHaveLength(2);
+
+    const markerCall = setCallFor(tx, WORKSPACE_PATH);
+    expect(markerCall?.[1]).toEqual({ welcomeSessionGrantUsed: true });
+    // Merged, not overwritten: this transaction owns one field of a document
+    // full of things (name, members, plan, ownerId, sampleSeededAt) it must
+    // not destroy.
+    expect(markerCall?.[2]).toEqual({ merge: true });
+  });
+
+  it("grants to a free workspace already AT the cap — the case the grant exists for", async () => {
+    // 3/3 on free. The ordinary path denies this (see "derives `prev`/`used`
+    // from tx.get..." above, same fixture); the grant must not.
+    const { db, tx } = fakeTransactionalDb({ sessions: 3, updatedAt: 0 }, {});
+    const runCreate = makeRunCreate(db);
+
+    await expect(runCreate("ws1", sessionDocFixture, T, "free", true)).resolves.toMatchObject({
+      sessionId: expect.any(String),
+    });
+    expect(pathsSetBy(tx)).not.toContain(USAGE_PATH);
+  });
+
+  it("meters normally once the marker is set — a second request for the grant is an ordinary create", async () => {
+    const { db, tx } = fakeTransactionalDb(
+      { sessions: 0, updatedAt: 0 },
+      { welcomeSessionGrantUsed: true }
+    );
+    const runCreate = makeRunCreate(db);
+
+    await expect(runCreate("ws1", sessionDocFixture, T, "free", true)).resolves.toMatchObject({
+      sessionId: expect.any(String),
+    });
+
+    const paths = pathsSetBy(tx);
+    expect(paths).toContain(USAGE_PATH);
+    // No second marker write: nothing to record, and nothing to re-grant.
+    expect(paths).not.toContain(WORKSPACE_PATH);
+    expect(setCallFor(tx, USAGE_PATH)?.[1]).toEqual({ sessions: 1, updatedAt: T });
+  });
+
+  it("denies a second grant request on a workspace that is also at the cap", async () => {
+    // Marker set AND 3/3: the grant is spent, so the ordinary cap decides, and
+    // the ordinary cap says no. Nothing is written.
+    const { db, tx } = fakeTransactionalDb(
+      { sessions: 3, updatedAt: 0 },
+      { welcomeSessionGrantUsed: true }
+    );
+    const runCreate = makeRunCreate(db);
+
+    await expect(runCreate("ws1", sessionDocFixture, T, "free", true)).rejects.toMatchObject({
+      code: "resource-exhausted",
+    });
+    expect(tx.set).not.toHaveBeenCalled();
+  });
+
+  it("reads the marker strictly — only a literal `true` withholds the grant", async () => {
+    // A workspace whose marker is `false` (or any other non-`true` value a
+    // migration or a half-write could leave) has not spent its grant. The
+    // asymmetry is deliberate: only the value this code itself writes counts
+    // as spent.
+    const { db, tx } = fakeTransactionalDb(
+      { sessions: 3, updatedAt: 0 },
+      { welcomeSessionGrantUsed: false }
+    );
+    const runCreate = makeRunCreate(db);
+
+    await expect(runCreate("ws1", sessionDocFixture, T, "free", true)).resolves.toMatchObject({
+      sessionId: expect.any(String),
+    });
+    expect(pathsSetBy(tx)).toContain(WORKSPACE_PATH);
+  });
+
+  it("falls back to the metered path when the workspace no longer exists", async () => {
+    // Deleted between the handler's pre-flight read and this transaction. The
+    // marker write is a merging `set`, which would otherwise resurrect the
+    // document as a stub holding nothing but the marker — so `exists` gates it.
+    const { db, tx } = fakeTransactionalDb({ sessions: 0, updatedAt: 0 }, null);
+    const runCreate = makeRunCreate(db);
+
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+
+    const paths = pathsSetBy(tx);
+    expect(paths).toContain(USAGE_PATH);
+    expect(paths).not.toContain(WORKSPACE_PATH);
+  });
+
+  it("reads the workspace before it writes anything — the marker is not a post-hoc write", async () => {
+    // The fake `tx` throws on any read after a write, so this passing at all
+    // proves the workspace read is inside the transaction's read phase rather
+    // than tacked on after the session was already created.
+    const { db, tx } = fakeTransactionalDb({ sessions: 0, updatedAt: 0 }, {});
+    const runCreate = makeRunCreate(db);
+
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+
+    expect(tx.get).toHaveBeenCalledTimes(2);
+    expect(pathsSetBy(tx)).toHaveLength(2);
+  });
+
+  it("still meters an ordinary create on a workspace that never took the grant", async () => {
+    // Guards the branch from the other side: the grant is opt-in, so a
+    // never-marked workspace creating a session WITHOUT asking must behave
+    // exactly as it did before the grant existed.
+    const { db, tx } = fakeTransactionalDb({ sessions: 2, updatedAt: 0 }, {});
+    const runCreate = makeRunCreate(db);
+
+    await runCreate("ws1", sessionDocFixture, T, "free");
+
+    expect(setCallFor(tx, USAGE_PATH)?.[1]).toEqual({ sessions: 3, updatedAt: T });
+    expect(pathsSetBy(tx)).not.toContain(WORKSPACE_PATH);
+  });
+});
+
+// ── At most once per workspace, proved end-to-end ─────────────────────────────
+//
+// Every test above feeds `makeRunCreate` a fixed workspace state. This block
+// instead lets the marker the FIRST transaction writes be what the SECOND
+// transaction reads, which is the property the whole design rests on: the
+// grant is self-extinguishing. A stateful fake, mirroring the stateful
+// workspace fake in src/services/__tests__/onboardingService.test.ts.
+
+function statefulGrantDb(
+  usage: SessionUsageDoc | undefined,
+  workspace: Record<string, unknown>
+) {
+  const store = { usage, workspace };
+  let autoId = 0;
+  const sessionWrites: Array<Record<string, unknown>> = [];
+
+  const db = {
+    doc: (path: string) => ({ path }),
+    collection: (name: string) => ({
+      doc: () => {
+        autoId += 1;
+        return { id: `auto${autoId}`, path: `${name}/auto${autoId}` };
+      },
+    }),
+    runTransaction: async (fn: (t: unknown) => Promise<unknown>) => {
+      let writesStarted = false;
+      const tx = {
+        get: async (ref: { path: string }) => {
+          if (writesStarted) throw new Error("fake tx: read after write");
+          if (ref.path.includes("/usage/")) {
+            return store.usage === undefined
+              ? { exists: false }
+              : { exists: true, data: () => store.usage };
+          }
+          return { exists: true, data: () => store.workspace };
+        },
+        set: (ref: { path: string }, data: Record<string, unknown>, options?: { merge?: boolean }) => {
+          writesStarted = true;
+          if (ref.path.includes("/usage/")) {
+            store.usage = data as unknown as SessionUsageDoc;
+          } else if (ref.path.startsWith("sessions/")) {
+            sessionWrites.push(data);
+          } else {
+            store.workspace = options?.merge ? { ...store.workspace, ...data } : data;
+          }
+        },
+      };
+      return fn(tx);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  return { db, store, sessionWrites };
+}
+
+describe("the welcome-session grant is claimable at most once per workspace", () => {
+  it("the first request is free, the second is metered — the marker the first wrote is what stops it", async () => {
+    const { db, store, sessionWrites } = statefulGrantDb(undefined, { name: "Personal" });
+    const runCreate = makeRunCreate(db);
+
+    // First ask: un-metered. No usage document is even created.
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+    expect(store.usage).toBeUndefined();
+    expect(store.workspace).toEqual({ name: "Personal", welcomeSessionGrantUsed: true });
+
+    // Second ask, same workspace, same flag: metered like anything else.
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+    expect(store.usage).toEqual({ sessions: 1, updatedAt: T });
+
+    // Third and fourth: still metered, and the free cap still bites at 3.
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+    expect(store.usage).toEqual({ sessions: 3, updatedAt: T });
+    await expect(runCreate("ws1", sessionDocFixture, T, "free", true)).rejects.toMatchObject({
+      code: "resource-exhausted",
+    });
+
+    // Four sessions exist, three were charged: the grant is worth exactly one
+    // extra session per workspace, ever — the bound the design accepts.
+    expect(sessionWrites).toHaveLength(4);
+    expect(store.usage).toEqual({ sessions: 3, updatedAt: T });
+  });
+
+  it("the marker survives as the only thing that changed on the workspace document", async () => {
+    // The merging write must not clobber the fields the workspace actually
+    // needs — the pinned ones especially.
+    const { db, store } = statefulGrantDb(undefined, {
+      name: "Personal",
+      ownerId: "u1",
+      plan: "free",
+      members: { u1: "owner" },
+    });
+    const runCreate = makeRunCreate(db);
+
+    await runCreate("ws1", sessionDocFixture, T, "free", true);
+
+    expect(store.workspace).toEqual({
+      name: "Personal",
+      ownerId: "u1",
+      plan: "free",
+      members: { u1: "owner" },
+      welcomeSessionGrantUsed: true,
     });
   });
 });

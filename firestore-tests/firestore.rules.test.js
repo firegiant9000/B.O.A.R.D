@@ -102,6 +102,20 @@ beforeEach(async () => {
       memberIds: [ALICE, DAVE],
       plan: "pro",
     });
+    // Month 6 — a workspace that has already spent its welcome-session grant
+    // (functions/src/callable/createSession.ts writes this marker with the
+    // Admin SDK, inside the same transaction as the un-metered demo session).
+    // Needed as its own fixture so the pin tests below can exercise the attack
+    // that actually matters: clearing a marker that is genuinely set, which is
+    // what would re-open the grant month after month.
+    await setDoc(doc(db, "workspaces/wsGranted"), {
+      name: "Granted WS",
+      ownerId: ALICE,
+      members: { [ALICE]: "owner", [DAVE]: "member" },
+      memberIds: [ALICE, DAVE],
+      plan: "free",
+      welcomeSessionGrantUsed: true,
+    });
     // M5 seat cap — an unrecognized plan string (a future tier, a corrupt value).
     // Must fall back to the free cap, the same way limitFor does on the Functions
     // side, and must NOT error: an erroring cap predicate would lock every member
@@ -2887,6 +2901,120 @@ describe("workspace create", () => {
     // `updateMemberRole` touch `members` + `memberIds`, never `ownerId`.
     await assertSucceeds(
       updateDoc(doc(db(ALICE), "workspaces/wsA"), { "members.bob": "member" })
+    );
+  });
+});
+
+// ── Month 6: welcomeSessionGrantUsed is not client-writable ───────────────────
+// The onboarding seed's demo session is created WITHOUT charging the free plan's
+// 3-per-month session counter (functions/src/callable/createSession.ts), because
+// otherwise every new free account lost a third of its first month to a demo it
+// never asked for. The only thing keeping that from being an unlimited free-
+// session tap is this marker: the callable's transaction grants the un-metered
+// create solely while `welcomeSessionGrantUsed` is not `true`, and sets it in
+// that same transaction.
+//
+// So a client that could write the field could set it back to `false` and
+// re-claim the grant every month — an unlimited allowance in place of a
+// one-time one, strictly worse than the tax the grant removed. The field joins
+// `plan` and `ownerId` in the update rule's `hasAny([...])` pin, and for the
+// same reason: those are the fields a server-side gate reads back.
+//
+// The pin is on the field CHANGING, not on a direction. Setting it to `true`
+// would only deny the caller their own grant and is harmless in itself, but a
+// rule that reasons about which way a value moved is a rule with a case it has
+// not considered yet — see the `plan` block's "denies DOWNGRADING too".
+describe("Month 6 workspace welcomeSessionGrantUsed is not client-writable", () => {
+  it("denies clearing the marker — the re-claim attack the pin exists to stop", async () => {
+    // wsGranted has already spent its grant. If alice could flip this back to
+    // false, the callable would hand her another un-metered session, and she
+    // could repeat it every period.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), { welcomeSessionGrantUsed: false })
+    );
+  });
+
+  it("denies REMOVING the marker outright", async () => {
+    // `affectedKeys()` counts removals as well as changes, and a deleted field
+    // reads back as "not true" to the callable — exactly as good as false.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), { welcomeSessionGrantUsed: deleteField() })
+    );
+  });
+
+  it("denies clearing the marker smuggled in alongside a permitted field", async () => {
+    // The shape a patched client would actually send: bury it in a rename,
+    // since a bare single-field write looks like what it is.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), {
+        name: "Innocent rename",
+        welcomeSessionGrantUsed: false,
+      })
+    );
+  });
+
+  it("denies SETTING the marker on a workspace that has not spent its grant", async () => {
+    // Harmless in intent (it only costs the caller their own grant), denied
+    // anyway: the rule blocks the field changing, in either direction.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { welcomeSessionGrantUsed: true })
+    );
+  });
+
+  it("denies a non-owner member writing the marker too", async () => {
+    // Over-determined, and asserted anyway: a plain member is already confined
+    // to the name-only arm, so this write is denied with or without the pin.
+    // Worth pinning regardless — the member arm is the one most likely to be
+    // widened later (it was widened for `name` in the first place), and a
+    // widening that forgot this field would silently hand every member of
+    // every workspace a re-claimable grant.
+    await assertFails(
+      updateDoc(doc(db(DAVE), "workspaces/wsGranted"), { welcomeSessionGrantUsed: false })
+    );
+  });
+
+  // ── positive controls ──────────────────────────────────────────────────────
+  // A pin that breaks legitimate updates is worse than the gap it closed. These
+  // run against wsGranted specifically — the workspace that actually HOLDS the
+  // field — because that is where an over-tight predicate would bite: an
+  // `updateDoc` there leaves the marker untouched, so `affectedKeys()` must not
+  // list it.
+
+  it("still lets the owner rename a workspace that holds the marker", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), { name: "Renamed after the pin" })
+    );
+  });
+
+  it("still lets the owner change membership on a workspace that holds the marker", async () => {
+    // `addMemberByEmail` / `updateMemberRole` / `removeMember` all land here.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), {
+        "members.bob": "member",
+        memberIds: [ALICE, DAVE, BOB],
+      })
+    );
+  });
+
+  it("still lets a plain member rename it (the name-only arm)", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(DAVE), "workspaces/wsGranted"), { name: "Dave's rename" })
+    );
+  });
+
+  it("still lets the onboarding seed write sampleSeededAt", async () => {
+    // The one client write on the seeding path (src/services/onboardingService.ts).
+    // `sampleSeededAt` is deliberately NOT pinned — it IS a client write, and
+    // pinning it would break seeding outright. Asserted here so a future
+    // "pin everything seeding-related" change has to fail a test first.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { sampleSeededAt: new Date() })
+    );
+  });
+
+  it("still lets the owner write an unrelated new field", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsGranted"), { settings: { theme: "dark" } })
     );
   });
 });

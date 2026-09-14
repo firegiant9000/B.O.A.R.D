@@ -140,7 +140,17 @@ export async function readSessionCount(
 }
 
 /** Must run inside the same transaction as the session create so the count can
- *  never drift from the documents it counts. `prev` is REQUIRED and must come
+ *  never drift from the documents it counts.
+ *
+ *  One documented exception, and only one: Month 6's welcome-session grant
+ *  (functions/src/callable/createSession.ts) creates a session WITHOUT calling
+ *  this, at most once per workspace ever, and records that it did so on the
+ *  workspace document in that same transaction. So a workspace's session
+ *  documents can exceed this counter by exactly one, and by one only — the
+ *  `welcomeSessionGrantUsed` marker is what makes that bound hold, which is
+ *  why firestore.rules pins the field. Anything beyond that gap IS drift.
+ *
+ *  `prev` is REQUIRED and must come
  *  from `tx.get(sessionUsageRef(db, workspaceId, now))` inside that same
  *  transaction — never from `readSessionCount`, which reads via `db` outside
  *  any transaction and would let a concurrent increment get silently lost.

@@ -57,11 +57,18 @@ interface CreateSessionResponse {
 
 /**
  * Since M5: this function creates sessions through the `createSession`
- * callable rather than writing the session doc directly, so every session is
- * capped and gets a server-generated join code. firestore.rules now denies
- * client session creates outright, so the callable is the only create path — a
- * patched client or a raw REST call cannot go around it. The client signature
- * here is unchanged so every call site keeps working untouched.
+ * callable rather than writing the session doc directly, so every session goes
+ * through the cap and gets a server-generated join code. firestore.rules now
+ * denies client session creates outright, so the callable is the only create
+ * path — a patched client or a raw REST call cannot go around it. The client
+ * signature here is unchanged so every call site keeps working untouched.
+ *
+ * "Through the cap" rather than "capped": Month 6's welcome-session grant
+ * (`opts.welcomeSessionGrant` below) is a branch of that one callable which
+ * creates a session without charging the counter, at most once per workspace
+ * ever. It is still the same create path and still the server's decision —
+ * there is no second mechanism — but a session created that way is genuinely
+ * not counted, and saying otherwise here would be false.
  *
  * `scheduledAt` doesn't survive the callable boundary as a `Date`, so it's
  * converted to epoch milliseconds here; the function rebuilds the `Timestamp`
@@ -76,12 +83,28 @@ interface CreateSessionResponse {
  * authoritative monthly count lives in an owner/admin-gated Firestore doc
  * (see the module header note on `assertQuota`) — so this only ever forwards
  * `plan` today; a caller that also has a trustworthy count may pass it.
+ *
+ * `opts.welcomeSessionGrant` (Month 6) asks the callable to create this one
+ * session WITHOUT charging it to the monthly cap. Exactly one caller sets it —
+ * `onboardingService.seedSampleWorkspace`, for the demo session ROADMAP.md:706
+ * requires — and the server grants it at most once per workspace, ever, gated
+ * on a marker only the Admin SDK can write (see the createSession callable's
+ * module header for the full reasoning, including what a patched client can
+ * still do with the flag). Passing it also SKIPS the advisory pre-flight
+ * below, which would otherwise predict a denial the server is not going to
+ * make: the grant exists precisely so a workspace already at its cap can still
+ * be seeded. That skip costs nothing in enforcement — `assertQuota` is UX only
+ * (see quotaService's module header) and the callable decides either way.
  */
 export async function createSession(
   data: Omit<Session, "id" | "createdAt">,
-  quota?: { plan?: Plan; currentCount?: number }
+  quota?: { plan?: Plan; currentCount?: number },
+  opts?: { welcomeSessionGrant?: boolean }
 ): Promise<string> {
-  await assertQuota(data.workspaceId, "session", quota?.plan, quota?.currentCount);
+  const welcomeSessionGrant = opts?.welcomeSessionGrant === true;
+  if (!welcomeSessionGrant) {
+    await assertQuota(data.workspaceId, "session", quota?.plan, quota?.currentCount);
+  }
 
   const fn = httpsCallable<
     {
@@ -96,6 +119,7 @@ export async function createSession(
       participantIds?: string[];
       status?: Session["status"];
       agenda?: string;
+      welcomeSessionGrant?: boolean;
     },
     CreateSessionResponse
   >(functions, "createSession");
@@ -112,6 +136,9 @@ export async function createSession(
     participantIds: data.participantIds,
     status: data.status,
     agenda: data.agenda,
+    // Omitted entirely rather than sent as `false`, so an ordinary create's
+    // payload is byte-for-byte what it was before the grant existed.
+    ...(welcomeSessionGrant ? { welcomeSessionGrant: true } : {}),
   });
   return res.sessionId;
 }

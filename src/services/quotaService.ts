@@ -23,6 +23,12 @@
 // (functions/src/callable/createSession.ts) bumps the workspace's monthly
 // session counter and writes the session in one transaction, denying past the
 // plan's cap, and firestore.rules now denies client session creates outright.
+// Month 6 adds exactly one exception, decided by that same callable inside that
+// same transaction: the onboarding seed's demo session is created un-metered,
+// at most once per workspace ever, gated on a `welcomeSessionGrantUsed` marker
+// only the Admin SDK can write. `sessionService.createSession` skips this
+// module's advisory pre-flight when it asks for that grant, since the pre-flight
+// would otherwise predict a denial the server is not going to make.
 //
 // Collaborators per board are gated in firestore.rules directly, as a predicate
 // on board `update` — the invite-code self-join path is an update to `members`,

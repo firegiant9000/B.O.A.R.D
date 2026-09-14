@@ -22,6 +22,44 @@ import {
 // otherwise choose for itself. It also makes this function load-bearing: it must
 // be deployed before those rules, or session creation goes down (see the warning
 // at the top of firestore.rules).
+//
+// Month 6 — THE WELCOME-SESSION GRANT (`welcomeSessionGrant` below). The
+// onboarding seed (src/services/onboardingService.ts) hands every brand-new
+// account a finished demo session, because ROADMAP.md:706 (A6) requires one.
+// Created through the ordinary metered path, that demo spent 1 of the free
+// plan's 3 monthly sessions on something the user never asked for — a 33% tax
+// on the first month of exactly the users Month 6 exists to acquire, and not
+// refundable, since the counter only ever increments.
+//
+// The fix lives HERE rather than beside this function on purpose. An Admin-SDK
+// seed writing a session document directly would not touch the counter at all,
+// and a second creation path is a second thing to keep in sync with the cap —
+// which is the failure mode the seed's original "just pay the cap" choice was
+// avoiding. So the grant is an extra branch of the one metered callable: when
+// it applies, the transaction below skips `assertUnderSessionCap` and
+// `incrementSessionCount` and instead marks the workspace as having spent it,
+// all in the SAME transaction as the session write. Marker and un-metered
+// create commit together or not at all, so two concurrent requests cannot both
+// claim the grant.
+//
+// THE EXPOSURE, STATED HONESTLY. `welcomeSessionGrant` arrives in `req.data`,
+// so a patched client can ask for it on an ordinary session and spend it there.
+// Nothing about this flag is unreachable by a client, and nothing here pretends
+// otherwise. What bounds it is the server-side marker: the grant is available
+// only while `workspaces/{id}.welcomeSessionGrantUsed` is not `true`, and the
+// transaction sets it the moment the grant is taken. The worst a patched client
+// gets is ONE extra session per workspace, ever — 4 in some month instead of 3,
+// once, on a workspace that will never get another. That is bounded, one-time
+// and per-workspace, and far smaller than the alternative it replaced (an
+// Admin-SDK bypass that skipped the counter on every seeded write with no
+// marker to stop at one).
+//
+// The marker is only worth anything if a client cannot clear it: firestore.rules'
+// `workspaces/{id}` update rule pins `welcomeSessionGrantUsed` in the same
+// `hasAny([...])` list as `plan` and `ownerId`. Without that pin a client could
+// set it back to `false` and re-claim the grant every month, turning a one-time
+// allowance into an unlimited one — a worse leak than the tax it fixes. Do not
+// relax this branch and that rule in isolation.
 
 export interface CreateSessionRequest {
   workspaceId: string;
@@ -39,6 +77,11 @@ export interface CreateSessionRequest {
   // not advertise a value that would silently be dropped.
   status?: "scheduled" | "active";
   agenda?: string;
+  /** Asks for the one-per-workspace welcome-session grant (see the module
+   *  header). Only `onboardingService.seedSampleWorkspace` sets it, but it is
+   *  client-supplied like every other field here — the bound on abuse is the
+   *  server-side `welcomeSessionGrantUsed` marker, not this flag's origin. */
+  welcomeSessionGrant?: boolean;
 }
 
 export interface CreateSessionResponse {
@@ -107,13 +150,24 @@ function assertUnderSessionCap(used: number, plan: Plan): void {
 export interface CreateSessionDeps {
   getWorkspace(
     workspaceId: string
-  ): Promise<{ plan?: string; members?: Record<string, string> } | null>;
+  ): Promise<{
+    plan?: string;
+    members?: Record<string, string>;
+    welcomeSessionGrantUsed?: boolean;
+  } | null>;
   readSessionCount(workspaceId: string, now: number): Promise<number>;
   runCreate(
     workspaceId: string,
     sessionDoc: Record<string, unknown>,
     now: number,
-    plan: Plan
+    plan: Plan,
+    /** Whether the caller asked for the welcome-session grant. OPTIONAL, and
+     *  deliberately last: every pre-existing call site and test passes four
+     *  arguments and keeps its exact meaning, `undefined` being the ordinary
+     *  metered path. It is a REQUEST, not a decision — `runCreate` re-reads the
+     *  workspace inside its own transaction and decides there, exactly as it
+     *  re-reads the usage counter rather than trusting the pre-flight. */
+    welcomeSessionGrant?: boolean
   ): Promise<CreateSessionResponse>;
 }
 
@@ -157,12 +211,28 @@ export async function handleCreateSession(
 
   const plan = (ws.plan ?? "free") as Plan;
 
-  // Fail-fast pre-check outside any transaction, purely to avoid a pointless
-  // round trip when we can already tell the caller no. Not authoritative —
-  // `runCreate` re-reads the counter fresh inside its own transaction, and
-  // that re-check is the only one that actually decides.
-  const used = await deps.readSessionCount(workspaceId, now);
-  assertUnderSessionCap(used, plan);
+  // Month 6 — the welcome-session grant (see the module header). Requested by
+  // the client, decided by the server. This read of `welcomeSessionGrantUsed`
+  // is only as fresh as the pre-flight `getWorkspace` above, which is exactly
+  // why it decides nothing on its own: it governs whether the fail-fast cap
+  // check below is worth running, and `runCreate` re-reads the same field
+  // inside its transaction to make the real call. If this read is stale the
+  // worst case is one pointless round trip to a transaction that meters
+  // normally — never a second grant.
+  const grantRequested = data.welcomeSessionGrant === true;
+  const grantLikelyAvailable = grantRequested && ws.welcomeSessionGrantUsed !== true;
+
+  if (!grantLikelyAvailable) {
+    // Fail-fast pre-check outside any transaction, purely to avoid a pointless
+    // round trip when we can already tell the caller no. Not authoritative —
+    // `runCreate` re-reads the counter fresh inside its own transaction, and
+    // that re-check is the only one that actually decides.
+    const used = await deps.readSessionCount(workspaceId, now);
+    assertUnderSessionCap(used, plan);
+  }
+  // Skipped on the grant path deliberately: the whole point is that a workspace
+  // already AT its cap that has never been seeded is still seedable. Denying
+  // here would defeat the grant before the transaction ever got to honour it.
 
   const status: "scheduled" | "active" = data.status === "active" ? "active" : "scheduled";
   const sessionDoc: Record<string, unknown> = {
@@ -197,8 +267,11 @@ export async function handleCreateSession(
   // `sessionDoc` is built field-by-field above from validated/whitelisted
   // input — a client-supplied `joinCode` (or any other unexpected field) in
   // `req.data` never reaches it. The transactional core below generates its
-  // own join code regardless, as defense in depth.
-  return deps.runCreate(workspaceId, sessionDoc, now, plan);
+  // own join code regardless, as defense in depth. `welcomeSessionGrant` is
+  // likewise NOT part of `sessionDoc`: it is a request about metering, not a
+  // property of the session, and nothing should be able to read a session
+  // document later and conclude it was free.
+  return deps.runCreate(workspaceId, sessionDoc, now, plan, grantRequested);
 }
 
 /** The real transactional core, split out so it unit-tests against a fake
@@ -206,21 +279,53 @@ export async function handleCreateSession(
  *  `tx.get(sessionUsageRef(...))` inside this same transaction — never from
  *  `readSessionCount`, which reads outside any transaction and would let a
  *  concurrent increment get silently lost. All reads happen before any
- *  write: the single `tx.get` below is the transaction's only read, and it
- *  precedes both the session's `tx.set` and the counter's `tx.set` (inside
- *  `incrementSessionCount`). */
+ *  write: both `tx.get`s below are the transaction's only reads, and both
+ *  precede the session's `tx.set`, the counter's `tx.set` (inside
+ *  `incrementSessionCount`) and the grant marker's `tx.set`.
+ *
+ *  The grant (see the module header) is decided HERE, not by the caller, for
+ *  the same reason the cap is: `welcomeSessionGrant` says what the caller
+ *  ASKED for, and the workspace read inside this transaction says whether it
+ *  is still there to take. Taking it writes `welcomeSessionGrantUsed: true` in
+ *  this same transaction as the session, so the un-metered create and the
+ *  record that it happened commit together or not at all — two concurrent
+ *  requests cannot both observe the marker unset and both go un-metered, and a
+ *  session can never exist having spent a grant the workspace doesn't show. */
 export function makeRunCreate(db: Firestore): CreateSessionDeps["runCreate"] {
-  return (workspaceId, sessionDoc, now, plan) =>
+  return (workspaceId, sessionDoc, now, plan, welcomeSessionGrant) =>
     db.runTransaction(async (tx) => {
       const ref = sessionUsageRef(db, workspaceId, now);
       const snap = await tx.get(ref);
       const prev = snap.exists ? (snap.data() as SessionUsageDoc) : undefined;
       const used =
         typeof prev?.sessions === "number" && Number.isFinite(prev.sessions) ? prev.sessions : 0;
+
+      // Read the workspace ONLY when the grant was actually asked for: an
+      // ordinary create must not pay for a second document read it will never
+      // look at. Still a transactional read, and still before every write.
+      const workspaceRef = db.doc(`workspaces/${workspaceId}`);
+      let useGrant = false;
+      if (welcomeSessionGrant === true) {
+        const wsSnap = await tx.get(workspaceRef);
+        const wsData = wsSnap.exists
+          ? (wsSnap.data() as { welcomeSessionGrantUsed?: unknown } | undefined)
+          : undefined;
+        // `!== true` rather than a falsy test, so only the literal boolean the
+        // marker write below stores can withhold the grant; and `wsSnap.exists`
+        // is required, so a workspace deleted between the handler's pre-flight
+        // and this transaction falls back to the metered path instead of having
+        // a marker `set` conjure the document back into existence.
+        useGrant = wsSnap.exists && wsData?.welcomeSessionGrantUsed !== true;
+      }
+
       // Same gate as the pre-flight above (see assertUnderSessionCap), re-run
       // against the value this transaction itself just read — this re-check
-      // is what makes two concurrent creates at the boundary safe.
-      assertUnderSessionCap(used, plan);
+      // is what makes two concurrent creates at the boundary safe. Skipped
+      // only on the grant path, which is the entire point of the grant: a
+      // never-seeded workspace sitting at 3/3 must still get its demo session.
+      if (!useGrant) {
+        assertUnderSessionCap(used, plan);
+      }
 
       const sessionRef = db.collection("sessions").doc();
       // Generated here, never taken from `sessionDoc`: a client cannot choose
@@ -229,7 +334,16 @@ export function makeRunCreate(db: Firestore): CreateSessionDeps["runCreate"] {
       // generator boards already use).
       const joinCode = generateInviteCode();
       tx.set(sessionRef, { ...sessionDoc, joinCode });
-      incrementSessionCount(tx, db, workspaceId, now, prev);
+      if (useGrant) {
+        // `{ merge: true }` — unlike the usage doc, which `incrementSessionCount`
+        // owns outright and therefore overwrites wholesale, this function owns
+        // exactly one field of a document full of things it must not touch
+        // (name, members, memberIds, plan, ownerId, sampleSeededAt). Merging is
+        // mandatory here, not a convenience.
+        tx.set(workspaceRef, { welcomeSessionGrantUsed: true }, { merge: true });
+      } else {
+        incrementSessionCount(tx, db, workspaceId, now, prev);
+      }
 
       return { sessionId: sessionRef.id, joinCode };
     });
@@ -243,7 +357,11 @@ export const createSession = onCall((req: CallableRequest<CreateSessionRequest>)
       getWorkspace: async (id) => {
         const s = await db.doc(`workspaces/${id}`).get();
         return s.exists
-          ? (s.data() as { plan?: string; members?: Record<string, string> })
+          ? (s.data() as {
+              plan?: string;
+              members?: Record<string, string>;
+              welcomeSessionGrantUsed?: boolean;
+            })
           : null;
       },
       readSessionCount: (id, now) => readSessionCount(db, id, now),

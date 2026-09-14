@@ -118,6 +118,72 @@ describe("createSession", () => {
     expect(spy).toHaveBeenCalledWith("ws-1", "session", "free", 1);
     spy.mockRestore();
   });
+
+  // ── Month 6: the welcome-session grant ─────────────────────────────────────
+  // Whether the grant is actually given is a server decision and is covered in
+  // functions/src/__tests__/createSession.test.ts; what this file owns is that
+  // the flag reaches the callable at all, and that an ordinary create is
+  // untouched by its existence.
+
+  it("sends welcomeSessionGrant to the callable when a caller asks for it", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(baseSession, { plan: "free" }, { welcomeSessionGrant: true });
+
+    expect(mockCallable.mock.calls[0][0]).toMatchObject({ welcomeSessionGrant: true });
+  });
+
+  it("omits the field entirely on an ordinary create, rather than sending false", async () => {
+    // Keeps the ordinary payload byte-for-byte what it was before the grant
+    // existed — nothing downstream has to learn a new field to stay correct.
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(baseSession);
+
+    expect(mockCallable.mock.calls[0][0]).not.toHaveProperty("welcomeSessionGrant");
+  });
+
+  it("does not send the field for a non-`true` request", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(baseSession, undefined, {
+      welcomeSessionGrant: undefined,
+    });
+
+    expect(mockCallable.mock.calls[0][0]).not.toHaveProperty("welcomeSessionGrant");
+  });
+
+  it("skips the advisory pre-flight when the grant is requested", async () => {
+    // The grant exists precisely so a workspace already AT its cap can still be
+    // seeded; running a client-side cap prediction there would deny a create
+    // the server was going to allow. This costs nothing in enforcement —
+    // `assertQuota` is advisory (see quotaService's module header) and the
+    // callable decides either way.
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await sessionService.createSession(
+      baseSession,
+      { plan: "free", currentCount: 3 },
+      { welcomeSessionGrant: true }
+    );
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("still runs the advisory pre-flight for an ordinary create", async () => {
+    // The other half of the branch above: the skip must be scoped to the grant.
+    // The same 3-of-3 fixture that sails through WITH the grant is rejected
+    // without it — and rejected before the callable is ever invoked, which is
+    // the pre-flight's whole purpose.
+    mockCallable.mockResolvedValueOnce({ data: { sessionId: "sess-1", joinCode: "ABC123" } });
+
+    await expect(
+      sessionService.createSession(baseSession, { plan: "free", currentCount: 3 }, {})
+    ).rejects.toBeInstanceOf(quotaService.QuotaExceededError);
+    expect(mockCallable).not.toHaveBeenCalled();
+  });
 });
 
 describe("joinSessionByCode", () => {

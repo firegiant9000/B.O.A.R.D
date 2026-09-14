@@ -76,13 +76,29 @@ describe("seedSampleWorkspace", () => {
         createdById: "u1",
         createdByName: "Arlo",
       }),
-      { plan: "free", currentCount: 0 }
+      { plan: "free", currentCount: 0 },
+      // Month 6 — the welcome-session grant. Asserted here rather than only in
+      // the dedicated test below because this call's full argument list is the
+      // thing this assertion pins; a third argument silently going missing is
+      // exactly the regression that would put the 1-in-3 tax back.
+      { welcomeSessionGrant: true }
     );
     expect(mockEndSession).toHaveBeenCalledWith("session-1");
     // The summary is the module's own canned constant, written directly —
     // nothing here goes through a generateSummary/AI callable path (no such
     // service is imported by onboardingService.ts at all).
     expect(mockUpdateSessionSummary).toHaveBeenCalledWith("session-1", SAMPLE_SESSION_SUMMARY);
+  });
+
+  it("asks for the welcome-session grant, so the demo session costs the new user nothing", async () => {
+    // Month 6 — the seed used to spend 1 of the free plan's 3 monthly sessions
+    // on this demo, non-refundably. It now passes `welcomeSessionGrant`, and the
+    // callable creates that one session without touching the monthly counter
+    // (functions/src/callable/createSession.ts). This is the ONLY call site in
+    // the repo that asks for it; the server bounds it to once per workspace.
+    await seedSampleWorkspace("ws-1", "u1", "Arlo");
+
+    expect(mockCreateSession.mock.calls[0][2]).toEqual({ welcomeSessionGrant: true });
   });
 
   it("marks the workspace seeded on full success", async () => {

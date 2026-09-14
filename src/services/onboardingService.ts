@@ -22,9 +22,11 @@ import type { SessionSummary } from "../types";
  * Three deliberate design calls, each answering a question the brief itself
  * raises rather than settles:
  *
- * 1. QUOTA — boards and sessions are metered by two DIFFERENT mechanisms, so
- *    this cost is real for one and unavoidable for the other; conflating them
- *    would misstate the tradeoff, so they're spelled out separately:
+ * 1. QUOTA — boards and sessions are metered by two DIFFERENT mechanisms, and
+ *    the seed's cost lands differently on each: unavoidable but refundable for
+ *    boards, and (since the welcome-session grant) zero for sessions.
+ *    Conflating the two would misstate the tradeoff, so they're spelled out
+ *    separately:
  *    - BOARDS: `countBoards` (functions/src/billing/usage.ts) is a LIVE
  *      count — `.where("workspaceId","==",id).count()` over whatever
  *      documents currently exist. There is no way to create a real board
@@ -36,35 +38,48 @@ import type { SessionSummary } from "../types";
  *    - SESSIONS: the cap is a STORED MONTHLY COUNTER
  *      (`workspaces/{id}/usage/{period}`, bumped only inside
  *      `createSession`'s own transaction —
- *      functions/src/callable/createSession.ts), not a live count. An
- *      Admin-SDK seed writing a session document directly would NOT touch
- *      that counter and would genuinely bypass the cap. Going through the
- *      real `sessionService.createSession` here was therefore a CHOICE, not
- *      a forced one — made for consistency with the board's honest path
- *      (one creation mechanism for both resource types, not a bypass for one
- *      and not the other) — and it has a real, non-trivial cost: free tier
- *      is 3 sessions per period, so this seed spends A THIRD of a new user's
- *      first month before they've done anything themselves. Unlike the
- *      board, this is NOT refundable — deleting the seeded session does not
- *      give the counter slot back, since the counter only ever increments.
- *    Accepted anyway, as a product-cost judgment rather than a correctness
- *    bug: the alternative (an Admin-SDK bypass for sessions specifically, or
- *    a "doesn't count" exemption in functions/src/billing/usage.ts) touches
- *    the anti-drift-tested quota-enforcement surface for a seeding feature
- *    and creates the same "real but uncounted document" asymmetry the "deny
- *    unless provably under" discipline elsewhere in this codebase exists to
- *    avoid. Flagged separately for a product call on whether the session
- *    cost is worth revisiting (e.g. a higher free-tier session limit).
+ *      functions/src/callable/createSession.ts), not a live count, and it
+ *      only ever increments: a session charged to it is never given back,
+ *      not even by deleting the session. Seeding through the ordinary
+ *      metered path therefore cost a free account 1 of its 3 monthly
+ *      sessions — a third of the first month, spent on a demo the user never
+ *      asked for and could not refund. That cost was disclosed and accepted
+ *      here for a while. It is no longer the behaviour.
+ *
+ *      It is now paid for by a WELCOME-SESSION GRANT: the create below passes
+ *      `{ welcomeSessionGrant: true }`, and the callable creates that one
+ *      session without touching the counter, marking the workspace
+ *      (`welcomeSessionGrantUsed`) inside the SAME transaction so the grant
+ *      can never be taken twice. The new user keeps all three.
+ *
+ *      What did NOT change is the part worth protecting: the seed still goes
+ *      through the real `sessionService.createSession` and the one metered
+ *      callable. An Admin-SDK seed writing a session document directly would
+ *      NOT touch that counter and would be a genuine hole in the enforcement
+ *      surface — a second creation path is a second thing to keep in sync
+ *      with the cap, which is exactly the failure mode the original "just pay
+ *      the cap" choice was avoiding. The grant is an extra branch of the
+ *      single metered path, not a way around it, and the un-metered create
+ *      and the marker recording it commit together or not at all.
+ *
+ *      The honest cost that remains: `welcomeSessionGrant` crosses the
+ *      callable boundary as client-supplied data, so a patched client can ask
+ *      for it on an ordinary session and spend it there. The server-side
+ *      marker bounds that to ONE extra session per workspace, ever — 4 in
+ *      some month instead of 3, once — and firestore.rules pins the marker
+ *      alongside `plan` and `ownerId`, so a client cannot clear it and
+ *      re-claim. See the callable's module header for the full reasoning.
  *
  * 2. WHERE THIS RUNS — client-side, calling the real callables, subject to
  *    the real caps described above. For boards this is free (see above — an
  *    Admin-SDK path would cost the same live-counted slot anyway). For
  *    sessions a server-side Admin-SDK seed genuinely WOULD have bypassed the
- *    cap for free — that was a real option, not a non-option — and it was
- *    deliberately not taken, so the session's non-refundable cost stays
- *    honest and visible rather than hidden behind a bypass a future reader
- *    would have to rediscover, and so there's exactly one creation mechanism
- *    for both resource types instead of a board/session split.
+ *    cap for free — that was a real option, not a non-option — and it is
+ *    still deliberately not taken, even now that the session itself is free.
+ *    The exemption lives in the callable, decided and recorded server-side in
+ *    one transaction, rather than in a bypass here that a future reader would
+ *    have to rediscover; and there is still exactly one creation mechanism for
+ *    both resource types instead of a board/session split.
  *
  * 3. NO AI CALL (a deliberate divergence from ROADMAP.md's literal wording,
  *    "a finished session with an AI summary") — the "AI summary" on the
@@ -253,10 +268,23 @@ export async function seedSampleWorkspace(
       position: ROSTER_NOTE_POSITION,
     });
 
-    // Session phase: create (capped), then transition straight to "ended"
-    // with a canned summary — never a real generateSummary call. Same
-    // fresh-workspace-only caveat as the board create above applies to the
-    // `{ plan: "free", currentCount: 0 }` quota hint just below.
+    // Session phase: create, then transition straight to "ended" with a canned
+    // summary — never a real generateSummary call.
+    //
+    // `{ welcomeSessionGrant: true }` is the ONE call site in the repo that
+    // asks for it (module header, note 1): the callable creates this session
+    // without charging the monthly counter and marks the workspace in the same
+    // transaction, so a free signup keeps all three of its own sessions and the
+    // grant can never be taken twice.
+    //
+    // Passing it also makes `sessionService.createSession` skip the advisory
+    // client-side pre-flight entirely (see that function's doc comment), so
+    // the `{ plan: "free", currentCount: 0 }` hint below is NOT read on this
+    // path today — it is passed anyway so the call still states the truth
+    // about this workspace and keeps its meaning if the grant argument is ever
+    // dropped. The same fresh-workspace-only caveat as the board create above
+    // applies to those literals, and is the reason they are not a safe default
+    // to copy elsewhere.
     sessionId = await sessionService.createSession(
       {
         workspaceId,
@@ -271,7 +299,8 @@ export async function seedSampleWorkspace(
         participantIds: [],
         status: "scheduled",
       },
-      { plan: "free", currentCount: 0 }
+      { plan: "free", currentCount: 0 },
+      { welcomeSessionGrant: true }
     );
     await sessionService.endSession(sessionId);
     await sessionService.updateSessionSummary(sessionId, SAMPLE_SESSION_SUMMARY);
