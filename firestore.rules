@@ -2,24 +2,37 @@ rules_version = '2';
 
 // ⚠️ DEPLOY ORDER — READ BEFORE `firebase deploy --only firestore:rules`.
 //
-// This file denies client-side board and session creates outright; the only
-// creation paths are the `createBoard` and `createSession` Cloud Functions,
-// which write via the Admin SDK and so bypass these rules entirely.
+// This file denies client-side board, session and workspace creates outright;
+// the only creation paths are the `createBoard`, `createSession` and
+// `createWorkspace` Cloud Functions, which write via the Admin SDK and so
+// bypass these rules entirely.
 //
 // Those functions MUST already be deployed when these rules go live. Deploying
-// this file first takes board and session creation down for every user: the
-// client path is denied and its replacement does not exist yet. Deploy
-// `functions` first, confirm both callables respond, then deploy rules.
+// this file first takes board, session and workspace creation down for every
+// user: the client path is denied and its replacement does not exist yet.
+// Deploy `functions` first, confirm all three callables respond, then deploy
+// rules.
+//
+// ⚠️ `createWorkspace` is the worst of the three to get wrong, and not by a
+// little. Signing up creates a workspace (src/services/authService.ts ->
+// `ensurePersonalWorkspace` -> `workspaceService.createWorkspace`), so
+// deploying this file ahead of that function does not merely disable a feature
+// — it breaks account creation for every new user.
 //
 // Rolling back is the mirror image: roll rules back BEFORE removing the
 // functions, never after.
 //
-// ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the two `allow create` blocks
-// (boards and sessions) to their pre-M5 predicates. Do NOT `git revert` the
-// commit that introduced them — it landed as one commit, so reverting it would
-// also make `plan` client-writable again (handing anyone Pro for a single write)
-// and drop the collaborator cap entirely. The create rules are the emergency
-// surface; the rest of that commit must stay.
+// ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the three `allow create`
+// blocks (boards, sessions and workspaces) to their pre-callable predicates.
+// For workspaces that predicate is signed-in + `ownerId` is the caller +
+// `members[caller] == 'owner'` + `plan == 'free'`, and the `plan == 'free'`
+// clause must come back WITH it — without it a rollback hands out Pro for a
+// single client write, since `createWorkspace` is what forces that value today.
+// Do NOT `git revert` the commit that introduced the board/session blocks — it
+// landed as one commit, so reverting it would also make `plan` client-writable
+// on update (handing anyone Pro for a single write) and drop the collaborator
+// cap entirely. The create rules are the emergency surface; the rest of that
+// commit must stay.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -544,14 +557,17 @@ service cloud.firestore {
     // Phase 2, where this becomes the root of board access.
     //
     // `plan` is the one field a client may never choose (M5). Every server-side
-    // quota gate — checkAiQuota, handleCreateBoard, handleCreateSession, and
-    // `planSeatLimit` above — reads it, so a client that could write it could hand
-    // itself Pro with a single Firestore write and every one of those gates would
-    // agree. Signup legitimately stamps `plan: 'free'`, so `create` permits that
-    // value and nothing else; `update` may not touch the field at all, which
-    // leaves the Stripe webhook (Admin SDK, bypasses these rules) as the only
-    // writer of `plan` after signup. Note the restriction is on the FIELD, not on
-    // a field allowlist: every other workspace field (name, members, memberIds,
+    // quota gate — checkAiQuota, handleCreateBoard, handleCreateSession,
+    // handleCreateWorkspace and `planSeatLimit` above — reads it, so a client
+    // that could write it could hand itself Pro with a single Firestore write and
+    // every one of those gates would agree. No client write of the field survives
+    // anywhere: `create` is denied outright (see the create rule below, which
+    // moved the workspace cap and the `plan: 'free'` stamp into the
+    // `createWorkspace` callable), and `update` may not touch the field at all —
+    // which leaves the Stripe webhook and that callable, both Admin SDK and both
+    // bypassing these rules, as the only writers of `plan` at any point in a
+    // workspace's life. Note the update restriction is on the FIELD, not on a
+    // field allowlist: every other workspace field (name, members, memberIds,
     // settings, anything added later) keeps its existing role gate untouched.
     //
     // One trap to know about: `affectedKeys()` counts REMOVALS as well as
@@ -561,10 +577,30 @@ service cloud.firestore {
     // would have to carry `plan` through unchanged.
     match /workspaces/{workspaceId} {
       allow read:   if isSignedIn() && request.auth.uid in resource.data.members;
-      allow create: if isSignedIn() &&
-                      request.resource.data.ownerId == request.auth.uid &&
-                      request.resource.data.members[request.auth.uid] == 'owner' &&
-                      request.resource.data.get('plan', 'free') == 'free';
+      // Creating a workspace is Cloud-Function-only
+      // (functions/src/callable/createWorkspace.ts). The function counts the
+      // workspaces the caller already OWNS, denies past the plan's cap (free: 1),
+      // and writes with the Admin SDK, which bypasses these rules. A client
+      // create is denied here because no rules predicate can count a caller's
+      // existing documents — so leaving the direct path open would make the cap
+      // bypassable by a patched bundle or a raw REST call, exactly as it was
+      // until now. The function also forces `plan: 'free'`, which is why this
+      // rule no longer carries a `plan` predicate of its own.
+      //
+      // This is the highest-stakes of the three Cloud-Function-only creates:
+      // SIGNUP creates a workspace (src/services/authService.ts ->
+      // ensurePersonalWorkspace), not just the workspace-switcher button. See
+      // the deploy-order warning at the top of this file.
+      //
+      // Honest caveat the callable cannot close alone: the `update` rule below
+      // restricts `plan` but does NOT pin `ownerId`, so an owner can rewrite
+      // that field, keep their own `members` entry, and hide the workspace from
+      // the function's per-owner count — freeing a slot and earning a fresh
+      // allowance. That is the same route `workspaceIdUnchanged` closes for
+      // boards, and its workspace equivalent does not exist yet; closing it
+      // means adding an `ownerId`-unchanged predicate to that update rule. The
+      // rules tests assert this gap explicitly rather than leaving it folklore.
+      allow create: if false;
       allow update: if isSignedIn() &&
                     !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan']) && (
                       resource.data.members[request.auth.uid] in ['owner', 'admin'] ||

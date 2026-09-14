@@ -1,5 +1,10 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+const mockCallable = jest.fn();
+const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
+jest.mock("firebase/functions", () => ({
+  httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
+}));
 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
@@ -37,27 +42,47 @@ describe("role helpers", () => {
 });
 
 describe("createWorkspace", () => {
-  it("creates the workspace with the owner as sole 'owner' member and free plan", async () => {
-    addDoc.mockResolvedValueOnce({ id: "ws-1" });
+  it("returns the id the callable minted and writes nothing directly", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
 
     const id = await workspaceService.createWorkspace("Personal", "owner-1");
 
     expect(id).toBe("ws-1");
-    const payload = addDoc.mock.calls[0][1];
-    expect(payload).toMatchObject({
-      name: "Personal",
-      ownerId: "owner-1",
-      members: { "owner-1": "owner" },
-      memberIds: ["owner-1"],
-      plan: "free",
-    });
-    expect(payload.createdAt).toBe("__serverTimestamp__");
+    // The client no longer writes the workspace doc: firestore.rules denies a
+    // client create outright, so an `addDoc` here would simply be rejected.
+    expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("honors an explicit plan", async () => {
-    addDoc.mockResolvedValueOnce({ id: "ws-2" });
+  it("binds httpsCallable to the \"createWorkspace\" function name", async () => {
+    // Pins the callable's name against the mock factory's own second argument,
+    // not just the mock's configured return value — a typo here (e.g.
+    // "createworkspace") would satisfy every other assertion in this block
+    // while breaking signup for every new account.
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
+
+    await workspaceService.createWorkspace("Personal", "owner-1");
+
+    expect(mockHttpsCallable).toHaveBeenCalled();
+    expect(mockHttpsCallable.mock.calls[0][1]).toBe("createWorkspace");
+  });
+
+  it("sends only the name — ownerId comes from the auth token server-side", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
+
+    await workspaceService.createWorkspace("Personal", "owner-1");
+
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Personal" });
+  });
+
+  it("does NOT forward an explicit plan — the function forces \"free\" regardless", async () => {
+    // The parameter survives for call-site compatibility only. Sending it would
+    // advertise a choice the server does not honour; a paid or edu workspace is
+    // provisioned out of band (the Stripe webhook, or an operator).
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-2" } });
+
     await workspaceService.createWorkspace("Class", "o", "edu");
-    expect(addDoc.mock.calls[0][1].plan).toBe("edu");
+
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Class" });
   });
 });
 
@@ -110,21 +135,21 @@ describe("ensurePersonalWorkspace", () => {
     const id = await workspaceService.ensurePersonalWorkspace("u1");
 
     expect(id).toBe("personal");
-    expect(addDoc).not.toHaveBeenCalled();
+    expect(mockCallable).not.toHaveBeenCalled();
   });
 
-  it("creates a personal workspace when the user has none (signup auto-create lagged)", async () => {
+  it("creates a personal workspace through the callable when the user has none", async () => {
+    // This is the signup path (src/services/authService.ts), and it is the one
+    // create the server-side cap must always permit: a brand-new user owns zero
+    // workspaces, so the free limit of 1 grants it without any special case.
     getDocs.mockResolvedValueOnce(makeQuerySnap([]));
-    addDoc.mockResolvedValueOnce({ id: "ws-new" });
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-new" } });
 
     const id = await workspaceService.ensurePersonalWorkspace("u1");
 
     expect(id).toBe("ws-new");
-    expect(addDoc.mock.calls[0][1]).toMatchObject({
-      name: "Personal",
-      ownerId: "u1",
-      members: { u1: "owner" },
-    });
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Personal" });
+    expect(addDoc).not.toHaveBeenCalled();
   });
 });
 

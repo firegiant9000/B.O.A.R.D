@@ -29,19 +29,34 @@
 // not a create, so no callable could gate it. That is the only enforcement point
 // for that limit; nothing on the Functions side reads it.
 //
-// Workspaces are gated NOWHERE. firestore.rules' `match /workspaces/{workspaceId}`
-// `allow create` requires only that the caller is the new doc's `ownerId`, is
-// recorded as its `'owner'` member, and that `plan == 'free'` — there is no
-// count condition, and rules have no way to write one (they cannot count a
-// caller's existing documents). No callable owns
-// workspace creation the way createBoard/createSession own theirs; the client
-// (workspaceService.createWorkspace) writes the doc directly. PLAN_LIMITS.free.
-// workspaces (src/lib/planLimits.ts) is a display value only — nothing denies a
-// user who creates a second, tenth, or hundredth workspace, and each fresh
-// workspace grants its own 5 boards and 5 AI calls. This is the free tier's most
-// expensive uncapped resource. Closing it needs a `createWorkspace` callable
-// mirroring createBoard/createSession — out of scope here; do not treat this
-// limit as enforced anywhere.
+// Workspaces ARE gated server-side: the `createWorkspace` callable
+// (functions/src/callable/createWorkspace.ts) counts the workspaces the caller
+// already OWNS and denies past the plan's cap (free: 1) before writing, and
+// firestore.rules now denies client workspace creates outright. This was the
+// last of the five free-tier gates with no enforcement at all, and the most
+// expensive one: every other quota is scoped per workspace, so each extra
+// workspace used to grant its own 5 boards, 5 AI calls/month and 3 board-Q&A
+// calls.
+//
+// Two things about that gate are unlike the ones above. It counts by `ownerId`,
+// not membership — a workspace you were invited to never consumes your own
+// allowance. And it has no containing workspace to read a `plan` off, so it
+// resolves the caller's entitlement as the best plan across the workspaces they
+// already own; there is no user-level plan field to consult instead.
+//
+// Remaining caveat, and this one is a live route rather than stale data:
+// firestore.rules does not pin `ownerId` on a workspace update, so an owner can
+// rewrite that field while keeping their `members` entry — the workspace stays
+// fully usable and stops being counted, which earns a fresh allowance. Closing
+// it needs an `ownerId`-unchanged predicate on the workspace update rule, the
+// counterpart of the `workspaceId` pin the board cap already depends on. Treat
+// the workspace cap as enforced against a patched client, not as airtight
+// against a determined one.
+//
+// Note there is no `QuotaResource` entry for workspaces below, deliberately:
+// this module's advisory pre-flight needs a workspace id to check against, and
+// a workspace create has none — the server is the only place that decision can
+// be made at all.
 //
 // Never add a limit here and consider it enforced without independently
 // confirming the server side actually denies it. A patched bundle skips this

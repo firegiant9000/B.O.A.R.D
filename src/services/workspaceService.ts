@@ -1,18 +1,17 @@
 import {
   collection,
-  addDoc,
   getDoc,
   getDocs,
   updateDoc,
   doc,
   query,
   where,
-  serverTimestamp,
   arrayUnion,
   arrayRemove,
   deleteField,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../config/firebase";
 import { Plan, Workspace, WorkspaceRole } from "../types";
 
 const workspacesRef = collection(db, "workspaces");
@@ -57,29 +56,41 @@ export function canManageMembers(role: WorkspaceRole | undefined): boolean {
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+interface CreateWorkspaceResponse {
+  workspaceId: string;
+}
+
 /**
- * Creates a workspace. `plan` is effectively "free" from the client: since M5,
- * firestore.rules rejects a create that stamps any other value, and rejects any
- * update that touches `plan` at all — the Stripe webhook (Admin SDK, bypasses
- * rules) is the only writer after signup. The parameter is kept for the tests
- * that exercise the mapper, but passing "pro"/"edu" here will be denied. A paid
- * or edu workspace has to be provisioned server-side.
+ * Server-enforced: the `createWorkspace` callable
+ * (functions/src/callable/createWorkspace.ts) owns the free-tier cap of one
+ * workspace per owner and writes the document itself, and firestore.rules now
+ * denies client workspace creates outright — so this is no longer a direct
+ * write, it is a request. The client signature is unchanged so every
+ * pre-existing call site (`ensurePersonalWorkspace` below, `WorkspaceSwitcher`)
+ * keeps working untouched.
+ *
+ * `plan` is no longer merely "effectively free" the way rules once made it — it
+ * is not sent at all. The function stamps `plan: "free"` on every workspace it
+ * writes, so a value passed here would be silently ignored rather than denied.
+ * The parameter survives for call-site compatibility only; a paid or edu
+ * workspace is still provisioned out of band (the Stripe webhook for pro, an
+ * operator for edu), and `update` in firestore.rules still refuses to let any
+ * client touch the field afterwards.
  */
 export async function createWorkspace(
   name: string,
   ownerId: string,
   plan: Plan = "free"
 ): Promise<string> {
-  const docRef = await addDoc(workspacesRef, {
-    name,
-    ownerId,
-    members: { [ownerId]: "owner" satisfies WorkspaceRole },
-    // Parallel array for `array-contains` membership queries (see Workspace type).
-    memberIds: [ownerId],
-    plan,
-    createdAt: serverTimestamp(),
-  });
-  return docRef.id;
+  void ownerId; // the function derives the owner from the auth token, not the client
+  void plan; // the function forces "free"; see the doc comment above
+
+  const fn = httpsCallable<{ name: string }, CreateWorkspaceResponse>(
+    functions,
+    "createWorkspace"
+  );
+  const { data } = await fn({ name });
+  return data.workspaceId;
 }
 
 export async function getWorkspace(workspaceId: string): Promise<Workspace | null> {

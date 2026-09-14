@@ -51,6 +51,20 @@ export { createBoard } from "./callable/createBoard";
 // requirement as createBoard above.
 export { createSession } from "./callable/createSession";
 
+// Month 5/6 — plan enforcement. Workspace creation is server-side: this is the
+// ONLY way to create a workspace, since firestore.rules denies client workspace
+// creates outright, so the free-tier cap of one workspace per owner can't be
+// bypassed — the cap that matters most, because every other quota is scoped per
+// workspace and a second workspace grants a second set of all of them. Unlike
+// createBoard/createSession it has no containing workspace to read a plan off,
+// so it resolves the caller's entitlement from the workspaces they already own
+// (see the callable's own header). Same deploy-order requirement as those two,
+// and a stricter one: this is also the SIGNUP path (authService ->
+// ensurePersonalWorkspace), so deploying the rule ahead of this function breaks
+// account creation, not just a feature. See the warning at the top of
+// firestore.rules.
+export { createWorkspace } from "./callable/createWorkspace";
+
 // Month 5 — starts a Stripe Checkout session for a workspace's Pro upgrade.
 // The Pro price is resolved server-side from the STRIPE_PRO_PRICE_ID secret;
 // the request carries no price field, so a client can't choose what it pays.

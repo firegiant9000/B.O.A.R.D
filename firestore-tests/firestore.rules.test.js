@@ -2688,10 +2688,12 @@ describe("editable embed identity", () => {
 
 // ── M5: `plan` is not client-writable ─────────────────────────────────────────
 // The single highest-value field in the database. Every server-side quota gate
-// (checkAiQuota, handleCreateBoard, handleCreateSession, and the seat cap above)
-// reads workspace.plan, so a client that could write it would hand itself Pro and
-// every one of those gates would agree. The Stripe webhook writes it via the
-// Admin SDK, which bypasses these rules.
+// (checkAiQuota, handleCreateBoard, handleCreateSession, handleCreateWorkspace
+// — which reads it off the caller's OWNED workspaces, having no container of
+// its own — and the seat cap above) reads workspace.plan, so a client that
+// could write it would hand itself Pro and every one of those gates would
+// agree. The Stripe webhook writes it via the Admin SDK, which bypasses these
+// rules; `createWorkspace` stamps the initial 'free' the same way.
 describe("M5 workspace plan is not client-writable", () => {
   it("denies the workspace OWNER setting plan to pro", async () => {
     await assertFails(
@@ -2751,8 +2753,27 @@ describe("M5 workspace plan is not client-writable", () => {
     );
   });
 
-  it("allows a create that stamps the free plan (the signup path)", async () => {
-    await assertSucceeds(
+  // The create half of the `plan` story no longer lives in this rule at all:
+  // client workspace creates are denied outright, and the `createWorkspace`
+  // callable forces `plan: 'free'`. See the "workspace create" block below —
+  // asserting a paid-plan create fails HERE would now prove nothing about
+  // `plan`, since every create fails regardless of what it stamps.
+});
+
+// ── workspace create is Cloud-Function-only ───────────────────────────────────
+// Was: any signed-in user could create unlimited workspaces as long as they
+// pinned themselves as ownerId/'owner' member and stamped plan 'free'. That
+// path is denied now so the free tier's one-workspace cap (enforced in
+// functions/src/callable/createWorkspace.ts, which writes via the Admin SDK and
+// bypasses rules) cannot be bypassed. Mirrors "board create is
+// Cloud-Function-only" above.
+describe("workspace create", () => {
+  it("denies a direct client workspace create, even the exact shape signup used to write", async () => {
+    // bob pins himself as ownerId and 'owner' member and stamps the free plan —
+    // everything the old rule asked for, and byte-for-byte what
+    // workspaceService.createWorkspace used to addDoc. Denied anyway: rules
+    // cannot count a caller's existing workspaces.
+    await assertFails(
       setDoc(doc(db(BOB), "workspaces/newFree"), {
         name: "Personal",
         ownerId: BOB,
@@ -2763,8 +2784,10 @@ describe("M5 workspace plan is not client-writable", () => {
     );
   });
 
-  it("allows a create that omits plan entirely", async () => {
-    await assertSucceeds(
+  it("denies a create that omits plan entirely", async () => {
+    // The old rule's `.get('plan', 'free')` default admitted this shape; it is
+    // closed along with every other create, not by a plan predicate.
+    await assertFails(
       setDoc(doc(db(BOB), "workspaces/newNoPlan"), {
         name: "Personal",
         ownerId: BOB,
@@ -2775,8 +2798,9 @@ describe("M5 workspace plan is not client-writable", () => {
   });
 
   it("denies a create that stamps a paid plan", async () => {
-    // Without this, the update rule is pointless: delete-and-recreate, or just
-    // create a fresh workspace, would mint Pro.
+    // Still worth asserting even though the free-plan create above is denied
+    // too: delete-and-recreate, or a fresh workspace, is the cheapest route to
+    // minting Pro, and a future relaxation of this rule must not reopen it.
     await assertFails(
       setDoc(doc(db(BOB), "workspaces/newPro"), {
         name: "Free Pro",
@@ -2797,6 +2821,31 @@ describe("M5 workspace plan is not client-writable", () => {
         memberIds: [BOB],
         plan: "edu",
       })
+    );
+  });
+
+  it("renaming an existing workspace is unaffected — only create is denied", async () => {
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { name: "Still renameable" })
+    );
+  });
+
+  it("deleting a workspace is unaffected — only create is denied", async () => {
+    // Deliberate: deletion FREES a slot against the cap the callable enforces,
+    // so denying it here would trap a free user at one workspace forever.
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "workspaces/wsA")));
+  });
+
+  it("DISCLOSED GAP: the update rule does not pin ownerId, so an owner can hide a workspace from the cap", async () => {
+    // Not a test of a fix — a test of a known hole, so it is visible rather
+    // than folklore. `countOwnedWorkspaces` filters on `ownerId`, and this rule
+    // restricts only `plan`, so alice can hand wsA's `ownerId` to someone else,
+    // stay its `'owner'` member (full access, still listed by her `memberIds`
+    // query), and free a slot against her cap. Closing it needs an
+    // `ownerId`-unchanged predicate on the workspace update rule — see
+    // functions/src/billing/usage.ts#countOwnedWorkspaces.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { ownerId: BOB })
     );
   });
 });

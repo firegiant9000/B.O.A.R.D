@@ -1,9 +1,9 @@
 import type { Firestore, Transaction } from "firebase-admin/firestore";
 import { currentPeriod } from "../ai/usage";
 
-// Plan metering (M5). Boards and sessions are gated by different plan limits
-// (functions/src/billing/limits.ts) but they are metered with two different
-// mechanisms on purpose:
+// Plan metering (M5). Boards, sessions and workspaces are gated by different
+// plan limits (functions/src/billing/limits.ts) but they are metered with
+// different mechanisms on purpose:
 //
 //   - Boards are a STOCK (5 alive at once, freed by deletion): counted live
 //     via a Firestore count() aggregation. There is no stored board counter —
@@ -13,6 +13,12 @@ import { currentPeriod } from "../ai/usage";
 //     monthly bucket at `workspaces/{id}/usage/{period}` that only ever
 //     increments, mirroring the `aiUsage` counter in ai/usage.ts. Both are
 //     Functions-only writes, locked in firestore.rules.
+//   - Workspaces are a STOCK like boards, but scoped to an OWNER rather than
+//     to a containing workspace — they are the one capped resource with no
+//     container to scope to. That difference also means the counter cannot use
+//     count(): the gate has to learn the caller's plan from the same read (see
+//     countOwnedWorkspaces below), because there is no parent document holding
+//     one.
 
 /** Persisted at `workspaces/{id}/usage/{period}`. Functions-only writes. */
 export interface SessionUsageDoc {
@@ -56,6 +62,62 @@ export async function countBoards(db: Firestore, workspaceId: string): Promise<n
     .count()
     .get();
   return snap.data().count;
+}
+
+/** What `countOwnedWorkspaces` hands back. Both halves come from ONE query on
+ *  purpose: a workspace has no containing workspace to read a `plan` off, so
+ *  the create gate has to derive the caller's entitlement from the workspaces
+ *  they already own — and issuing a second read to answer "which plan" would
+ *  mean deciding the cap against two reads that can disagree. */
+export interface OwnedWorkspaces {
+  count: number;
+  /** The `plan` of each COUNTED workspace, with non-string values dropped.
+   *  Shorter than `count` whenever an owned workspace has a missing or corrupt
+   *  `plan` — deliberately, see the filter in `countOwnedWorkspaces`. */
+  plans: string[];
+}
+
+/** Workspaces are a STOCK like boards: a live read, so deleting a workspace
+ *  frees a slot with no decrement path to get wrong. Unlike `countBoards` this
+ *  cannot use count() — the caller needs each match's `plan`, not just how many
+ *  matches there are — so it runs a projected (`select`) read instead: one
+ *  document stub per owned workspace carrying that field alone, never the
+ *  members/settings/swatches payload.
+ *
+ *  Filters on `ownerId`, NOT on membership, and that is a decision rather than
+ *  a shortcut: being invited to someone else's workspace must never consume
+ *  your own allowance, and the roadmap cap is on what a user CREATES. A
+ *  workspace you were merely added to is invisible here by design.
+ *
+ *  Honest caveat, and it is a live one rather than a data-migration one:
+ *  nothing pins `ownerId`. firestore.rules' `workspaces/{id}` update rule
+ *  restricts only `plan`, so an owner can rewrite `ownerId` to some other value
+ *  while keeping their own `members` entry — the workspace stays fully theirs
+ *  to use, disappears from this count, and earns them a fresh allowance. That
+ *  is exactly the route `workspaceIdUnchanged` closes for boards, and its
+ *  equivalent for workspaces does not exist yet. Closing it needs an
+ *  `ownerId`-unchanged predicate on that update rule; this function cannot
+ *  close it alone, so nothing around this cap should be written as if the cap
+ *  were airtight. */
+export async function countOwnedWorkspaces(
+  db: Firestore,
+  ownerId: string
+): Promise<OwnedWorkspaces> {
+  const snap = await db
+    .collection("workspaces")
+    .where("ownerId", "==", ownerId)
+    .select("plan")
+    .get();
+  return {
+    count: snap.size,
+    // A non-string `plan` is dropped from `plans` but its document still counts
+    // above. The consumer picks the BEST plan across these, so forwarding a
+    // corrupt value could only ever make it a candidate for "best" — dropping
+    // it leaves `free` as the answer, which is the fail-closed direction.
+    plans: snap.docs
+      .map((d) => d.get("plan") as unknown)
+      .filter((plan): plan is string => typeof plan === "string"),
+  };
 }
 
 /** Sessions are a FLOW: monthly bucket, increment-only. `Number.isFinite`

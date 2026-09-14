@@ -121,9 +121,9 @@ export interface PlanCardCopy {
   tagline: string;
   features: string[];
   /** Only Pro carries a checkout action. Free is what a new workspace
-   *  already starts on (src/services/workspaceService.ts#createWorkspace
-   *  defaults to `plan: "free"`, and firestore.rules reject a client
-   *  stamping anything else), so there is nothing to "subscribe" to. Edu is
+   *  already starts on (the `createWorkspace` callable stamps `plan: "free"`
+   *  on every workspace it writes, and firestore.rules deny a client create
+   *  outright), so there is nothing to "subscribe" to. Edu is
    *  granted out of band by an operator, never through Stripe — the webhook
    *  deliberately never writes `plan: "edu"` in either direction
    *  (functions/src/http/stripeWebhook.ts#decidePlanWrite) — so a
