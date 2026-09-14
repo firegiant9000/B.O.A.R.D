@@ -48,9 +48,30 @@ interface CheckoutError {
   canOpenPortal: boolean;
 }
 
-export default function UpsellModal({ visible, resource, onDismiss, plan, workspaceId }: UpsellModalProps) {
+export default function UpsellModal({
+  visible,
+  resource,
+  onDismiss,
+  plan,
+  workspaceId,
+  // ROADMAP.md:608 (item 14) — "Skip on first attempt; harder push on second".
+  // Defaults to "hard", the body this modal has always rendered, so every
+  // caller and test that predates the cadence keeps exactly its behaviour and
+  // only a deliberate opt-in gets the restrained one. That default is the
+  // opposite of fail-soft on purpose: the ONE production caller
+  // (app/board/[id].tsx via useUpsellCadence) always supplies a variant that
+  // was itself resolved fail-soft, so the only thing this default can reach is
+  // a caller that never asked for cadence at all — and silently stripping the
+  // sell from such a caller would be a behaviour change nobody requested.
+  variant = "hard",
+}: UpsellModalProps) {
   const effectivePlan: Plan = plan ?? "free";
   const capped = isPlanCapped(effectivePlan, resource);
+  // Only a plan-cap denial can ever carry the sell. The transient-throttle
+  // body below is unaffected by the variant by design: a Pro customer who sent
+  // requests too fast needs the same honest "wait a moment" on their first hit
+  // as on their fifth, and there is nothing to be restrained ABOUT there.
+  const selling = capped && variant === "hard";
 
   const [busy, setBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
@@ -118,41 +139,57 @@ export default function UpsellModal({ visible, resource, onDismiss, plan, worksp
             <>
               <Text style={styles.title}>You've reached your plan's limit</Text>
               <Text style={styles.body}>{limitMessage(resource, effectivePlan)}</Text>
-              <Text style={styles.price}>
-                {PENDING_PRO_PRICE_LABEL} unlocks {unlockPhrase(resource)}
-              </Text>
 
-              {checkoutError && (
-                <View style={styles.errorBox}>
-                  <Text style={styles.errorText}>{checkoutError.message}</Text>
-                  {checkoutError.canOpenPortal && (
-                    <TouchableOpacity
-                      testID="upsell-web-portal-button"
-                      accessibilityRole="button"
-                      style={styles.secondaryButton}
-                      onPress={handleManageBilling}
-                      disabled={busy}
-                    >
-                      <Text style={styles.secondaryButtonText}>Manage billing</Text>
-                    </TouchableOpacity>
+              {/* Everything from here to the close of this block is the SELL,
+                  and it is the whole of what "soft" withholds. The title and
+                  the limit message above are deliberately outside the gate:
+                  the first encounter with a gate still has to say what
+                  happened, or the denial reads as a broken button rather than
+                  as a limit. Written as one conditional around the existing
+                  markup rather than as a second, parallel soft body — a copy
+                  of the title/limit lines for the soft case would be free to
+                  drift from these, and "the gentle notice quietly stopped
+                  naming the real limit" is not a failure any test here would
+                  catch. */}
+              {selling && (
+                <>
+                  <Text style={styles.price}>
+                    {PENDING_PRO_PRICE_LABEL} unlocks {unlockPhrase(resource)}
+                  </Text>
+
+                  {checkoutError && (
+                    <View style={styles.errorBox}>
+                      <Text style={styles.errorText}>{checkoutError.message}</Text>
+                      {checkoutError.canOpenPortal && (
+                        <TouchableOpacity
+                          testID="upsell-web-portal-button"
+                          accessibilityRole="button"
+                          style={styles.secondaryButton}
+                          onPress={handleManageBilling}
+                          disabled={busy}
+                        >
+                          <Text style={styles.secondaryButtonText}>Manage billing</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   )}
-                </View>
-              )}
 
-              <TouchableOpacity
-                testID="upsell-web-upgrade-button"
-                accessibilityRole="button"
-                accessibilityState={{ disabled: busy || !canCheckout }}
-                style={[styles.primaryButton, !canCheckout && styles.primaryButtonDisabled]}
-                onPress={handleUpgrade}
-                disabled={busy || !canCheckout}
-              >
-                {busy ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>{ctaLabel}</Text>
-                )}
-              </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="upsell-web-upgrade-button"
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: busy || !canCheckout }}
+                    style={[styles.primaryButton, !canCheckout && styles.primaryButtonDisabled]}
+                    onPress={handleUpgrade}
+                    disabled={busy || !canCheckout}
+                  >
+                    {busy ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>{ctaLabel}</Text>
+                    )}
+                  </TouchableOpacity>
+                </>
+              )}
             </>
           ) : (
             <>
@@ -167,7 +204,13 @@ export default function UpsellModal({ visible, resource, onDismiss, plan, worksp
             onPress={onDismiss}
             disabled={busy}
           >
-            <Text style={styles.dismissText}>Not now</Text>
+            {/* "Not now" answers an offer. The soft body deliberately makes
+                none, so declining one there would be incoherent — that branch
+                gets the neutral acknowledgement the native variant already
+                uses. Scoped so that every branch which exists today keeps the
+                exact text it ships with: the hard sell and the transient
+                throttle note are both untouched. */}
+            <Text style={styles.dismissText}>{capped && !selling ? "OK" : "Not now"}</Text>
           </TouchableOpacity>
         </View>
       </View>

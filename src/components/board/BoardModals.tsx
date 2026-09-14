@@ -18,7 +18,7 @@ import type { BoardDocument } from "../../hooks/useBoardDocument";
 import type { BoardComments, ElementBoxResolver } from "../../hooks/useBoardComments";
 import type { BoardAI } from "../../hooks/useBoardAI";
 import type { BoardPresence, CodeLanguage, Plan } from "../../types";
-import type { UpsellResource } from "../upsellCopy";
+import type { UpsellResource, UpsellVariant } from "../upsellCopy";
 import type { Bounds } from "../../lib/viewport";
 import type { BoardElementSets } from "../../lib/svgExport";
 
@@ -88,6 +88,14 @@ interface BoardModalsProps {
    *  screen last hit a quota denial (session create, or one of the three AI
    *  affordances via `ai`). Null hides it. */
   upsellResource: UpsellResource | null;
+  /** How hard that upsell should push — resolved by `useUpsellCadence` from a
+   *  persisted per-resource attempt count, so a user's first encounter with a
+   *  gate is restrained and the repeats are not (ROADMAP.md:608, item 14).
+   *  Optional, and omitting it leaves `UpsellModal`'s own `"hard"` default in
+   *  place, which is the pre-cadence behaviour — the board screen always
+   *  supplies it, and this only stays optional so a caller that has no cadence
+   *  to express isn't forced to invent one. */
+  upsellVariant?: UpsellVariant;
   onDismissUpsell: () => void;
   /** StartSessionModal caught a quota denial (isQuotaDenial — the server's
    *  own resource-exhausted rejection, or the client-side pre-flight's own
@@ -227,6 +235,7 @@ export default function BoardModals({
   sessionVisible,
   onCloseSession,
   upsellResource,
+  upsellVariant,
   onDismissUpsell,
   onSessionQuotaExceeded,
   colorPickerVisible,
@@ -453,6 +462,7 @@ export default function BoardModals({
         <UpsellModal
           visible
           resource={upsellResource}
+          variant={upsellVariant}
           plan={doc.boardWorkspace?.plan}
           workspaceId={doc.board?.workspaceId}
           onDismiss={onDismissUpsell}

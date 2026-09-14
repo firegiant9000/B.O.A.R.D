@@ -44,6 +44,24 @@ import type { Plan } from "../types";
 export type UpsellResource = QuotaResource | "customPalette" | "boardQa" | "presenter";
 
 /**
+ * How hard this showing of the modal should push — ROADMAP.md:608 (item 14),
+ * "Skip on first attempt; harder push on second". `"soft"` names the limit and
+ * explains what happened, and offers nothing beyond dismissing; `"hard"` is the
+ * full body the web build has always shown. Which one a given gate hit gets is
+ * decided by `src/services/upsellCadence.ts` against a persisted per-resource
+ * counter, never by either component.
+ *
+ * Declared HERE rather than in upsellCadence.ts, next to the props contract
+ * that consumes it and the resource union it pairs with: upsellCadence.ts
+ * already imports `UpsellResource` from this file, and putting the variant
+ * there too would leave the two halves of one vocabulary importing each other.
+ * (Type-only in both directions, so it would have compiled — it would just
+ * have been harder to read.) This module has no runtime code a native bundle
+ * needs to avoid, which is the same reason `UpsellModalProps` lives here.
+ */
+export type UpsellVariant = "soft" | "hard";
+
+/**
  * The one props contract BOTH platform variants implement. `tsc` has no
  * platform-extension resolution of its own — every production import and
  * every test import type-checks against whichever file TypeScript happens to
@@ -68,6 +86,12 @@ export interface UpsellModalProps {
    *  unused by the native variant. Present on both so every call site can
    *  pass the same props to either platform's file without branching. */
   workspaceId?: string;
+  /** How hard to push (see `UpsellVariant`). Defaults to `"hard"` — the body
+   *  that shipped before the cadence existed — so a caller that has not opted
+   *  in keeps exactly its current behaviour rather than silently losing it.
+   *  The one production caller (app/board/[id].tsx, via useUpsellCadence)
+   *  always supplies it. */
+  variant?: UpsellVariant;
 }
 
 export const RESOURCE_LABEL: Record<UpsellResource, string> = {

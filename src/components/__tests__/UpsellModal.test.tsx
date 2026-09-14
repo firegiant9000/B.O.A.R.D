@@ -22,7 +22,7 @@ import { render, fireEvent } from "@testing-library/react-native";
 import type { UpsellResource } from "../upsellCopy";
 import { isPlanCapped, limitMessage, unlockPhrase } from "../upsellCopy";
 import { limitFor } from "../../lib/planLimits";
-import { BILLING_LIVE } from "../../lib/pricingCopy";
+import { BILLING_LIVE, PENDING_PRO_PRICE_LABEL } from "../../lib/pricingCopy";
 import { startCheckout } from "../../services/billingService";
 
 // The load-bearing part of this file: two SEPARATE physical modules, not one
@@ -70,13 +70,23 @@ const RESOURCES: UpsellResource[] = [
 // output. A price or a checkout link held in a handler and never rendered
 // (e.g. a bare `Linking.openURL(PAY_URL)` nobody calls in these tests) is
 // invisible to `toJSON()` and to a press-driven mock-call assertion, but not
-// to this. Covers both files on the native variant's own import graph:
+// to this. Covers the files on the native variant's own import graph:
 // UpsellModal.native.tsx itself, and upsellCopy.ts (its only non-type
 // import) — upsellCopy.ts is otherwise unscanned by anything, which would
 // make it exactly the "shared module quietly carries the price" hole this
 // split exists to close. (upsellCopy.ts's own further imports —
 // planLimits.ts, quotaService.ts — are generic, not upsell-specific, and
 // carry no billing code; not scanned here.)
+//
+// WIDENED, never narrowed, for the soft/hard cadence (ROADMAP.md:608): the
+// two new modules that decide which body this modal shows —
+// services/upsellCadence.ts and hooks/useUpsellCadence.ts — are pulled into
+// the native bundle by app/board/[id].tsx, which renders on native. They are
+// not on UpsellModal.native.tsx's OWN import graph, but they are on the
+// upsell path's, and a price or an off-app link smuggled into either would
+// reach a native screen with nothing else watching for it. Adding them makes
+// this guard strictly stricter: every file it covered before is still
+// covered, under the same two unchanged patterns.
 //
 // The `$` half of the pattern excludes `$` immediately followed by `{`:
 // a bare `/\$/` would also flag template-literal interpolation, and
@@ -89,6 +99,8 @@ const NO_PAYMENT_CONTENT = /\$(?!\{)|https?:|stripe|checkout|price/i;
 const NATIVE_BUNDLE_SOURCE_FILES: Array<[label: string, relPath: string]> = [
   ["UpsellModal.native.tsx", "../UpsellModal.native.tsx"],
   ["upsellCopy.ts", "../upsellCopy.ts"],
+  ["services/upsellCadence.ts", "../../services/upsellCadence.ts"],
+  ["hooks/useUpsellCadence.ts", "../../hooks/useUpsellCadence.ts"],
 ];
 
 describe("UpsellModal — native-reachable source (store-compliance guard)", () => {
@@ -326,4 +338,229 @@ describe("UpsellModal.tsx (web, rendered)", () => {
   // UpsellModal.mockedCopy.test.tsx — they need BILLING_LIVE mocked `true`
   // to reach `startCheckout` at all now that the CTA honestly gates on it
   // (Fix Wave F3).
+});
+
+// ---------------------------------------------------------------------------
+// Soft/hard cadence (ROADMAP.md:608 item 14 — "Skip on first attempt; harder
+// push on second"). `variant` defaults to "hard", so everything above this
+// line renders exactly what it rendered before the prop existed — that is the
+// point of the default, and the untouched tests above are the evidence.
+// WHICH variant a given gate hit gets is decided in hooks/useUpsellCadence.ts
+// against a persisted counter, never here; these tests only pin what each
+// variant renders once that decision has been made.
+// ---------------------------------------------------------------------------
+
+describe("UpsellModal.tsx (web) — soft variant, a user's first encounter with a gate", () => {
+  it("explains the limit that was hit, so the denial never reads as a silent failure", () => {
+    // The literal reading of "skip on first attempt" — render nothing — was
+    // rejected precisely because a blocked action with no explanation reads as
+    // a bug rather than as restraint. The soft body IS that explanation, minus
+    // the sell.
+    const { getByText } = render(
+      <WebUpsellModal visible resource="board" variant="soft" onDismiss={() => {}} />
+    );
+    expect(getByText(/5 boards/i)).toBeTruthy();
+  });
+
+  it.each(RESOURCES)(
+    "renders no price, no link and no upgrade language for resource=%s — asserted on the rendered tree, not on props",
+    (resource) => {
+      const { toJSON } = render(
+        <WebUpsellModal
+          visible
+          resource={resource}
+          plan="free"
+          variant="soft"
+          onDismiss={() => {}}
+        />
+      );
+      const tree = JSON.stringify(toJSON());
+      // The same shape of assertion the native guard above uses, applied to
+      // the WEB body — the only one of the two that has a price to leak in the
+      // first place, and therefore the only one where "soft" is load-bearing
+      // rather than already true by policy.
+      expect(tree).not.toMatch(/\$\d/);
+      expect(tree).not.toMatch(/https?:\/\//);
+      expect(tree).not.toMatch(/upgrade/i);
+      expect(tree).not.toMatch(/subscri/i);
+      expect(tree).not.toMatch(/manage billing/i);
+      expect(tree).not.toMatch(/unlocks/i);
+    }
+  );
+
+  it("contains the real placeholder figure nowhere in its output, whatever that figure is later changed to", () => {
+    // Stronger than the `/\$\d/` regex above and immune to G4 being settled:
+    // this asserts the actual constant's current value is absent, so changing
+    // PENDING_PRO_PRICE_LABEL to something that doesn't start with "$" (a "£",
+    // a "from 5 EUR") cannot quietly make the check vacuous.
+    const { toJSON } = render(
+      <WebUpsellModal visible resource="board" variant="soft" onDismiss={() => {}} />
+    );
+    expect(JSON.stringify(toJSON())).not.toContain(PENDING_PRO_PRICE_LABEL);
+  });
+
+  it("offers no affordance beyond dismissing, however a checkout action might be worded", () => {
+    // Counts by accessibility role, not by label — a checkout button reworded
+    // to dodge every regex above (a bare "Continue") would still be a second
+    // button-role element, and this catches it regardless of wording. Same
+    // technique as the native guard's own count assertion.
+    const { getAllByRole } = render(
+      <WebUpsellModal visible resource="board" variant="soft" onDismiss={() => {}} />
+    );
+    const buttons = getAllByRole("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].props.testID).toBe("upsell-web-dismiss-button");
+  });
+
+  it("labels that action neutrally rather than as declining an offer it never made", () => {
+    const { getByText, queryByText } = render(
+      <WebUpsellModal visible resource="board" variant="soft" onDismiss={() => {}} />
+    );
+    expect(getByText("OK")).toBeTruthy();
+    expect(queryByText(/not now/i)).toBeNull();
+  });
+
+  it("calls onDismiss when that sole action is pressed", () => {
+    const onDismiss = jest.fn();
+    const { getByTestId } = render(
+      <WebUpsellModal visible resource="board" variant="soft" onDismiss={onDismiss} />
+    );
+    fireEvent.press(getByTestId("upsell-web-dismiss-button"));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders neither checkout control even when a workspace makes checkout otherwise wireable", () => {
+    const { queryByTestId } = render(
+      <WebUpsellModal
+        visible
+        resource="board"
+        variant="soft"
+        onDismiss={() => {}}
+        workspaceId="ws-1"
+      />
+    );
+    expect(queryByTestId("upsell-web-upgrade-button")).toBeNull();
+    expect(queryByTestId("upsell-web-portal-button")).toBeNull();
+  });
+
+  it("still shows the transient note rather than a plan-limit claim when the denial can't be a plan cap", () => {
+    // The cadence is orthogonal to `isPlanCapped`: a Pro customer who tripped
+    // the rate throttle must get the throttle note on their FIRST hit too, not
+    // a gentler paywall. Without this, "soft" could quietly become a second
+    // way of telling a paying customer they've reached a limit they have not.
+    const { getByText, queryByText } = render(
+      <WebUpsellModal visible resource="aiCall" plan="pro" variant="soft" onDismiss={() => {}} />
+    );
+    expect(getByText(/sending requests a little fast/i)).toBeTruthy();
+    expect(queryByText(/plan's limit/i)).toBeNull();
+  });
+});
+
+describe("UpsellModal.tsx (web) — the hard variant is exactly the modal that ships today", () => {
+  it.each(RESOURCES)(
+    'renders identically with variant omitted and with variant="hard" for resource=%s',
+    (resource) => {
+      // The regression guard for the DEFAULT. Flipping the default to "soft"
+      // to make the feature "work" everywhere would silently strip the sell
+      // from every existing caller; the untouched tests above would start
+      // failing, but this one names the cause directly instead of leaving it
+      // to be inferred from a scattering of missing-price failures.
+      // Compared as JSON, not with toEqual on the trees: the RN test renderer
+      // hangs freshly-closed-over responder handlers off every touchable, so
+      // two structurally identical renders are never referentially equal.
+      // JSON.stringify drops functions and keeps everything a user can see or
+      // read — which is what "the same modal" means here. The affordances
+      // those dropped handlers belong to are counted by role in the soft
+      // describe above, so they are not going unchecked.
+      const withDefault = JSON.stringify(
+        render(
+          <WebUpsellModal
+            visible
+            resource={resource}
+            plan="free"
+            onDismiss={() => {}}
+            workspaceId="ws-1"
+          />
+        ).toJSON()
+      );
+      const withExplicitHard = JSON.stringify(
+        render(
+          <WebUpsellModal
+            visible
+            resource={resource}
+            plan="free"
+            variant="hard"
+            onDismiss={() => {}}
+            workspaceId="ws-1"
+          />
+        ).toJSON()
+      );
+      expect(withDefault).toEqual(withExplicitHard);
+    }
+  );
+
+  it("and that shared default output really does carry the sell — the equality above is not two empty trees", () => {
+    // The positive control. Without it, a component that rendered nothing at
+    // all under both variants would satisfy every assertion above.
+    const { toJSON, getByTestId } = render(
+      <WebUpsellModal
+        visible
+        resource="board"
+        plan="free"
+        onDismiss={() => {}}
+        workspaceId="ws-1"
+      />
+    );
+    expect(JSON.stringify(toJSON())).toContain(PENDING_PRO_PRICE_LABEL);
+    expect(getByTestId("upsell-web-upgrade-button")).toBeTruthy();
+  });
+});
+
+describe("UpsellModal.native.tsx — the cadence prop changes nothing it was already forbidden to render", () => {
+  // The native body carries no sell under EITHER variant, because store policy
+  // already forbids one there (see that file's own COMPLIANCE INVARIANT). So
+  // soft and hard coincide on native, and that is the correct outcome rather
+  // than an unimplemented half: the prop exists on the native variant because
+  // both platform files implement ONE props contract (upsellCopy.ts's
+  // UpsellModalProps — see its header on why two independently-declared
+  // interfaces would let the native shape drift past tsc), and so that any
+  // native affordance added later is gated by the same cadence instead of
+  // having to rediscover it. These pin the equivalence as a deliberate fact,
+  // so a future edit that makes the two differ on native has to say why.
+  it.each(RESOURCES)("renders identically under both variants for resource=%s", (resource) => {
+    // JSON, not toEqual on the trees, for the same reason as the web
+    // equality test above: freshly-closed-over responder handlers make two
+    // structurally identical renders referentially unequal.
+    const soft = JSON.stringify(
+      render(
+        <NativeUpsellModal
+          visible
+          resource={resource}
+          plan="free"
+          variant="soft"
+          onDismiss={() => {}}
+        />
+      ).toJSON()
+    );
+    const hard = JSON.stringify(
+      render(
+        <NativeUpsellModal
+          visible
+          resource={resource}
+          plan="free"
+          variant="hard"
+          onDismiss={() => {}}
+        />
+      ).toJSON()
+    );
+    expect(soft).toEqual(hard);
+  });
+
+  it("soft still explains the limit and still offers exactly one affordance", () => {
+    const { getByText, getAllByRole } = render(
+      <NativeUpsellModal visible resource="board" variant="soft" onDismiss={() => {}} />
+    );
+    expect(getByText(/5 boards/i)).toBeTruthy();
+    expect(getAllByRole("button")).toHaveLength(1);
+  });
 });

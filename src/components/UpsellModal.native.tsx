@@ -19,6 +19,17 @@ import type { Plan } from "../types";
 // (react-native itself exports things capable of opening an outside link;
 // nothing here reaches for any of them.)
 
+// The soft/hard cadence prop (`variant`, ROADMAP.md:608 item 14 — "Skip on
+// first attempt; harder push on second") is part of the shared props contract
+// and is deliberately NOT destructured below, the same way `workspaceId`
+// already isn't. This body has nothing for "soft" to withhold: everything the
+// gentle variant exists to omit is already absent here unconditionally,
+// because the COMPLIANCE INVARIANT above forbids it on native at all. So the
+// two variants coincide, which is the correct outcome rather than an
+// unimplemented half — and the prop stays on the contract so that any native
+// affordance added here later inherits the cadence instead of having to
+// rediscover it. Both facts are pinned by this component's test file.
+
 export type { UpsellModalProps };
 
 export default function UpsellModal({ visible, resource, onDismiss, plan }: UpsellModalProps) {

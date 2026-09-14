@@ -257,14 +257,37 @@ describe("board Q&A is reachable from the board screen", () => {
     expect(screen).toMatch(/onOpenBoardQa=\{\(\) => setBoardQaVisible\(true\)\}/);
   });
 
+  // The three assertions below tracked `setUpsellResource("…")` until the
+  // soft/hard cadence (ROADMAP.md:608 item 14) replaced that `useState` setter
+  // with `useUpsellCadence`'s `show`, which additionally resolves how hard the
+  // modal pushes. Only the spelling of the call moved; what is pinned — that
+  // each of these denials routes to the shared upsell rather than a bespoke
+  // error — is unchanged, and the new assertion below this group makes the set
+  // STRICTLY tighter than it was: it now also pins that NO gate on the screen
+  // bypasses the cadence, which nothing checked before.
   it("routes a presenter plan denial to the same upsell as every other quota denial (Fix Wave F2)", () => {
-    expect(screen).toMatch(/onUpgradeRequested=\{\(\) => setUpsellResource\("presenter"\)\}/);
+    expect(screen).toMatch(/onUpgradeRequested=\{\(\) => upsell\.show\("presenter"\)\}/);
   });
 
   it("passes the presenter plan without the \"?? free\" fallback (C1 — fail open on unknown)", () => {
     expect(screen).toMatch(
-      /plan=\{doc\.boardWorkspace\?\.plan\}\s*\n\s*onUpgradeRequested=\{\(\) => setUpsellResource\("presenter"\)\}/
+      /plan=\{doc\.boardWorkspace\?\.plan\}\s*\n\s*onUpgradeRequested=\{\(\) => upsell\.show\("presenter"\)\}/
     );
+  });
+
+  it("routes EVERY gate on this screen through the cadence hook, leaving no path that shows the full sell on a first attempt", () => {
+    // The regression this closes, and the reason it is worth a source scan:
+    // the cadence is opt-in per call site. A seventh gate added later that
+    // reached for the old `setUpsellResource` shape — or a merge that restored
+    // one of the six — would push hard on a user's first encounter with it,
+    // and no rendering test would notice, because the modal would be doing
+    // exactly what it was told. Counted, not merely matched, so dropping a
+    // call site fails here too.
+    expect(screen).not.toMatch(/setUpsellResource/);
+    expect(screen.match(/upsell\.show\(/g)).toHaveLength(6);
+    expect(screen).toMatch(/upsellResource=\{upsell\.resource\}/);
+    expect(screen).toMatch(/upsellVariant=\{upsell\.variant\}/);
+    expect(screen).toMatch(/onDismissUpsell=\{upsell\.dismiss\}/);
   });
 
   it("passes the voice-note plan without the \"?? free\" fallback (fails open on unknown)", () => {
@@ -310,7 +333,7 @@ describe("board Q&A is reachable from the board screen", () => {
   });
 
   it("routes a board Q&A plan denial to the same upsell as every other quota denial", () => {
-    expect(screen).toMatch(/setUpsellResource\("boardQa"\)/);
+    expect(screen).toMatch(/upsell\.show\("boardQa"\)/);
   });
 
   it("resolves citation liveness against the board's live elements, not a constant", () => {

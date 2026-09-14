@@ -18,10 +18,22 @@ import {
 // THROUGH one of these would be caught by nothing else, which is exactly
 // why upsellCopy.ts is listed even though PricingBody.native.tsx doesn't
 // import it either — the guard is what keeps both facts true.
+// WIDENED for the soft/hard upsell cadence (ROADMAP.md:608 item 14): the two
+// modules that decide which body the upsell shows are reached from
+// app/board/[id].tsx, which renders on native, so they carry the same
+// invariant as the three already here. Belt and braces with the
+// NO_PAYMENT_CONTENT scan in UpsellModal.test.tsx — that pattern includes
+// /price/i and so already rejects the literal string "pricingCopy" — kept
+// anyway because the two existing upsell entries are redundant with it in
+// exactly the same way, and because THIS file is the one someone editing
+// pricingCopy.ts will have open. Strictly additive: no entry was removed and
+// the assertion is unchanged.
 const MUST_NEVER_IMPORT_PRICING_COPY: Array<[label: string, relPath: string]> = [
   ["UpsellModal.native.tsx", "../../components/UpsellModal.native.tsx"],
   ["upsellCopy.ts", "../../components/upsellCopy.ts"],
   ["PricingBody.native.tsx", "../../components/PricingBody.native.tsx"],
+  ["services/upsellCadence.ts", "../../services/upsellCadence.ts"],
+  ["hooks/useUpsellCadence.ts", "../../hooks/useUpsellCadence.ts"],
 ];
 
 describe("planFeatures — driven by PLAN_LIMITS, never retyped", () => {

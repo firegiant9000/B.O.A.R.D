@@ -41,7 +41,7 @@ import {
   isBoardQaConfigured,
   CANVAS_CITATION_KINDS,
 } from "../../src/services/boardQaService";
-import type { UpsellResource } from "../../src/components/upsellCopy";
+import { useUpsellCadence } from "../../src/hooks/useUpsellCadence";
 import { captureException } from "../../src/lib/errorReporting";
 import { captureBoardImage, captureSelectionImage } from "../../src/utils/canvasCapture";
 import type { EmbedScope } from "../../src/types";
@@ -175,7 +175,16 @@ export default function BoardScreen(
   const [boardQaVisible, setBoardQaVisible] = useState(false);
   // The plan-limit upsell shown instead of a generic error when session
   // create or an AI affordance is denied for being over its cap.
-  const [upsellResource, setUpsellResource] = useState<UpsellResource | null>(null);
+  //
+  // Not a bare `useState` any more (Month 6, ROADMAP.md:608 item 14 —
+  // "Skip on first attempt; harder push on second"). The hook keeps the same
+  // show/hide shape, and additionally resolves HOW HARD each showing pushes
+  // from a persisted per-resource attempt count. Screen state could not have
+  // held that count: hitting a gate routinely remounts this screen, so a
+  // counter in `useState` would reset and every attempt would look like the
+  // first, making the whole escalation a no-op. See
+  // src/services/upsellCadence.ts for where the count actually lives.
+  const upsell = useUpsellCadence();
 
   // Ref to the underlying SVG element on web, for canvas snapshot capture
   const canvasSvgRef = useRef<any>(null);
@@ -255,7 +264,7 @@ export default function BoardScreen(
     onError: showError,
     // Month 6 — Scan's OCR step shares the same "aiCall" quota (and the same
     // upsell) as the toolbar's OCR/explain/diagram affordances below.
-    onQuotaExceeded: () => setUpsellResource("aiCall"),
+    onQuotaExceeded: () => upsell.show("aiCall"),
   });
 
   // Month 5 — resolved before `useBoardCollab` (which needs it as an input,
@@ -405,7 +414,7 @@ export default function BoardScreen(
     // The three AI affordances share one "aiCall" resource — the generic
     // AI-call quota (src/services/quotaService.ts#QuotaResource) all of
     // OCR/explain/diagram gate through the same choke point on.
-    onQuotaExceeded: () => setUpsellResource("aiCall"),
+    onQuotaExceeded: () => upsell.show("aiCall"),
     // Month 6 — flashcards are saved to the CALLER's own deck
     // (`users/{uid}/decks/...`), never board-scoped, so the affordance needs
     // the uid even though nothing else this bridge does.
@@ -697,7 +706,7 @@ export default function BoardScreen(
           onPausePresenting={collab.pausePresenting}
           onResumePresenting={collab.resumePresenting}
           plan={doc.boardWorkspace?.plan}
-          onUpgradeRequested={() => setUpsellResource("presenter")}
+          onUpgradeRequested={() => upsell.show("presenter")}
         />
       )}
 
@@ -929,11 +938,12 @@ export default function BoardScreen(
         onCloseBgPicker={() => setBgPickerVisible(false)}
         sessionVisible={sessionModalVisible}
         onCloseSession={() => setSessionModalVisible(false)}
-        upsellResource={upsellResource}
-        onDismissUpsell={() => setUpsellResource(null)}
+        upsellResource={upsell.resource}
+        upsellVariant={upsell.variant}
+        onDismissUpsell={upsell.dismiss}
         onSessionQuotaExceeded={() => {
           setSessionModalVisible(false);
-          setUpsellResource("session");
+          upsell.show("session");
         }}
         colorPickerVisible={colorPickerVisible}
         onCloseColorPicker={() => setColorPickerVisible(false)}
@@ -959,7 +969,7 @@ export default function BoardScreen(
         workspaceSwatches={workspaceSwatches}
         onAddSwatch={handleAddSwatch}
         onRemoveSwatch={handleRemoveSwatch}
-        onRequestPaletteUpgrade={() => setUpsellResource("customPalette")}
+        onRequestPaletteUpgrade={() => upsell.show("customPalette")}
         opacityControlDisabled={elements.selectionOpacityInert}
         widthPickerVisible={widthPickerVisible}
         onCloseWidthPicker={() => setWidthPickerVisible(false)}
@@ -1020,7 +1030,7 @@ export default function BoardScreen(
         onSelectCitation={handleSelectCitation}
         onBoardQaQuotaExceeded={() => {
           setBoardQaVisible(false);
-          setUpsellResource("boardQa");
+          upsell.show("boardQa");
         }}
       />
     </KeyboardAvoidingView>
