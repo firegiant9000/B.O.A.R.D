@@ -184,7 +184,7 @@ export default function BoardScreen(
   // counter in `useState` would reset and every attempt would look like the
   // first, making the whole escalation a no-op. See
   // src/services/upsellCadence.ts for where the count actually lives.
-  const upsell = useUpsellCadence();
+  const upsell = useUpsellCadence(user?.uid);
 
   // Ref to the underlying SVG element on web, for canvas snapshot capture
   const canvasSvgRef = useRef<any>(null);

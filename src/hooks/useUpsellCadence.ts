@@ -55,7 +55,14 @@ interface CadenceState {
 
 const HIDDEN: CadenceState = { resource: null, variant: "soft" };
 
-export function useUpsellCadence(): UpsellCadenceState {
+/**
+ * @param uid The signed-in user whose cadence this is. Passed through rather
+ *   than read from auth here so the hook stays testable without an auth
+ *   provider, matching how the board screen already threads `user?.uid` into
+ *   its other hooks. Empty/undefined (an embed session) keeps every notice
+ *   soft and records nothing — see `upsellCadence.ts`'s header.
+ */
+export function useUpsellCadence(uid: string | undefined): UpsellCadenceState {
   // ONE state object, not two `useState`s. Two would be committed together by
   // React's batching today, but nothing would enforce that — and the failure
   // mode of them ever separating is a frame of the wrong body, which is the
@@ -76,13 +83,16 @@ export function useUpsellCadence(): UpsellCadenceState {
     };
   }, []);
 
-  const show = useCallback((resource: UpsellResource) => {
-    void recordUpsellAttempt(resource)
-      .catch((): UpsellVariant => "soft")
-      .then((variant) => {
-        if (mounted.current) setState({ resource, variant });
-      });
-  }, []);
+  const show = useCallback(
+    (resource: UpsellResource) => {
+      void recordUpsellAttempt(resource, uid)
+        .catch((): UpsellVariant => "soft")
+        .then((variant) => {
+          if (mounted.current) setState({ resource, variant });
+        });
+    },
+    [uid]
+  );
 
   const dismiss = useCallback(() => setState(HIDDEN), []);
 

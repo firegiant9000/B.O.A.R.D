@@ -21,6 +21,11 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import { useUpsellCadence } from "../useUpsellCadence";
 
+/** The signed-in user these tests act as. The cadence is stored per-uid (see
+ *  `upsellCadence.ts`'s header on shared classroom tablets), so every mount
+ *  here has to present the same one for the count to carry across them. */
+const UID = "student-a";
+
 describe("useUpsellCadence — resolves the variant before the modal ever renders", () => {
   beforeEach(() => {
     mockStore = {};
@@ -29,12 +34,12 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
   });
 
   it("starts with nothing shown", () => {
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
     expect(result.current.resource).toBeNull();
   });
 
   it("shows the soft notice on a first gate hit and the hard push on the second", async () => {
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
 
     act(() => result.current.show("board"));
     await waitFor(() => expect(result.current.resource).toBe("board"));
@@ -58,7 +63,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
   // between the two attempts: NOTHING in React survives the unmount, and the
   // second attempt must still resolve "hard" purely from what reached storage.
   it("escalates across a full unmount and remount — the count lives in storage, not in component state", async () => {
-    const first = renderHook(() => useUpsellCadence());
+    const first = renderHook(() => useUpsellCadence(UID));
     act(() => first.result.current.show("session"));
     await waitFor(() => expect(first.result.current.resource).toBe("session"));
     expect(first.result.current.variant).toBe("soft");
@@ -67,7 +72,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
 
     // A brand-new hook instance with no shared React state whatsoever. If the
     // counter were component-local, this would read "soft" again forever.
-    const second = renderHook(() => useUpsellCadence());
+    const second = renderHook(() => useUpsellCadence(UID));
     expect(second.result.current.resource).toBeNull(); // premise: genuinely fresh state
     act(() => second.result.current.show("session"));
     await waitFor(() => expect(second.result.current.resource).toBe("session"));
@@ -75,7 +80,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
   });
 
   it("keeps each gate on its own cadence across remounts", async () => {
-    const first = renderHook(() => useUpsellCadence());
+    const first = renderHook(() => useUpsellCadence(UID));
     act(() => first.result.current.show("aiCall"));
     await waitFor(() => expect(first.result.current.variant).toBe("soft"));
     act(() => first.result.current.dismiss());
@@ -85,7 +90,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
 
     // A different gate, on a fresh mount, is still this user's first encounter
     // with THAT gate — being out of AI calls says nothing about sessions.
-    const second = renderHook(() => useUpsellCadence());
+    const second = renderHook(() => useUpsellCadence(UID));
     act(() => second.result.current.show("session"));
     await waitFor(() => expect(second.result.current.resource).toBe("session"));
     expect(second.result.current.variant).toBe("soft");
@@ -99,7 +104,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
     // paired with a variant that hasn't been resolved for it.
     const seen: Array<{ resource: string | null; variant: string }> = [];
     const { result } = renderHook(() => {
-      const state = useUpsellCadence();
+      const state = useUpsellCadence(UID);
       seen.push({ resource: state.resource, variant: state.variant });
       return state;
     });
@@ -116,7 +121,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
 
   it("falls back to soft, not hard, when storage is unavailable", async () => {
     mockGetItemImpl = () => Promise.reject(new Error("storage unavailable"));
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
     act(() => result.current.show("boardQa"));
     await waitFor(() => expect(result.current.resource).toBe("boardQa"));
     expect(result.current.variant).toBe("soft");
@@ -130,13 +135,13 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
     mockGetItemImpl = () => {
       throw new Error("storage unavailable");
     };
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
     act(() => result.current.show("presenter"));
     await waitFor(() => expect(result.current.resource).toBe("presenter"));
   });
 
   it("dismiss clears the resource so the modal unmounts", async () => {
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
     act(() => result.current.show("customPalette"));
     await waitFor(() => expect(result.current.resource).toBe("customPalette"));
     act(() => result.current.dismiss());
@@ -159,7 +164,7 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
         release = resolve;
       });
 
-    const { result, unmount } = renderHook(() => useUpsellCadence());
+    const { result, unmount } = renderHook(() => useUpsellCadence(UID));
     act(() => result.current.show("board"));
     unmount();
 
@@ -174,13 +179,13 @@ describe("useUpsellCadence — resolves the variant before the modal ever render
 
   it("show() never rejects, so a gate hit can't surface as an unhandled rejection", async () => {
     mockGetItemImpl = () => Promise.reject(new Error("storage unavailable"));
-    const { result } = renderHook(() => useUpsellCadence());
+    const { result } = renderHook(() => useUpsellCadence(UID));
     expect(() => act(() => result.current.show("board"))).not.toThrow();
     await waitFor(() => expect(result.current.resource).toBe("board"));
   });
 
   it("keeps a stable identity for show/dismiss across renders, so callers can pass them into memoised children", () => {
-    const { result, rerender } = renderHook(() => useUpsellCadence());
+    const { result, rerender } = renderHook(() => useUpsellCadence(UID));
     const firstShow = result.current.show;
     const firstDismiss = result.current.dismiss;
     rerender({});

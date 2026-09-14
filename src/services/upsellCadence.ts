@@ -28,17 +28,23 @@ import type { UpsellResource, UpsellVariant } from "../components/upsellCopy";
 //
 //   1. A user on two devices gets the soft notice once on each, so their
 //      genuine second encounter with a gate is presented as their first.
-//   2. The inverse, on a shared device: this key is NOT scoped by uid, the way
-//      src/components/onboarding/onboardingStorage.ts and
-//      src/lib/pinnedBoards.ts scope theirs. On the shared classroom tablets
-//      those two modules were written for, the second person to sign in
-//      inherits the first person's count and can be pushed hard on a gate they
-//      have never personally hit. Scoping by uid would fix that and cost only
-//      threading a uid through; it is left out here because the cadence
-//      decision was specified as per-device, and because the board screen's
-//      uid is `""` for embed sessions, which would give every anonymous embed
-//      viewer one shared bucket anyway. Worth revisiting if the tablet case
-//      becomes real.
+//
+// PER-DEVICE, BUT STILL PER-UID. "Device-local" does not mean "shared by
+// everyone who uses the device". This key is scoped by uid for the same reason
+// src/components/onboarding/onboardingStorage.ts and src/lib/pinnedBoards.ts
+// scope theirs, and both name it explicitly: this app runs on shared classroom
+// tablets. Without the uid, the second student to sign in inherits the first
+// student's count and is pushed hard on a gate they have never personally hit
+// — which is the exact push this feature exists to withhold, aimed at exactly
+// the user Month 6 is meant to acquire.
+//
+// An absent uid does NOT fall back to a shared bucket. The board screen's uid
+// is empty for an embed session, and a single anonymous key would pool every
+// embed viewer's attempts into one counter — reintroducing the same defect
+// under a different name, and doing it to visitors who cannot upgrade anyway.
+// With no uid this records nothing and stays gentle forever: an unidentified
+// viewer sees the restrained notice every time, which is the correct answer
+// for someone the sell cannot apply to.
 //
 // FAILS SOFT, NEVER CLOSED. Every storage error resolves to "soft". A broken
 // or unavailable store must never be the thing that escalates someone to the
@@ -52,7 +58,8 @@ import type { UpsellResource, UpsellVariant } from "../components/upsellCopy";
  */
 export const HARD_PUSH_AT_ATTEMPT = 2;
 
-const key = (resource: UpsellResource) => `@board/upsellAttempt:${resource}`;
+const key = (uid: string, resource: UpsellResource) =>
+  `@board/upsellAttempt:${uid}:${resource}`;
 
 /**
  * Reads a stored counter back. Returns 0 — "no prior attempt", i.e. the gentle
@@ -72,19 +79,28 @@ function parseAttemptCount(raw: string | null): number {
 }
 
 /**
- * Records one encounter with `resource`'s gate and resolves how this one
- * should be presented. Counters are per-resource and independent: burning the
- * AI-call allowance twice must not make the first session-cap notice a hard
- * push, because that gate is genuinely new to the user.
+ * Records one encounter with `resource`'s gate for `uid` and resolves how this
+ * one should be presented. Counters are per-uid AND per-resource, both
+ * independent: burning the AI-call allowance twice must not make the first
+ * session-cap notice a hard push, because that gate is genuinely new to the
+ * user — and neither must another account's history on the same tablet.
+ *
+ * An empty/absent `uid` (an embed session) records nothing and always resolves
+ * "soft" — see this module's header on why that is not a fallback bucket.
  *
  * Never rejects. Callers are render paths that set component state from the
  * result; a throw here would surface as an unhandled rejection in the middle
  * of a quota denial the user is already dealing with.
  */
-export async function recordUpsellAttempt(resource: UpsellResource): Promise<UpsellVariant> {
+export async function recordUpsellAttempt(
+  resource: UpsellResource,
+  uid: string | undefined
+): Promise<UpsellVariant> {
+  if (!uid) return "soft";
+
   let prior: number;
   try {
-    prior = parseAttemptCount(await AsyncStorage.getItem(key(resource)));
+    prior = parseAttemptCount(await AsyncStorage.getItem(key(uid, resource)));
   } catch {
     // Read failed, so the real count is unknown. Return the gentle answer AND
     // write nothing: overwriting with "1" here would let a transient read
@@ -101,7 +117,7 @@ export async function recordUpsellAttempt(resource: UpsellResource): Promise<Ups
   const next = Math.min(prior + 1, HARD_PUSH_AT_ATTEMPT);
   if (next > prior) {
     try {
-      await AsyncStorage.setItem(key(resource), String(next));
+      await AsyncStorage.setItem(key(uid, resource), String(next));
     } catch {
       // Best-effort, exactly like onboardingStorage's own persist. A failed
       // write just means this attempt isn't remembered, so the user may get
