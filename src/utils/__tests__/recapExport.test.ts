@@ -6,6 +6,25 @@ jest.mock("expo-image-manipulator", () => ({
 }));
 jest.mock("../canvasCapture", () => ({ captureBoardImageForExport: jest.fn() }));
 
+// Month 6 (ROADMAP A3) — native SVG export. `expo-file-system`'s SDK 55 `File`
+// class is a thin wrapper over a native module, so it's stubbed here the same
+// way expo-print/expo-sharing above are. Note `write` is SYNCHRONOUS in
+// 55.0.26 (`write(content, options?): void`, not a promise) — the stub matches
+// that so a test can't pass against a shape the installed package doesn't have.
+const mockFileWrites: { uri: string; content: string }[] = [];
+jest.mock("expo-file-system", () => ({
+  Paths: { cache: "file:///cache" },
+  File: class MockFile {
+    uri: string;
+    constructor(dir: string, name: string) {
+      this.uri = `${dir}/${name}`;
+    }
+    write(content: string) {
+      mockFileWrites.push({ uri: this.uri, content });
+    }
+  },
+}));
+
 import { Platform } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -424,6 +443,9 @@ describe("exportBoardPng", () => {
 
 describe("exportBoardSvg", () => {
   const originalOS = Platform.OS;
+  beforeEach(() => {
+    mockFileWrites.length = 0;
+  });
   afterEach(() => {
     Platform.OS = originalOS;
     jest.clearAllMocks();
@@ -447,9 +469,59 @@ describe("exportBoardSvg", () => {
   };
   const bounds: SvgExportBounds = { x: 0, y: 0, width: 100, height: 100 };
 
-  it("throws on native, naming the missing filesystem dependency, rather than silently doing nothing", async () => {
+  // Month 6 (ROADMAP A3) — SVG is now the third format on native too, not just
+  // on web. `expo-file-system` (approved and added for exactly this) writes the
+  // document to a real cache file; from there it is the same
+  // produce-a-file-then-share-it shape `exportBoardPdf` already uses.
+  it("writes the REAL serialized SVG document to a file and hands it to the native share sheet", async () => {
     Platform.OS = "ios";
-    await expect(exportBoardSvg([pathEl], bounds)).rejects.toThrow(/filesystem/i);
+    (Sharing.isAvailableAsync as jest.Mock).mockResolvedValue(true);
+
+    await exportBoardSvg([pathEl], bounds, { title: "My Board" });
+
+    expect(mockFileWrites).toHaveLength(1);
+    expect(mockFileWrites[0].uri).toBe("file:///cache/My-Board.svg");
+    // Prove the real toSvgDocument output was written, not a placeholder or
+    // an empty file that a share sheet would happily accept anyway.
+    expect(mockFileWrites[0].content).toContain("<svg");
+    expect(mockFileWrites[0].content).toContain("<path");
+    expect(mockFileWrites[0].content).toContain('d="M 0 0 L 10 10"');
+
+    expect(Sharing.shareAsync).toHaveBeenCalledWith("file:///cache/My-Board.svg", {
+      mimeType: "image/svg+xml",
+      dialogTitle: "My Board — Export",
+      UTI: "public.svg-image",
+    });
+  });
+
+  it("falls back to the untitled filename on native, same as the web download does", async () => {
+    Platform.OS = "android";
+    (Sharing.isAvailableAsync as jest.Mock).mockResolvedValue(true);
+
+    await exportBoardSvg([pathEl], bounds);
+
+    expect(mockFileWrites[0].uri).toBe("file:///cache/board.svg");
+    expect(Sharing.shareAsync).toHaveBeenCalledWith(
+      "file:///cache/board.svg",
+      expect.objectContaining({ dialogTitle: "Board — Export" })
+    );
+  });
+
+  it("does not throw into the caller when no share sheet is available, matching the PDF path", async () => {
+    Platform.OS = "ios";
+    (Sharing.isAvailableAsync as jest.Mock).mockResolvedValue(false);
+
+    await expect(exportBoardSvg([pathEl], bounds)).resolves.toBeUndefined();
+    // The file is still written — only the share step is skipped, exactly as
+    // exportBoardPdf/exportBoardPng leave their produced file behind.
+    expect(mockFileWrites).toHaveLength(1);
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+  });
+
+  it("no longer throws the 'not available on this platform' error on native", async () => {
+    Platform.OS = "ios";
+    (Sharing.isAvailableAsync as jest.Mock).mockResolvedValue(true);
+    await expect(exportBoardSvg([pathEl], bounds)).resolves.not.toThrow();
   });
 
   it("triggers a browser download of the actual serialized SVG document on web, not just a button press", async () => {
@@ -473,6 +545,11 @@ describe("exportBoardSvg", () => {
     expect(svg).toContain("<path");
     expect(svg).toContain('d="M 0 0 L 10 10"');
     expect(link.click).toHaveBeenCalled();
+
+    // Web is unchanged by the native work: still an `<a download>`, never a
+    // cache file or a share sheet.
+    expect(mockFileWrites).toHaveLength(0);
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
 
     delete (global as any).document;
   });

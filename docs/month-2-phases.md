@@ -417,6 +417,12 @@ deferred** — selection is ephemeral and there is no persistent group primitive
 selection/transform changes) in its own right, out of a shortcuts phase per this
 plan's own "bind actions that already exist" rationale.
 
+> **Superseded in Month 6 — the `N` half only.** `N`→triangle was this plan's own
+> leftover-letter choice; `ROADMAP.md:243` assigns `N` to the **sticky note** and
+> gives triangle no key at all, and where the plan and the spec conflict the spec
+> wins. Triangle is now reachable through `ShapeOptionsBar`'s kind row and shape
+> recognition rather than a shortcut. The rest of this decision stands.
+
 **Shipped:**
 - **Pure resolver** `src/lib/shortcuts.ts` — a single key-chord → action table
   (tools, shapes, undo/redo, select-all/copy/paste/duplicate, delete, deselect,

@@ -245,7 +245,8 @@ from the same source, so it can't drift from what's wired.
 | Keys | Action |
 | --- | --- |
 | `P` `E` `T` `S` `H` | Pen · Eraser · Text · Select · Hand (pan) |
-| `R` `O` `L` `A` `N` | Rectangle · Oval · Line · Arrow · Triangle (switches to the shape tool) |
+| `R` `O` `L` `A` | Rectangle · Oval · Line · Arrow (switches to the shape tool) |
+| `N` | Insert a sticky note (hidden, and inert, for a session that can't edit) |
 | `⌘/Ctrl` + `Z` / `⇧Z` (or `Y`) | Undo / Redo (paths only — see limits) |
 | `⌘/Ctrl` + `A` `C` `V` `D` | Select all · Copy · Paste · Duplicate |
 | `⌘/Ctrl` + `]` / `[` | Bring to front / Send to back |
@@ -255,6 +256,9 @@ from the same source, so it can't drift from what's wired.
 | `⌘/Ctrl` + `+` / `−` | Zoom in / out |
 | `Space` + drag | Temporary pan (the Hand tool is the persistent equivalent) |
 | `?` | Toggle the shortcuts cheat sheet |
+
+Triangle has no key of its own — pick it from the shape tool's kind row, or draw
+one and accept the "perfect it?" offer.
 
 Shortcuts are suppressed while editing a text element so the field gets normal
 keystrokes. On web they bind to DOM keyboard events (Cmd/Ctrl+V flows through the

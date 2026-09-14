@@ -2,6 +2,9 @@ import { Platform } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+// Month 6 (ROADMAP A3) — the app's ONLY use of expo-file-system, added to close
+// native SVG export. See `exportBoardSvg` for the SDK 55 API notes.
+import { File, Paths } from "expo-file-system";
 import type { Session, SessionSummary, ParticipantSnapshot } from "../types";
 import { toSvgDocument, SvgExportElement, SvgExportBounds } from "../lib/svgExport";
 import { tilePages, A4 } from "../lib/pdfTiling";
@@ -438,48 +441,80 @@ export interface BoardSvgExportOptions {
 }
 
 /**
- * Downloads the board as a single, self-contained SVG document — WEB ONLY.
- * Reuses `exportBoardPng`'s own web download mechanism (build an `<a
- * download>`, click it, remove it — no new dependency, no WebView) and
- * `exportBoardPdf`'s self-contained-image fetch (`buildImageHrefs`), for
- * the same reason PDF needs it: a downloaded file is meant to outlive this
- * session and this device, so a bare Storage-URL reference isn't good
- * enough.
+ * Exports the board as a single, self-contained SVG document on BOTH platforms
+ * — web downloads it, native writes it and opens the share sheet. Uses
+ * `exportBoardPdf`'s self-contained-image fetch (`buildImageHrefs`) for the
+ * same reason PDF needs it: an exported file is meant to outlive this session
+ * and this device, so a bare Storage-URL reference isn't good enough.
  *
- * NATIVE GAP — stated plainly, not a "verify later" caveat like PNG's G7
- * one: this function is NOT implemented on native, and that isn't a risk to
- * confirm, it's a real capability gap. `Sharing.shareAsync` needs a local
- * file; writing an arbitrary SVG text file to one needs a filesystem-write
- * dependency (`expo-file-system` is the obvious candidate) that is not
- * currently a dependency of this app and has not been approved to add.
- * PNG's native path sidesteps this via `expo-image-manipulator`, which only
- * accepts raster sources (a local file or a base64 data URI), never an
- * arbitrary text string; PDF's sidesteps it via `expo-print`, which renders
- * HTML into its own PDF file rather than writing one directly. Neither
- * trick extends to a raw SVG document. This throws on native — loudly,
- * naming why — rather than silently no-op'ing, so a caller can't wire a
- * dead button by accident. Adding `expo-file-system` (or another way to
- * close this gap) is a dependency decision for a human, not this function.
+ * Web reuses `exportBoardPng`'s own download mechanism (build an `<a
+ * download>`, click it, remove it — no WebView).
+ *
+ * NATIVE (Month 6, ROADMAP A3 — this closed a real capability gap, not a
+ * verify-later caveat like PNG's G7 one). The gap was never the serializer:
+ * `Sharing.shareAsync` needs a LOCAL FILE, and until `expo-file-system` was
+ * approved nothing here could write an arbitrary text file to one. PNG's
+ * native path sidesteps that via `expo-image-manipulator`, which only accepts
+ * raster sources (a local file or a base64 data URI), never an arbitrary text
+ * string; PDF's sidesteps it via `expo-print`, which renders HTML into its own
+ * PDF file rather than writing one directly. Neither trick extends to a raw
+ * SVG document — hence the dependency, which exists in this app for this one
+ * call and nothing else.
+ *
+ * SDK 55 API, verified against the INSTALLED expo-file-system@55.0.26 rather
+ * than from memory (the pre-SDK-54 `writeAsStringAsync` module functions are
+ * gone):
+ *   - `new File(Paths.cache, name)` — constructs a reference; the path need not
+ *     exist yet.
+ *   - `file.write(content)` is **synchronous** and returns `void`, NOT a
+ *     promise. Do not `await` it and do not assume a rejected promise on
+ *     failure — it throws.
+ *   - `file.create()` is deliberately NOT called first: it throws when the file
+ *     already exists, which is the normal case for a second export of the same
+ *     board, whereas `write` creates-or-overwrites.
+ *
+ * Cache, not documents: an export is a hand-off to the share sheet, not
+ * something the app owns afterwards, so it belongs where the OS is free to
+ * reclaim it — the same stance `expo-print`'s own `printToFileAsync` takes for
+ * the PDF path above.
+ *
+ * A device with no share sheet (`Sharing.isAvailableAsync()` false) is a
+ * silent no-op after the write, exactly as in `exportBoardPdf`/`exportBoardPng`
+ * — the file is still produced, only the hand-off is skipped.
  */
 export async function exportBoardSvg(
   elements: SvgExportElement[],
   bounds: SvgExportBounds,
   opts?: BoardSvgExportOptions
 ): Promise<void> {
-  if (Platform.OS !== "web") {
-    throw new Error(
-      "SVG export isn't available on this platform yet: writing the file for the share sheet needs a filesystem dependency (e.g. expo-file-system) this app doesn't have, and adding one hasn't been approved."
-    );
-  }
-  if (typeof document === "undefined") return;
+  // Web-without-a-DOM (SSR/static render) bails before the image fetch, as it
+  // did when this function was web-only.
+  if (Platform.OS === "web" && typeof document === "undefined") return;
+
   const imageHrefs = await buildImageHrefs(elements, opts?.imageHrefs);
   const svg = toSvgDocument(elements, bounds, { imageHrefs });
+  const title = opts?.title ?? "Board";
   const filename = `${(opts?.title ?? "board").replace(/[^a-z0-9-_]+/gi, "-")}.svg`;
 
-  const link = document.createElement("a");
-  link.href = svgPageDataUri(svg);
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  if (Platform.OS === "web") {
+    const link = document.createElement("a");
+    link.href = svgPageDataUri(svg);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return;
+  }
+
+  const file = new File(Paths.cache, filename);
+  file.write(svg);
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(file.uri, {
+      mimeType: "image/svg+xml",
+      dialogTitle: `${title} — Export`,
+      // Apple's uniform type identifier for SVG, the counterpart to the
+      // `com.adobe.pdf` / `public.png` already passed above.
+      UTI: "public.svg-image",
+    });
+  }
 }

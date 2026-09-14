@@ -268,10 +268,12 @@ export default function ShareBoardModal({
     }
   };
 
-  // Month 6 (ROADMAP A3) — web-only: `exportBoardSvg` throws on native (see
-  // its own doc comment) rather than silently no-op'ing, so this button is
-  // only ever rendered on web in the first place (below) — this handler
-  // never runs on native.
+  // Month 6 (ROADMAP A3) — runs on BOTH platforms. `exportBoardSvg` used to
+  // throw on native for want of a filesystem dependency, so this button was
+  // rendered on web only; `expo-file-system` closed that, and the button is
+  // now unconditional (below) like PNG's and PDF's. The error branch here is
+  // no longer a dead "can't happen on native" path — a failed cache write or
+  // a rejected share surfaces through it the same way a web failure does.
   const handleExportSvg = async () => {
     const bounds = buildExportBounds();
     if (!bounds) {
@@ -443,11 +445,11 @@ export default function ShareBoardModal({
           <AttachToClassButton boardId={boardId} isAdmin={isAdmin} />
 
           {/* Month 6 (ROADMAP A3 — Print + export polish). PNG rasterizes the
-              live canvas; PDF tiles the board across A4 pages; SVG downloads
-              the same standalone document `toSvgDocument` produces — web
-              only for now (see exportBoardSvg's own doc comment for exactly
-              why native isn't wired: a real, stated gap, not a "coming
-              soon"). PNG/PDF work on both platforms. */}
+              live canvas; PDF tiles the board across A4 pages; SVG exports the
+              same standalone document `toSvgDocument` produces. All three work
+              on both platforms — web downloads the file, native writes it and
+              opens the share sheet. SVG was web-only until `expo-file-system`
+              was added for it; see `exportBoardSvg`'s NATIVE section. */}
           <Text style={styles.label}>Export Board</Text>
           <View style={styles.exportRow}>
             <TouchableOpacity
@@ -474,20 +476,22 @@ export default function ShareBoardModal({
               )}
               <Text style={styles.exportBtnText}>PDF</Text>
             </TouchableOpacity>
-            {Platform.OS === "web" && (
-              <TouchableOpacity
-                style={styles.exportBtn}
-                onPress={handleExportSvg}
-                disabled={exportBusy !== null}
-              >
-                {exportBusy === "svg" ? (
-                  <ActivityIndicator size="small" color="#2563eb" />
-                ) : (
-                  <Ionicons name="code-slash-outline" size={16} color="#2563eb" />
-                )}
-                <Text style={styles.exportBtnText}>SVG</Text>
-              </TouchableOpacity>
-            )}
+            {/* Month 6 (ROADMAP A3) — no longer behind `Platform.OS === "web"`:
+                `exportBoardSvg` now writes the file via expo-file-system and
+                shares it on native, so gating this would hide a working
+                format. See that function's NATIVE section. */}
+            <TouchableOpacity
+              style={styles.exportBtn}
+              onPress={handleExportSvg}
+              disabled={exportBusy !== null}
+            >
+              {exportBusy === "svg" ? (
+                <ActivityIndicator size="small" color="#2563eb" />
+              ) : (
+                <Ionicons name="code-slash-outline" size={16} color="#2563eb" />
+              )}
+              <Text style={styles.exportBtnText}>SVG</Text>
+            </TouchableOpacity>
           </View>
           {exportError && (
             <Text style={[styles.hint, styles.errorText]}>{exportError}</Text>

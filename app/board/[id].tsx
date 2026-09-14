@@ -31,7 +31,7 @@ import { useBoardComments } from "../../src/hooks/useBoardComments";
 import { useBoardReactions } from "../../src/hooks/useBoardReactions";
 import { useBoardPolls } from "../../src/hooks/useBoardPolls";
 import type { NewPollInput } from "../../src/components/board/PollComposer";
-import type { CommandName } from "../../src/lib/shortcuts";
+import { gateShortcutCommands, type CommandName } from "../../src/lib/shortcuts";
 import { Point, Bounds, screenToBoard, boardToScreen } from "../../src/lib/viewport";
 import * as friendService from "../../src/services/friendService";
 import * as workspaceService from "../../src/services/workspaceService";
@@ -450,6 +450,19 @@ export default function BoardScreen(
     viewportCtl.stopFling();
   }, [collab.exitFollow, viewportCtl]);
 
+  // --- Content insert commands ---
+
+  // Month 6 — sticky notes. THE board's one insert action, deliberately defined
+  // once here rather than inline at the Toolbar prop: it now has two entry
+  // points (the toolbar button and the `N` shortcut, ROADMAP.md:243), and two
+  // copies of "resolve the viewport centre, then beginNote" is exactly how the
+  // two would drift onto different placement rules. Same board-space point the
+  // equation/code composers use (the current viewport centre) — `beginNote`
+  // itself decides pin-vs-attach from whatever is currently selected; see that
+  // function's own comment in useBoardElements.ts.
+  const handleInsertNote = () =>
+    elements.beginNote(screenToBoard(viewport, canvasCenter()));
+
   // --- Screen-level effects ---
 
   // Load blocked IDs on mount
@@ -627,29 +640,52 @@ export default function BoardScreen(
   // The shortcut command table. Reassigned every render (the ref indirection
   // above keeps the keyboard listeners stable) so each command always runs
   // against the current state.
-  shortcutCommandsRef.current = {
-    undo: elements.undo,
-    redo: elements.redo,
-    selectAll: elements.selectAllVisible,
-    copy: elements.copySelected,
-    // Month 5 — the same content-creation lock as the equivalent buttons
-    // (BoardCanvas's duplicate action, BoardOverlayLayer): both shortcuts
-    // write new elements, so both are gated while a presentation locks
-    // content creation. `onShortcutCommand` calls this table with `?.()`, so
-    // an undefined entry is already a silent no-op — no separate disabled
-    // state to wire for a keystroke.
-    paste: collab.presenterLocksContentCreation ? undefined : elements.shortcutPaste,
-    duplicate: collab.presenterLocksContentCreation ? undefined : elements.duplicateSelected,
-    delete: handleDeleteSelected,
-    deselect: deselectAll,
-    bringToFront: elements.bringToFront,
-    sendToBack: elements.sendToBack,
-    zoomIn: handleZoomIn,
-    zoomOut: handleZoomOut,
-    zoom100: viewportCtl.reset,
-    zoomFit: handleFitToContent,
-    help: tools.toggleCheatSheet,
-  };
+  //
+  // The gating that used to sit inline here as per-entry ternaries now runs
+  // through `gateShortcutCommands` (src/lib/shortcuts.ts). Two reasons, both
+  // real: the handler map is now TOTAL over `CommandName`, so a command added
+  // to that union won't compile until someone decides whether it needs a gate;
+  // and this screen has no test harness, so a permission decision expressed
+  // here is a permission decision nothing can assert. See that function's doc
+  // comment for why the note-insert gate in particular is a security-shaped
+  // concern rather than a cosmetic one.
+  shortcutCommandsRef.current = gateShortcutCommands(
+    {
+      undo: elements.undo,
+      redo: elements.redo,
+      selectAll: elements.selectAllVisible,
+      copy: elements.copySelected,
+      paste: elements.shortcutPaste,
+      duplicate: elements.duplicateSelected,
+      // Month 6 — `N` (ROADMAP.md:243). The SAME function object the Toolbar's
+      // note button is wired to below, not a second call site that happens to
+      // do the same thing.
+      insertNote: handleInsertNote,
+      delete: handleDeleteSelected,
+      deselect: deselectAll,
+      bringToFront: elements.bringToFront,
+      sendToBack: elements.sendToBack,
+      zoomIn: handleZoomIn,
+      zoomOut: handleZoomOut,
+      zoom100: viewportCtl.reset,
+      zoomFit: handleFitToContent,
+      help: tools.toggleCheatSheet,
+    },
+    {
+      // Month 6 — mirrors the condition the note button is rendered behind:
+      // Toolbar.tsx returns its read-only row before the insert group when
+      // `canEdit` is false, and `canEdit` is exactly this value (passed to it
+      // below). A read-only viewer, a commenter, an audience member under a
+      // presenter lock and a view-scope embed all land here as false, and `N`
+      // does nothing for each of them — same as the hidden button.
+      canEdit: embedCanEdit,
+      // Month 5 — the same content-creation lock as the equivalent buttons
+      // (BoardCanvas's duplicate action, BoardOverlayLayer): paste and
+      // duplicate both write new elements, so both are gated while a
+      // presentation locks content creation.
+      canCreateContent: !collab.presenterLocksContentCreation,
+    }
+  );
 
   if (doc.loading) {
     return (
@@ -881,20 +917,16 @@ export default function BoardScreen(
           // editor's write here is reachable exactly like a shape's already is.
           // Gated only on the build-time flag.
           canInsertCode={codeService.isCodeConfigured()}
-          // Month 6 — sticky notes. Same board-space placement the equation/
-          // code composers use (the current viewport center) — `beginNote`
-          // itself decides pin-vs-attach from whatever is currently selected;
-          // see that function's own comment in useBoardElements.ts. No
+          // Month 6 — sticky notes. Placement/pin-vs-attach rationale lives on
+          // `handleInsertNote` above, which the `N` shortcut shares. No
           // `canInsertNote` override: unlike images/math/polls, a sticky note
           // needs neither Storage bytes nor a callable, so — like code
           // elements — there is nothing an embed editor's write here could
           // reach that firestore.rules' `notes` match (which carries the same
-          // `isEmbedEditor` disjunct) doesn't already allow.
-          onInsertNote={() =>
-            elements.beginNote(
-              screenToBoard(viewport, { x: canvasSize.width / 2, y: canvasSize.height / 2 })
-            )
-          }
+          // `isEmbedEditor` disjunct) doesn't already allow. The gate that does
+          // apply is `canEdit` above, which hides this whole group; the `N`
+          // shortcut is gated on that same value.
+          onInsertNote={handleInsertNote}
           onUndo={elements.undo}
           onRedo={elements.redo}
           canRedo={elements.canRedo}

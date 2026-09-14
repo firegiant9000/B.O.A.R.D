@@ -201,17 +201,24 @@ describe("ShareBoardModal — board export (Month 6, ROADMAP A3)", () => {
   });
 });
 
-describe("ShareBoardModal — SVG export (Month 6, ROADMAP A3, web only)", () => {
+describe("ShareBoardModal — SVG export (Month 6, ROADMAP A3, web + native)", () => {
   const originalOS = Platform.OS;
   afterEach(() => {
     Platform.OS = originalOS;
     jest.clearAllMocks();
   });
 
-  it("does not render the SVG download action on native", () => {
+  it("renders the SVG export action on native too, now that exportBoardSvg supports it", async () => {
+    // This used to assert the opposite: the button was hidden on native
+    // because `exportBoardSvg` threw there for want of a filesystem
+    // dependency. `expo-file-system` closed that gap, so hiding the button
+    // would now withhold a format that works.
     Platform.OS = "ios";
     renderModal();
-    expect(screen.queryByText("SVG")).toBeNull();
+    expect(screen.getByText("SVG")).toBeTruthy();
+
+    fireEvent.press(screen.getByText("SVG"));
+    await waitFor(() => expect(mockExportBoardSvg).toHaveBeenCalledTimes(1));
   });
 
   it("renders the SVG download action on web and wires it to exportBoardSvg with the converted elements and bounds", async () => {
@@ -228,14 +235,16 @@ describe("ShareBoardModal — SVG export (Month 6, ROADMAP A3, web only)", () =>
 
   it("surfaces exportBoardSvg's own thrown error message in the UI", async () => {
     Platform.OS = "web";
-    mockExportBoardSvg.mockRejectedValueOnce(
-      new Error("SVG export isn't available on this platform yet")
-    );
+    // Deliberately no longer the old "not available on this platform" string —
+    // that error no longer exists anywhere, and a test asserting on it would
+    // quietly keep a dead message alive. A cache-write failure is the kind of
+    // error this branch actually surfaces now.
+    mockExportBoardSvg.mockRejectedValueOnce(new Error("Couldn't write the SVG file."));
     renderModal();
     fireEvent.press(screen.getByText("SVG"));
 
     await waitFor(() =>
-      expect(screen.getByText("SVG export isn't available on this platform yet")).toBeTruthy()
+      expect(screen.getByText("Couldn't write the SVG file.")).toBeTruthy()
     );
   });
 });
