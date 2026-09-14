@@ -35,10 +35,16 @@ import * as friendService from "../../src/services/friendService";
 import { subscribeToNotifications } from "../../src/services/notificationService";
 import { getPinnedBoardIds, setPinnedBoardIds } from "../../src/lib/pinnedBoards";
 import { JoinBoardResult } from "../../src/services/boardService";
+import { isQuotaDenial } from "../../src/services/quotaService";
+import { track } from "../../src/services/analyticsService";
 import BoardCard from "../../src/components/BoardCard";
 import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
+import TemplateGalleryModal from "../../src/components/TemplateGalleryModal";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
+import UpsellModal from "../../src/components/UpsellModal";
+import OnboardingTutorial from "../../src/components/onboarding/OnboardingTutorial";
+import { useOnboardingTutorial } from "../../src/components/onboarding/useOnboardingTutorial";
 
 // Phase 10 — the workspace dashboard. Replaces the bare boards list as the default
 // tab landing: pinned boards + upcoming sessions above the fold, then recent boards,
@@ -71,6 +77,12 @@ export default function DashboardScreen() {
   // Phase 3/10: everything on the dashboard is scoped to the active workspace from
   // the switcher context, which defaults to the user's personal workspace.
   const { activeWorkspace, activeWorkspaceId, loading: workspaceLoading } = useWorkspace();
+  // Month 5 — the first-run tutorial (ROADMAP.md item 4). The show/hide
+  // decision and its AsyncStorage flag live in the hook, keyed per-uid; this
+  // screen only wires it up and renders the component.
+  const { visible: onboardingVisible, dismiss: dismissOnboarding } = useOnboardingTutorial(
+    user?.uid ?? null
+  );
   const router = useRouter();
   const navigation = useNavigation();
   const [boards, setBoards] = useState<Board[]>([]);
@@ -85,9 +97,18 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
+  // Month 6 — the template gallery, opened from the New Board modal below.
+  // All the create-from-template work (calling templateService, logging
+  // the activity event) lives in TemplateGalleryModal itself; this screen
+  // only opens it and reacts to onCreated/onQuotaDenied, the same split
+  // JoinBoardModal already uses.
+  const [templateGalleryVisible, setTemplateGalleryVisible] = useState(false);
   const [newBoardTitle, setNewBoardTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Board | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  // The board-create plan-limit upsell. Shown instead of a generic error
+  // when createBoard is denied for being over the board cap.
+  const [upsellVisible, setUpsellVisible] = useState(false);
 
   const fetchBoards = useCallback(async () => {
     if (!user || !activeWorkspaceId) return;
@@ -254,7 +275,15 @@ export default function DashboardScreen() {
     if (!newBoardTitle.trim() || !user || !activeWorkspaceId) return;
     try {
       const title = newBoardTitle.trim();
-      const boardId = await boardService.createBoard(title, user.uid, activeWorkspaceId);
+      // Real plan/count from already-loaded state (useWorkspace + this
+      // screen's own board list) — no extra Firestore read.
+      const boardId = await boardService.createBoard(
+        title,
+        user.uid,
+        activeWorkspaceId,
+        activeWorkspace?.plan,
+        boards.length
+      );
       // Phase 8: log the create to the workspace activity feed (fire-and-forget).
       activityService.logBoardCreated({
         workspaceId: activeWorkspaceId,
@@ -263,12 +292,49 @@ export default function DashboardScreen() {
         actorName: user.displayName ?? user.email ?? "Someone",
         title,
       });
+      // Month 6 — ROADMAP.md:685's `board_created`, blank-board half. The
+      // template half already emits from templateService.createBoardFromTemplate
+      // and is deliberately left alone; between them they cover both ways a
+      // user makes a board, and neither is `boardService.createBoard` itself,
+      // which onboardingService's sample seed calls directly for every new
+      // account (see src/services/__tests__/analyticsBoundary.test.ts).
+      //
+      // The template path sends `{ templateId }`, so the two are already
+      // separable downstream — `source: "blank"` names this one explicitly
+      // rather than leaving it as "the one with no templateId", which would
+      // make a future third create path indistinguishable from this one.
+      // Never the board's `title`: it is free text the user typed one line
+      // above, and the seam's scrub does not strip it.
+      track("board_created", { source: "blank" });
       setNewBoardTitle("");
       setCreateModalVisible(false);
       fetchBoards();
     } catch (error: any) {
-      showAlert("Error", error.message ?? "Failed to create board.");
+      // A board-cap denial can arrive two ways: the server's own rejection
+      // (after the callable ran) or the client-side pre-flight's own
+      // QuotaExceededError (thrown before the callable ever runs, with no
+      // `.code` at all) — isQuotaDenial catches both. Any other rejection
+      // (network, permission, ...) keeps the plain alert.
+      if (isQuotaDenial(error)) {
+        setCreateModalVisible(false);
+        setUpsellVisible(true);
+      } else {
+        showAlert("Error", error.message ?? "Failed to create board.");
+      }
     }
+  };
+
+  // Month 6 — the template gallery reports its own result; this screen just
+  // closes it and navigates, mirroring handleJoined above.
+  const handleTemplateCreated = (boardId: string) => {
+    setTemplateGalleryVisible(false);
+    fetchBoards();
+    router.push(`/board/${boardId}`);
+  };
+
+  const handleTemplateQuotaDenied = () => {
+    setTemplateGalleryVisible(false);
+    setUpsellVisible(true);
   };
 
   const handleDeleteBoard = (board: Board) => {
@@ -325,15 +391,51 @@ export default function DashboardScreen() {
         onJoined={handleJoined}
       />
 
+      <UpsellModal
+        visible={upsellVisible}
+        resource="board"
+        plan={activeWorkspace?.plan}
+        workspaceId={activeWorkspaceId ?? undefined}
+        onDismiss={() => setUpsellVisible(false)}
+      />
+
+      <TemplateGalleryModal
+        visible={templateGalleryVisible}
+        onClose={() => setTemplateGalleryVisible(false)}
+        onCreated={handleTemplateCreated}
+        onQuotaDenied={handleTemplateQuotaDenied}
+        ownerId={user?.uid ?? ""}
+        ownerName={user?.displayName ?? user?.email ?? "Someone"}
+        workspaceId={activeWorkspaceId ?? ""}
+        plan={activeWorkspace?.plan}
+        currentBoardCount={boards.length}
+      />
+
+      <OnboardingTutorial visible={onboardingVisible} onDismiss={dismissOnboarding} />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
         {isEmptyWorkspace ? (
+          // Month 5 (ROADMAP.md item 4) — value-oriented, not "you have 0
+          // boards": the copy names what the board is for, and the CTA is a
+          // real, tappable action (opens the same create-board flow as the
+          // FAB) rather than a passive "tap the + button" instruction.
           <View style={styles.emptyState}>
             <Ionicons name="easel-outline" size={64} color="#ccc" />
-            <Text style={styles.emptyTitle}>No boards yet</Text>
-            <Text style={styles.emptySubtitle}>Tap the + button to create your first board</Text>
+            <Text style={styles.emptyTitle}>Your study space starts here</Text>
+            <Text style={styles.emptySubtitle}>
+              Create a board to draw, plan, and meet — then schedule a session and get an AI recap
+              when you're done.
+            </Text>
+            <TouchableOpacity
+              style={styles.emptyCta}
+              onPress={() => setCreateModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.emptyCtaText}>Create your first board →</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <>
@@ -357,7 +459,17 @@ export default function DashboardScreen() {
             {/* Upcoming sessions (above the fold) */}
             <Section title="Upcoming sessions" icon="calendar-outline">
               {upcomingSessions.length === 0 ? (
-                <Text style={styles.sectionEmpty}>No upcoming sessions.</Text>
+                // Month 5 (ROADMAP.md item 4) — a real CTA into the schedule
+                // flow, not a flat "you have 0 sessions" line. Reachable only
+                // from here, where at least one board already exists (this
+                // section only renders when `!isEmptyWorkspace`), so the
+                // session-create screen's board picker is never empty.
+                <TouchableOpacity
+                  onPress={() => router.push("/session/create")}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.sectionEmptyCta}>Schedule your first study session →</Text>
+                </TouchableOpacity>
               ) : (
                 upcomingSessions.slice(0, 5).map((s) => (
                   <TouchableOpacity
@@ -550,6 +662,18 @@ export default function DashboardScreen() {
                 <Text style={styles.modalCreateText}>Create</Text>
               </TouchableOpacity>
             </View>
+            {/* Month 6 — the template gallery entry point. */}
+            <TouchableOpacity
+              style={styles.modalTemplateLink}
+              onPress={() => {
+                setCreateModalVisible(false);
+                setTemplateGalleryVisible(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="grid-outline" size={15} color="#2563eb" />
+              <Text style={styles.modalTemplateLinkText}>Or start from a template</Text>
+            </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -633,9 +757,10 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  sectionEmpty: {
-    fontSize: 13,
-    color: "#9ca3af",
+  sectionEmptyCta: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2563eb",
     paddingHorizontal: 16,
   },
   // ── Upcoming sessions ──
@@ -702,7 +827,22 @@ const styles = StyleSheet.create({
   emptySubtitle: {
     fontSize: 14,
     color: "#aaa",
-    marginTop: 4,
+    marginTop: 8,
+    textAlign: "center",
+    paddingHorizontal: 32,
+    lineHeight: 20,
+  },
+  emptyCta: {
+    marginTop: 24,
+    backgroundColor: "#2563eb",
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 24,
+  },
+  emptyCtaText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
   },
   fab: {
     position: "absolute",
@@ -808,6 +948,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#fff",
+  },
+  modalTemplateLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 16,
+    paddingVertical: 4,
+  },
+  modalTemplateLinkText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#2563eb",
   },
   // ── Delete / Leave confirmation modal ──
   deleteModalWrapper: {

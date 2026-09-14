@@ -75,6 +75,8 @@ export async function getBoardPaths(boardId: string): Promise<DrawPath[]> {
         // can treat every stroke uniformly.
         bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
         z: data.z,
+        penStyle: data.penStyle,
+        opacity: data.opacity,
         createdAt: data.createdAt?.toDate() ?? new Date(),
       };
     })
@@ -113,7 +115,9 @@ export async function clearBoardPaths(boardId: string): Promise<void> {
 // the already-computed field deltas (e.g. translated points + bbox) — the
 // service stays a dumb writer, mirroring savePath's "write what you're given".
 
-type PathUpdate = Partial<Pick<DrawPath, "points" | "color" | "strokeWidth" | "bbox" | "z">>;
+type PathUpdate = Partial<
+  Pick<DrawPath, "points" | "color" | "strokeWidth" | "bbox" | "z" | "opacity">
+>;
 
 export async function batchUpdatePaths(
   boardId: string,
@@ -152,24 +156,34 @@ export async function saveTextNote(
   return docRef.id;
 }
 
+// Month 6 — sticky-note polish's new fields, mapped straight through as
+// optional/`undefined` when absent (a pre-this-feature doc has none of
+// them). Deliberately NOT sanitized here: `sanitizeStickyColor`/
+// `sanitizeStickySize` (lib/stickyNotes.ts) run at every render site instead
+// (TextNoteOverlay.tsx), same "read is tolerant, render is where corrupt
+// values get caught" split `subscribeToBoardAudio`'s own x/y already uses.
+function mapNoteDoc(id: string, data: any): TextNote | null {
+  if (!data.content || !data.position) return null;
+  return {
+    id,
+    boardId: data.boardId ?? "",
+    userId: data.userId ?? "",
+    content: data.content,
+    position: data.position,
+    color: data.color,
+    size: data.size,
+    anchorElementId: data.anchorElementId,
+    createdAt: data.createdAt?.toDate() ?? new Date(),
+  };
+}
+
 export async function getBoardNotes(boardId: string): Promise<TextNote[]> {
   const notesRef = collection(db, "boards", boardId, "notes");
   const q = query(notesRef, orderBy("createdAt", "asc"));
   const snapshot = await getDocs(q);
 
   return snapshot.docs
-    .map((d) => {
-      const data = d.data();
-      if (!data.content || !data.position) return null;
-      return {
-        id: d.id,
-        boardId: data.boardId ?? "",
-        userId: data.userId ?? "",
-        content: data.content,
-        position: data.position,
-        createdAt: data.createdAt?.toDate() ?? new Date(),
-      };
-    })
+    .map((d) => mapNoteDoc(d.id, d.data()))
     .filter((n): n is NonNullable<typeof n> => n !== null);
 }
 
@@ -192,6 +206,22 @@ export async function clearBoardNotes(boardId: string): Promise<void> {
   for (const chunk of chunks) {
     const batch = writeBatch(db);
     chunk.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+// Month 6 — attach-to-element's cascade delete (mirrors
+// `audioService.batchDeleteVoiceNotes` in shape; simpler, since a sticky note
+// has no Storage object to clean up alongside its doc). Called by
+// `useBoardElements.ts`'s `cascadeDeleteNotesForElements` whenever an
+// element a note is attached to is deleted, so an attached note is never
+// left pointing at nothing.
+export async function batchDeleteTextNotes(boardId: string, ids: string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = writeBatch(db);
+    for (const noteId of ids.slice(i, i + 500)) {
+      batch.delete(doc(db, "boards", boardId, "notes", noteId));
+    }
     await batch.commit();
   }
 }
@@ -317,6 +347,8 @@ export function subscribeToBoardPaths(
           // can treat every stroke uniformly.
           bbox: data.bbox ?? computePathBbox(data.points, strokeWidth, tool) ?? undefined,
           z: data.z,
+          penStyle: data.penStyle,
+          opacity: data.opacity,
           createdAt: data.createdAt?.toDate() ?? new Date(),
         };
       })
@@ -337,18 +369,7 @@ export function subscribeToBoardNotes(
   const q = query(collection(db, "boards", boardId, "notes"), orderBy("createdAt", "asc"));
   return onSnapshot(q, (snapshot) => {
     const notes = snapshot.docs
-      .map((d) => {
-        const data = d.data();
-        if (!data.content || !data.position) return null;
-        return {
-          id: d.id,
-          boardId: data.boardId ?? "",
-          userId: data.userId ?? "",
-          content: data.content,
-          position: data.position,
-          createdAt: data.createdAt?.toDate() ?? new Date(),
-        };
-      })
+      .map((d) => mapNoteDoc(d.id, d.data()))
       .filter((n): n is NonNullable<typeof n> => n !== null);
     onChange(notes);
   });

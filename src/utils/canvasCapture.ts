@@ -4,6 +4,22 @@ import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 const MAX_EDGE = 1024;
 const MAX_DATA_URL_BYTES = 900_000;
 
+/**
+ * Month 6 — full-resolution capture for a deliberate "export my board as a
+ * PNG" action, as distinct from `captureBoardImage`'s own defaults above.
+ * `MAX_EDGE`/`MAX_DATA_URL_BYTES` are tuned for the session-recap thumbnail,
+ * which gets written straight into a Firestore document field
+ * (`sessionService.ts`'s `endSession` → `updateDoc(..., { canvasSnapshot })`)
+ * — Firestore's 1MB-per-document limit is the entire reason those numbers
+ * are this small. A PNG export never touches Firestore, so neither cap
+ * applies: a larger edge keeps real board detail legible, and a larger (but
+ * still finite) byte ceiling only guards against a truly pathological board
+ * rather than silently dropping an intentional, user-requested export the
+ * way the recap path is allowed to.
+ */
+export const EXPORT_MAX_EDGE = 4096;
+export const EXPORT_MAX_DATA_URL_BYTES = 20_000_000;
+
 /** A screen-space rectangle (canvas pixels), as produced by mapping a selection's
  *  board-space bounds through the viewport. */
 export interface ScreenRect {
@@ -119,15 +135,36 @@ async function cropNative(
  *   extra dependency. The board's `canvasSvgRef` already forwards to that <Svg>.
  *
  * Pass the raw `canvasSvgRef.current` from the board screen.
+ *
+ * CAVEAT (Month 6, gate G7 — a real Android device, still unmet): PNG export
+ * (`recapExport.ts#exportBoardPng`) rides this same native `toDataURL` path.
+ * Whether a board's `image` elements (`<Image href>` nodes in the live SVG
+ * tree) actually rasterize into that PNG has never been confirmed on real
+ * Android hardware — ROADMAP.md's Month 4 closeout item 5 names exactly this
+ * as open, and it is still open. This is UNVERIFIED: not confirmed broken,
+ * not confirmed correct. It ships anyway rather than being disabled, because
+ * disabling a working feature on a suspicion is worse than shipping it with
+ * the risk recorded. Re-test on a real device the moment G7 is met, and
+ * update this comment either way — don't leave it saying "unverified" once
+ * it no longer is.
  */
 export async function captureBoardImage(
   canvasRef: any,
-  maxEdge: number = MAX_EDGE
+  maxEdge: number = MAX_EDGE,
+  maxDataUrlBytes: number = MAX_DATA_URL_BYTES
 ): Promise<string | null> {
   if (Platform.OS === "web") {
-    return captureSvgAsPng(resolveWebSvg(canvasRef), maxEdge);
+    return captureSvgAsPng(resolveWebSvg(canvasRef), maxEdge, maxDataUrlBytes);
   }
-  return captureSvgNative(canvasRef, maxEdge);
+  return captureSvgNative(canvasRef, maxEdge, maxDataUrlBytes);
+}
+
+/** Convenience wrapper for a deliberate PNG-export action (as opposed to the
+ *  session-recap thumbnail) — see `EXPORT_MAX_EDGE`/`EXPORT_MAX_DATA_URL_BYTES`
+ *  above for why the recap defaults don't apply here. Carries the same G7
+ *  caveat as `captureBoardImage` on native (see that function's doc comment). */
+export async function captureBoardImageForExport(canvasRef: any): Promise<string | null> {
+  return captureBoardImage(canvasRef, EXPORT_MAX_EDGE, EXPORT_MAX_DATA_URL_BYTES);
 }
 
 /** Extracts the DOM <svg> from a react-native-svg-on-web ref, which exposes the
@@ -153,7 +190,8 @@ function resolveWebSvg(ref: any): SVGSVGElement | null {
  *  returns base64 PNG (no `data:` prefix). Matches web's SVG-only capture. */
 async function captureSvgNative(
   ref: any,
-  maxEdge: number
+  maxEdge: number,
+  maxDataUrlBytes: number = MAX_DATA_URL_BYTES
 ): Promise<string | null> {
   if (!ref || typeof ref.toDataURL !== "function") return null;
   try {
@@ -169,7 +207,7 @@ async function captureSvgNative(
     const dataUrl = base64.startsWith("data:")
       ? base64
       : `data:image/png;base64,${base64}`;
-    if (dataUrl.length > MAX_DATA_URL_BYTES) {
+    if (dataUrl.length > maxDataUrlBytes) {
       console.warn(
         `[canvasCapture] native PNG too large (${dataUrl.length} bytes), skipping snapshot.`
       );
@@ -184,7 +222,8 @@ async function captureSvgNative(
 
 export async function captureSvgAsPng(
   svgEl: SVGSVGElement | null | undefined,
-  maxEdge: number = MAX_EDGE
+  maxEdge: number = MAX_EDGE,
+  maxDataUrlBytes: number = MAX_DATA_URL_BYTES
 ): Promise<string | null> {
   if (Platform.OS !== "web") return null;
   if (!svgEl || typeof window === "undefined") return null;
@@ -230,7 +269,7 @@ export async function captureSvgAsPng(
     ctx.drawImage(img, 0, 0, w, h);
 
     const dataUrl = canvas.toDataURL("image/png");
-    if (dataUrl.length > MAX_DATA_URL_BYTES) {
+    if (dataUrl.length > maxDataUrlBytes) {
       console.warn(
         `[canvasCapture] PNG data URL too large (${dataUrl.length} bytes), skipping snapshot.`
       );

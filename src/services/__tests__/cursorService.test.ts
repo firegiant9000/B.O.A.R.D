@@ -8,12 +8,18 @@ import {
   subscribeToCursors,
   removeCursor,
   visibleCursors,
+  trailEligibleCursors,
   CURSOR_STALE_MS,
+  CURSOR_WRITE_INTERVAL_MS,
 } from "../cursorService";
 
 const setDoc = fs.setDoc as jest.Mock;
 const deleteDoc = fs.deleteDoc as jest.Mock;
 const onSnapshot = fs.onSnapshot as jest.Mock;
+// The real persistence path a stroke takes (`pathService.savePath`) — see the
+// "laser never persists" test below, which asserts against this rather than
+// against something `cursorService.ts` never calls in the first place.
+const addDoc = fs.addDoc as jest.Mock;
 
 jest.useFakeTimers();
 
@@ -60,6 +66,331 @@ describe("subscribeToCursors", () => {
     expect(received[1]).toMatchObject({ userId: "u3", x: 0, y: 0, tool: "pen", updatedAt: 0 });
     expect(typeof unsub).toBe("function");
   });
+
+  it("maps presenting/presenterPaused, defaulting a pre-presenter-mode doc to false (Month 5)", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u8",
+            {
+              userId: "u8",
+              displayName: "Presenter",
+              x: 0,
+              y: 0,
+              tool: "pen",
+              updatedAt: 1,
+              presenting: true,
+              presenterPaused: true,
+            },
+          ],
+          // Older-shape doc from a client that predates presenter mode.
+          ["u9", { userId: "u9", displayName: "Old", x: 0, y: 0, tool: "pen", updatedAt: 1 }],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("b7", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0]).toMatchObject({ presenting: true, presenterPaused: true });
+    expect(received[1]).toMatchObject({ presenting: false, presenterPaused: false });
+  });
+});
+
+describe("subscribeToCursors — A.6 listener multiplexing (Month 5)", () => {
+  it("multiplexes two subscribers on one board into a single onSnapshot call, fanning out to both", () => {
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([["u10", { userId: "u10", displayName: "Ten", x: 1, y: 1, tool: "pen", updatedAt: 1 }]]));
+      return jest.fn();
+    });
+
+    let receivedA: any[] = [];
+    let receivedB: any[] = [];
+    const unsubA = subscribeToCursors("mux1", (cursors) => { receivedA = cursors; });
+    const unsubB = subscribeToCursors("mux1", (cursors) => { receivedB = cursors; });
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(receivedA).toHaveLength(1);
+    expect(receivedA[0]).toMatchObject({ userId: "u10" });
+    expect(receivedB).toEqual(receivedA);
+
+    unsubA();
+    unsubB();
+  });
+
+  it("keeps the surviving subscriber live after one unsubscribes, without opening a second onSnapshot", () => {
+    let deliver: (snap: unknown) => void = () => {};
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      deliver = cb;
+      cb(makeQuerySnap([]));
+      return jest.fn();
+    });
+
+    let receivedA: any[] | null = null;
+    let receivedB: any[] | null = null;
+    const unsubA = subscribeToCursors("mux2", (cursors) => { receivedA = cursors; });
+    const unsubB = subscribeToCursors("mux2", (cursors) => { receivedB = cursors; });
+
+    unsubA();
+    receivedA = null;
+    receivedB = null;
+    deliver(
+      makeQuerySnap([["u11", { userId: "u11", displayName: "Eleven", x: 0, y: 0, tool: "pen", updatedAt: 1 }]])
+    );
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1); // still the one underlying listener
+    expect(receivedA).toBeNull(); // the detached subscriber gets nothing more
+    expect(receivedB).not.toBeNull();
+    expect(receivedB![0]).toMatchObject({ userId: "u11" });
+
+    unsubB();
+  });
+
+  it("calls the underlying unsubscribe only once the last local subscriber detaches", () => {
+    const underlyingUnsub = jest.fn();
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([]));
+      return underlyingUnsub;
+    });
+
+    const unsubA = subscribeToCursors("mux3", () => {});
+    const unsubB = subscribeToCursors("mux3", () => {});
+
+    unsubA();
+    expect(underlyingUnsub).not.toHaveBeenCalled();
+
+    unsubB();
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+
+    // Idempotent: detaching an already-detached subscriber is a no-op, not a
+    // second teardown call.
+    unsubB();
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears down the underlying listener immediately if the sole subscriber detaches synchronously during its own first (synchronous) delivery", () => {
+    // Firestore's onSnapshot delivers a cached snapshot synchronously to a
+    // fresh listener — the same contract the multiplexing comment above
+    // relies on for the first-subscriber-gets-it-too guarantee. If that sole
+    // subscriber reacts to this very first delivery by detaching, it does so
+    // *before* `active.subscribe` (mocked below) has returned its real
+    // unsubscribe, which is exactly the race this test pins.
+    const underlyingUnsub = jest.fn();
+    // Re-entering `subscribeToCursors` with the same `cb` reference (rather
+    // than capturing the outer call's own return value, which does not exist
+    // yet at this point in the synchronous delivery) resolves to the same
+    // registration and hands back an equivalent teardown closure — but for
+    // an already-registered `cb`, `subscribeToCursors` also replays
+    // `lastCursors` to it immediately (the "later subscriber" guarantee
+    // above), which would otherwise recurse forever through this same
+    // callback. The guard below is that replay stopping, not extra product
+    // behaviour under test.
+    let detaching = false;
+    const cb = () => {
+      if (detaching) return;
+      detaching = true;
+      subscribeToCursors("mux6", cb)();
+    };
+
+    onSnapshot.mockImplementation((_ref: unknown, snapCb: (snap: unknown) => void) => {
+      snapCb(makeQuerySnap([]));
+      return underlyingUnsub;
+    });
+
+    subscribeToCursors("mux6", cb);
+
+    expect(underlyingUnsub).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a second board its own onSnapshot listener rather than sharing the first board's", () => {
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(makeQuerySnap([]));
+      return jest.fn();
+    });
+
+    const unsubA = subscribeToCursors("mux4", () => {});
+    const unsubB = subscribeToCursors("mux5", () => {});
+
+    expect(onSnapshot).toHaveBeenCalledTimes(2);
+
+    unsubA();
+    unsubB();
+  });
+});
+
+describe("publishCursor — presenter fields (Month 5)", () => {
+  it("omits presenting/presenterPaused from the written doc when false", () => {
+    publishCursor("b5", "u6", {
+      displayName: "U6",
+      x: 0,
+      y: 0,
+      tool: "pen",
+      presenting: false,
+      presenterPaused: false,
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).not.toHaveProperty("presenting");
+    expect(written).not.toHaveProperty("presenterPaused");
+  });
+
+  it("writes presenting/presenterPaused when true", () => {
+    publishCursor("b6", "u7", {
+      displayName: "U7",
+      x: 0,
+      y: 0,
+      tool: "pen",
+      presenting: true,
+      presenterPaused: true,
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).toMatchObject({ presenting: true, presenterPaused: true });
+  });
+
+  it("does not change the write ceiling — CURSOR_WRITE_INTERVAL_MS is untouched", () => {
+    expect(CURSOR_WRITE_INTERVAL_MS).toBe(50);
+  });
+});
+
+describe("publishCursor — laser ping (Month 5)", () => {
+  it("omits ping from the written doc when the caller doesn't provide one", () => {
+    publishCursor("b-laser-omit", "u-laser-omit", { displayName: "U", x: 0, y: 0, tool: "pen" });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).not.toHaveProperty("ping");
+  });
+
+  it("writes ping when the caller provides one", () => {
+    publishCursor("b-laser-write", "u-laser-write", {
+      displayName: "U",
+      x: 0,
+      y: 0,
+      tool: "laser",
+      ping: { x: 7, y: 8, t: 12345 },
+    });
+    const written = setDoc.mock.calls[0][1];
+    expect(written).toMatchObject({ ping: { x: 7, y: 8, t: 12345 } });
+  });
+
+  // Point 1 in the task's four established facts: `cursorService.ts` never
+  // imports or calls `addDoc` — it writes cursors with `setDoc` only. Asserting
+  // "addDoc was not called" is meaningful *here* specifically because it's the
+  // same `addDoc` binding `pathService.savePath` uses for the one real
+  // persistence path a stroke takes (`collection(db, "boards", id, "paths")`
+  // then `addDoc`), shared through this file's `firebase/firestore` mock. This
+  // is proven falsifiable, not vacuous, in the task report: temporarily adding
+  // a rogue `addDoc(...)` call inside `writerFor` turns this test red, and
+  // reverting it turns it back green.
+  //
+  // Unique board/user ids (never reused by another test in this file) so the
+  // module-level throttle registry can't coalesce this call into a pending
+  // trailing write from an earlier test and mask a real assertion behind
+  // "nothing was written yet either way" — see point 2 in the task's four
+  // established facts.
+  it("never writes a laser ping to the path collection — only to the ephemeral cursor doc", () => {
+    publishCursor("b-laser-persist", "u-laser-persist", {
+      displayName: "U",
+      x: 5,
+      y: 5,
+      tool: "laser",
+      ping: { x: 5, y: 5, t: 999 },
+    });
+
+    // The throttle's leading edge fires synchronously for a key never used
+    // before in this file, so this alone proves a write was actually
+    // attempted — not merely "nothing happened yet" (point 2).
+    expect(setDoc).toHaveBeenCalledTimes(1);
+    expect(setDoc.mock.calls[0][0]).toMatchObject({
+      path: ["boards", "b-laser-persist", "cursors", "u-laser-persist"],
+    });
+    expect(setDoc.mock.calls[0][1]).toMatchObject({ ping: { x: 5, y: 5, t: 999 } });
+
+    // The actual "never persists" guarantee (point 1): no call ever reaches
+    // the real stroke-persistence primitive.
+    expect(addDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe("subscribeToCursors — laser ping (Month 5)", () => {
+  it("maps a well-formed ping onto CursorPresence", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u20",
+            {
+              userId: "u20",
+              displayName: "Twenty",
+              x: 1,
+              y: 1,
+              tool: "laser",
+              updatedAt: 1,
+              ping: { x: 9, y: 9, t: 555 },
+            },
+          ],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("blaser1", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0]).toMatchObject({ ping: { x: 9, y: 9, t: 555 } });
+  });
+
+  it("tolerates a doc with no ping (pre-laser client) by leaving it undefined", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          ["u21", { userId: "u21", displayName: "TwentyOne", x: 0, y: 0, tool: "pen", updatedAt: 1 }],
+        ])
+      );
+      return jest.fn();
+    });
+
+    subscribeToCursors("blaser2", (cursors) => {
+      received = cursors;
+    });
+
+    expect(received[0].ping).toBeUndefined();
+  });
+
+  it("tolerates a malformed ping (non-numeric fields) by dropping it rather than throwing", () => {
+    let received: any[] = [];
+    onSnapshot.mockImplementation((_ref: unknown, cb: (snap: unknown) => void) => {
+      cb(
+        makeQuerySnap([
+          [
+            "u22",
+            {
+              userId: "u22",
+              displayName: "TwentyTwo",
+              x: 0,
+              y: 0,
+              tool: "laser",
+              updatedAt: 1,
+              ping: { x: "nope", y: 0, t: 1 },
+            },
+          ],
+        ])
+      );
+      return jest.fn();
+    });
+
+    expect(() => {
+      subscribeToCursors("blaser3", (cursors) => {
+        received = cursors;
+      });
+    }).not.toThrow();
+
+    expect(received[0].ping).toBeUndefined();
+  });
 });
 
 describe("removeCursor", () => {
@@ -102,6 +433,34 @@ describe("visibleCursors", () => {
   it("drops stale cursors", () => {
     const stale = { ...fresh("old"), updatedAt: now - CURSOR_STALE_MS - 1 };
     const out = visibleCursors([stale, fresh("live")], "me", [], now);
+    expect(out.map((c) => c.userId)).toEqual(["live"]);
+  });
+});
+
+describe("trailEligibleCursors (Month 5, fix round 1 — laser self-visibility)", () => {
+  const now = 1_000_000;
+  const fresh = (id: string) => ({
+    userId: id,
+    displayName: id,
+    x: 0,
+    y: 0,
+    tool: "laser",
+    updatedAt: now,
+  });
+
+  it("keeps the viewer's own cursor, unlike visibleCursors", () => {
+    const out = trailEligibleCursors([fresh("me"), fresh("them")], [], now);
+    expect(out.map((c) => c.userId).sort()).toEqual(["me", "them"]);
+  });
+
+  it("still drops blocked users", () => {
+    const out = trailEligibleCursors([fresh("me"), fresh("blocked")], ["blocked"], now);
+    expect(out.map((c) => c.userId)).toEqual(["me"]);
+  });
+
+  it("still drops stale cursors", () => {
+    const stale = { ...fresh("old"), updatedAt: now - CURSOR_STALE_MS - 1 };
+    const out = trailEligibleCursors([stale, fresh("live")], [], now);
     expect(out.map((c) => c.userId)).toEqual(["live"]);
   });
 });

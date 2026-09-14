@@ -1,7 +1,14 @@
 # Month 3 — Multi-tenancy + Workspaces: Phased Implementation Plan
 
-> **Status:** Planning. Branch `feature/month-3-multitenancy-workspaces` cut from
-> `main` (post-M2 merge, commit `1295f1f`). No prior M3 branches or PRs exist.
+> **Status:** ✅ **Delivered and merged to `main` via PR #91** (`57398e3` tenancy
+> foundation, `4a6c83c` collaboration surfaces, `f359613` Google Sign-In, plus the
+> `rules-tests` CI gate in `2a7d5fb` / `99dacf1`). All 11 phases below shipped. This
+> document is kept as the plan of record — the phase contracts describe what was
+> built. **Month 3 is not *closed*:** Phase 9's migration has only been run against
+> tests, never against real data, so the prod cutover and the one-week staging soak
+> remain outstanding — see
+> [month-3-phase-9-migration-runbook.md](month-3-phase-9-migration-runbook.md) and
+> ROADMAP.md → Month 3 → "Exit criteria".
 > **Roadmap source:** ROADMAP.md → Month 3 (scope items 1–10).
 > **Deferred-from-M2 folded in:** Google Sign-In (M2 §4, parked behind the
 > `authProviders` seam — needs `expo-auth-session` + native OAuth redirect).

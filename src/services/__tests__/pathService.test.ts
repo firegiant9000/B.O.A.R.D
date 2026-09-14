@@ -270,6 +270,80 @@ describe("text notes", () => {
     expect(onChange.mock.calls[0][0]).toHaveLength(1);
     expect(returned).toBe(unsub);
   });
+
+  // Month 6 — sticky-note polish: colour/size/anchorElementId round-trip
+  // through both read paths, and are absent (not defaulted here — that's
+  // TextNoteOverlay's job at render time) on a doc that predates them.
+  it("getBoardNotes maps colour/size/anchorElementId when present", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([
+        [
+          "n1",
+          {
+            content: "hi",
+            position: { x: 1, y: 1 },
+            color: "pink",
+            size: 18,
+            anchorElementId: "shape-1",
+          },
+        ],
+      ])
+    );
+    const notes = await pathService.getBoardNotes("board-1");
+    expect(notes[0]).toMatchObject({ color: "pink", size: 18, anchorElementId: "shape-1" });
+  });
+
+  it("getBoardNotes leaves colour/size/anchorElementId undefined on a doc predating them", async () => {
+    getDocs.mockResolvedValueOnce(
+      makeQuerySnap([["n1", { content: "hi", position: { x: 1, y: 1 } }]])
+    );
+    const notes = await pathService.getBoardNotes("board-1");
+    expect(notes[0].color).toBeUndefined();
+    expect(notes[0].size).toBeUndefined();
+    expect(notes[0].anchorElementId).toBeUndefined();
+  });
+
+  it("subscribeToBoardNotes maps colour/size/anchorElementId when present", () => {
+    (fs.onSnapshot as jest.Mock).mockImplementationOnce((_q, cb) => {
+      cb(
+        makeQuerySnap([
+          [
+            "n1",
+            {
+              content: "hi",
+              position: { x: 0, y: 0 },
+              color: "blue",
+              size: 12,
+              anchorElementId: "path-9",
+            },
+          ],
+        ])
+      );
+      return jest.fn();
+    });
+    const onChange = jest.fn();
+    pathService.subscribeToBoardNotes("board-1", onChange);
+    expect(onChange.mock.calls[0][0][0]).toMatchObject({
+      color: "blue",
+      size: 12,
+      anchorElementId: "path-9",
+    });
+  });
+});
+
+describe("batchDeleteTextNotes (attach-to-element cascade)", () => {
+  it("deletes each note doc in a batch", async () => {
+    const batch = { delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+    await pathService.batchDeleteTextNotes("board-1", ["n1", "n2"]);
+    expect(batch.delete).toHaveBeenCalledTimes(2);
+    expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op on empty input", async () => {
+    await pathService.batchDeleteTextNotes("board-1", []);
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+  });
 });
 
 describe("text elements", () => {

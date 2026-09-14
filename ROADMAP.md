@@ -146,14 +146,15 @@ Cloud-Function snapshot compaction + pruning (M5). Details in
 
 **Goal:** Make the app installable from the actual app stores (or installable as a real PWA) by anyone, not just Expo Go users.
 
-**Status:** Code-complete on `feature/month-2-production-readiness`; remaining work
-is device/store verification, not implementation. Phase-by-phase record lives in
+**Status:** Code-complete and **merged to `main` via PR #90**; remaining work is
+device/store verification, not implementation. Phase-by-phase record lives in
 [`docs/month-2-phases.md`](docs/month-2-phases.md). All 12 scope items have shipped
-code; `tsc --noEmit` is clean and the suite is green (28 suites / 306 tests). Two
-items are deferred by design (see below). The exit criteria are **not yet met** —
-they depend on signed builds, store credentials, and real devices.
+code; `tsc --noEmit` is clean and the suite was green at merge (28 suites / 306
+tests; the suite has since grown to 44 / 512 through M3–M4). Two items are deferred
+by design (see below). The exit criteria are **not yet met** — they depend on signed
+builds, store credentials, and real devices, none of which are code-blocked.
 
-**Implementation status (this branch):**
+**Implementation status (merged):**
 - ✅ **Code-complete (all 12 scope items):** EAS profiles + Sentry SDK (1), push
   for standalone builds (2), PWA manifest/SW/install prompt (3), auth polish —
   reset + email verification (4), secrets hygiene + crypto codes (5), deep links /
@@ -277,6 +278,42 @@ next load, not live.
 
 This is the foundation for everything in Phase 2 and 3. **Do not skip it. Do not defer it. It gets harder every month you wait.**
 
+**Status:** Code-complete and **merged to `main` via PR #91**; the one genuinely
+open item is the prod migration cutover. Phase-by-phase plan lives in
+[`docs/month-3-phases.md`](docs/month-3-phases.md); the migration procedure is in
+[`docs/month-3-phase-9-migration-runbook.md`](docs/month-3-phase-9-migration-runbook.md).
+All 10 scope items shipped across 3 feature commits (`57398e3` tenancy foundation,
+`4a6c83c` collaboration surfaces, `f359613` Google Sign-In), plus the CI rules-test
+gate (`2a7d5fb`, `99dacf1`).
+
+**Implementation status (merged):**
+- ✅ **Code-complete (all 10 scope items):** workspace model + roles (1),
+  board↔workspace binding + rules rework (2), workspace switcher & create/invite UI
+  (3), sessions inherit workspace (4), `checkQuota` choke point (5), per-board roles
+  + Share & permissions modal (6), element-anchored comment threads (7), activity
+  feed (8), @mentions + notification routing (9), workspace dashboard (10).
+- ➕ **Carry-forward closed:** **Google Sign-In**, deferred out of M2 §4, shipped here
+  behind the `authProviders` seam (`expo-auth-session`). Note it still cannot be
+  *verified* without a native build — that verification rides along with the M2
+  store-ops list above.
+- ⏸️ **Deferred by design:** quota **enforcement** → M5 (`checkQuota` is a deliberate
+  allow-all; the choke point and every call site are live).
+
+**Exit criteria:**
+- ✅ **Firestore rules tests pass in CI.** Dedicated `rules-tests` job on JDK 21 in
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml); verified locally
+  2026-09-01 (2 suites / 83 tests), covering cross-workspace read denial, member
+  read, and viewer write denial.
+- ✅ **Workspace isolation holds.** Enforced in [`firestore.rules`](firestore.rules)
+  and asserted by the rules suite. A two-real-users-in-two-workspaces manual pass is
+  still worth doing alongside the M2 device gate, but the automated gate is green.
+- ⚠️ **Migration script on a snapshot of prod data — NOT met.** `migrate.test.js`
+  covers the script's logic (idempotency, solo vs. shared board routing, orphaned
+  sessions) and passes, but the script has not been run against real data. The
+  runbook still reads *"ready to run on staging"* and requires a one-week staging
+  soak before the prod cutover. **This is the only Month 3 item that is genuinely
+  outstanding, and it blocks removing the legacy no-`workspaceId` rules fallback.**
+
 **Scope:**
 1. **Workspace model**
    - New Firestore collection `/workspaces/{wsId}` with: `name`, `ownerId`, `members: { uid: role }`, `plan`, `createdAt`.
@@ -346,14 +383,15 @@ This is the foundation for everything in Phase 2 and 3. **Do not skip it. Do not
 
 **Goal:** Make the session experience the reason someone chooses B.O.A.R.D over Excalidraw.
 
-**Status:** Code-complete on `feature/month-4-sessions-ai`; remaining work is
+**Status:** Code-complete and **merged to `main` via PR #92**; remaining work is
 deploy + on-device verification, not implementation. Phase-by-phase plan lives in
 [`docs/month-4-phases.md`](docs/month-4-phases.md). All 12 scope items have shipped
-code across 7 commits; app `tsc` is clean and the suites are green (app: 44 suites /
-512 tests; functions: 10 suites / 109 tests). The exit criteria are **not yet met** —
-they depend on a Cloud Functions deploy, prod flag cutover, and a real Android device.
+code across 7 commits. Full local verification re-run on 2026-09-01, all green:
+app `tsc --noEmit` clean; app suite 44 / 512; `functions` build clean, suite 10 / 109;
+`test:rules` 2 / 83. The exit criteria are **not yet met** — they depend on a Cloud
+Functions deploy, prod flag cutover, and a real Android device.
 
-**Implementation status (this branch):**
+**Implementation status (merged):**
 - ✅ **Code-complete (all 12 scope items):** Cloud Functions AI gateway (1), AI quota
   gate + cost telemetry (12), structured summary v2 + cross-platform capture (3),
   session lifecycle UX (2), session history (4), embeddable boards via signed JWT (5),
@@ -383,8 +421,10 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
    (no new dependency). Confirm the native snapshot is legible and that **image
    elements (`<Image href>`) actually render** in it; if not, revisit `view-shot`
    (needs dependency approval).
-6. **Confirm `test:rules` is green in CI** — covers the embed-token read path (the
-   named embed security risk). Not yet run locally (emulator port conflict).
+6. ~~**Confirm `test:rules` is green**~~ — ✅ **DONE (2026-09-01).** Ran locally
+   against the Firestore emulator on JDK 21: 2 suites / 83 tests passing, covering
+   the embed-token read path (the named embed security risk) and the cross-workspace
+   isolation gate. The earlier emulator port conflict is gone.
 7. **Mobile-parity + perf gate (non-negotiable):** exercise every new surface on a
    real mid-range Android, run the perf check vs `docs/perf-baseline.md`, attach a
    screenshot to the PR. Watch the **live-cursor layer** specifically — verify the
@@ -464,16 +504,48 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
 
 **Goal:** Be able to charge money.
 
+**Status:** Not started. Full investigation, gap analysis, and phased plan:
+[`docs/month-5-phases.md`](docs/month-5-phases.md). **Read it before scoping the
+month** — it revises three instructions below and adds a prerequisite phase.
+**To execute:** M5 and M6 are combined into one subagent-driven task list at
+[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
+(37 tasks; Tasks 1–20 are this month).
+Headline corrections: (a) the Stripe Firebase Extension is a dead end (see item 1);
+(b) `checkQuota` cannot enforce anything where it currently sits — client-side check
+in front of a direct client write — so item 2 is an architecture change, not a
+function-body change; (c) KaTeX and Shiki (items 10–11) do not render into a
+`react-native-svg` canvas and should move to M6. Hard prerequisite: **Month 4 must
+be closed first** (Stripe webhooks need the same deployed `functions/`, and pricing
+needs real AI cost data).
+
 **Scope:**
 1. **Stripe integration**
-   - Stripe Checkout for self-serve upgrade. Use Firebase's official Stripe extension if available (it is — `firestore-stripe-payments`). This saves 1-2 weeks of plumbing.
+   - Stripe Checkout for self-serve upgrade. ⚠️ **Correction (verified 2026-09-01):
+     do NOT use `firestore-stripe-payments`.** Stripe archived the repo and handed
+     the extension to Invertase, and **Firebase Extensions as a product is deprecated
+     with a hard shutdown on 2027-03-31**. The extension's premise was "you don't have
+     a backend" — no longer true since M4. Write Checkout + webhook + Customer Portal
+     directly in `functions/` (~4–6 days). Details: `docs/month-5-phases.md` § Problem 1.
    - Webhook → workspace.plan updated on successful payment.
    - Customer portal for cancellation / payment-method changes.
-2. **Plan gating, enforced**
+2. **Plan gating, enforced — server-side**
    - Free: 1 workspace, 5 boards, 3 sessions / month, 5 AI summaries / month, max 4 collaborators per board.
    - Pro: $5/user/month — unlimited boards, sessions, AI; up to 25 collaborators; session recordings retained 90 days.
    - Edu: $TBD/seat — bulk-priced for instructors with their class roster; only sell this manually for now (don't build self-serve).
-   - `checkQuota` from Month 3 becomes a real gate. Surface upsell modals on hit.
+   - ⚠️ **Correction: this is an architecture change, not a `checkQuota` body change.**
+     `checkQuota` is a client-side call in front of a *direct client `addDoc`*
+     (`boardService.createBoard`), so a patched bundle or a raw REST call creates
+     board #6 without ever invoking it. Enforcement must move to where the client
+     can't reach: **`createBoard` / `createSession` become callables**, board/session
+     `create` in `firestore.rules` flips to `if false`, and the collaborator cap
+     becomes a rules predicate on `members.size()` (which also closes the
+     self-join-by-invite-code path). `checkQuota` survives as a **pre-flight UX
+     check only**, explicitly non-authoritative.
+   - **Prerequisite: usage counters don't exist.** Only AI is metered today. Boards
+     need a live `count()` (a stock, freed on delete), sessions need a monthly bucket
+     reusing `currentPeriod()` from `functions/src/ai/usage.ts`. Copy the M4 pattern:
+     Functions-only writes, `allow write: if false`.
+   - Surface upsell modals on hit — see item 14 for the platform split.
 3. **Usage dashboard**
    - For the workspace owner: how many sessions this month, how much AI used, how close to plan limits.
 4. **Onboarding polish**
@@ -482,7 +554,21 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
 5. **Pricing page**
    - Hosted on the same domain. Honest copy. Show the free tier first.
 6. **First meeting-app integration (the headline integration for launch)**
-   - **Pick one:** Zoom Apps SDK *or* Google Meet add-ons — whichever has the better solo-dev DX in 2026 (Zoom historically has more docs; Meet add-ons are newer but lower review friction). Do **not** split scope across both. The loser becomes a stretch goal for Month 7+.
+   - **Picked: Google Meet add-ons.** Rationale: the add-on is an iframe around the
+     M4 embed, which already exists; Google's Workspace Marketplace review typically
+     runs days, while Zoom's review complexity scales with every requested scope and
+     may require a live demo call or demo video. Zoom's install base is the better
+     education wedge — it becomes the M7+ stretch goal, per the "do not split scope"
+     rule below.
+   - ⚠️ **The real work is the editable embed, not the integration.** M4 shipped only
+     the `view` arm; `EmbedScope = "view" | "edit"` is a reserved stub, and
+     `EmbedTokenPayload` is `{ v, boardId, scope, iat, exp }` — **it carries no user
+     identity**. Read-only embeds don't need one; editable ones do, or every write
+     from inside the Meet panel is unattributable (no presence, no comment author, no
+     activity feed entry). Extending the payload with a host-asserted subject plus an
+     identity-mapping step is security-sensitive and must be rules-tested as hard as
+     the M4 read path was.
+   - Do **not** split scope across two platforms.
    - The integration is a thin shell around the M4 embeddable board: the meeting platform loads `https://<domain>/embed/b/<boardId>` inside its panel, passes an auth token, and the user can collaborate on a board without leaving the call. End the call → AI summary is in the user's session history when they reopen the app.
    - Submit to the platform marketplace early in the month — review queues run 1–4 weeks. Don't gate launch on approval; ship a self-hosted manual-install version (unlisted) in parallel.
 7. **Presenter mode (Pro-tier feature)**
@@ -499,40 +585,70 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
    - Storage: Firebase Storage. Audio format: AAC (m4a) for size; ~80KB per 10s.
    - Transcription deferred to M6 (covered by board Q&A AI work).
    - Use case: "leave a voice note explaining why this proof works" — async tutoring at its lowest-friction.
-10. **Math equation rendering (KaTeX)**
-    - Special text-element mode: type LaTeX, render as a math equation. Toggle via `$$` wrap or a dedicated "math" tool button.
-    - Critical for STEM students. KaTeX is small (~280KB gzipped), fast, fully client-side, MIT-licensed.
-    - Equations are still single text elements — they participate in selection, transform, comment, AI summary.
-11. **Code blocks with syntax highlighting**
-    - Paste or type code into a "code" element. Auto-detect language (or pick from a menu). Render with Shiki (preferred — Monaco-quality themes) or Prism.
-    - Use case: CS group projects discussing code on a board next to a flowchart of the algorithm.
-    - Element-level "copy code" action.
-12. **Color + stroke polish (Pro-tier feel)**
+10. **Math equation rendering** — ➡️ **MOVED TO MONTH 6.** The roadmap assumed KaTeX
+    is "fully client-side"; it emits DOM HTML, and this board is a `react-native-svg`
+    tree with no DOM on native. The fix is not a library swap — it's rendering LaTeX
+    to **SVG path data** (MathJax's SVG output, in a Function, cached by hash like
+    `ocrCache.ts`) and storing that on the element, so equations transform, export,
+    print and get selected like every other element. That's 3–4 days of novel
+    rendering work and it is "Pro-tier feel," not "can charge money."
+11. **Code blocks with syntax highlighting** — ➡️ **MOVED TO MONTH 6.** Same reason:
+    Shiki emits themed HTML. The fix is to use its **tokenizer** (`codeToTokens()`)
+    and render the coloured runs as SVG `<TSpan>`s — a ~150-line renderer, single
+    code path, but again 3–4 days that M5 does not have.
+12. **Color + stroke polish (Pro-tier feel)** — *keep the eyedropper/highlighter half;
+    it's the visible Pro affordance item 14 badges. The rest can slip to M6.*
     - Custom color picker with hex input, alpha slider, recent-colors row, swatch palette per workspace.
     - 6 stroke widths (was 3) plus a continuous width slider for the eyedropper crowd.
     - **Eyedropper tool** — sample color from any element on the canvas.
     - Highlighter pen (semi-transparent, wide stroke, multiply blend mode).
     - Marker pen variant (thicker, harder edges) and a calligraphy variant (width responds to direction).
-13. **Sticky-note polish**
-    - 8 colors, 3 sizes (small/medium/large), markdown rendering (bold, italic, lists, links).
-    - Pinnable to a position or attachable to another element (sticky-on-shape).
+13. **Sticky-note polish** — ➡️ **MOVED TO MONTH 6.** Pure polish, no revenue path.
 14. **Free-vs-Pro upsell surfaces**
-    - When a user hits a gate (6th board, 4th session this month, 6th AI call), show an inline upsell modal: "You've used your free quota. Upgrade for $5/mo." Direct link to Stripe checkout. Skip on first attempt; harder push on second.
-    - Pro-only feature affordances (presenter, voice notes, math, code, custom palette) show a subtle "Pro" badge in the tool picker for free users; click → upgrade modal.
+    - When a user hits a gate (6th board, 4th session this month, 6th AI call), show an inline upsell modal. Skip on first attempt; harder push on second.
+    - ⚠️ **This needs two platform variants, and getting it wrong gets the binary
+      rejected.** The §6 mitigation ("sell Pro on the web only") is right, but the
+      failure mode is specific: **the mobile app must contain no price, no checkout
+      link, and no "manage your plan" affordance.** On web: message + price + Stripe
+      link. On iOS/Android (`Platform.OS`): state the limit and stop. One component,
+      two renders — not one component with a link that "only shows sometimes."
+    - Pro-only feature affordances (presenter, voice notes, custom palette) show a subtle "Pro" badge in the tool picker for free users; click → upgrade modal (platform-appropriate).
 
-**Out of scope:** Anything not on the path to "user gives me money." LMS integration (M6). Templates (M6). Flashcards / board Q&A (M6).
+**Prerequisite phase (not a roadmap item, but it goes first):** decompose
+`app/board/[id].tsx` — 3,894 lines, 67 imports, 142 hook calls. Five of M5's
+remaining items and five of M6's land in that one file. It's a pure refactor with no
+behaviour change, which is what makes it safe: the 512-test suite plus `tsc` is the
+safety net, and any diff that changes a test is a bug. 3–4 days. Skipping it means
+every subsequent phase serializes through merge conflicts in one file.
+
+**Out of scope:** Anything not on the path to "user gives me money." LMS integration (M6). Templates (M6). Flashcards / board Q&A (M6). Math, code blocks, sticky polish (moved to M6, above).
 
 **Verification:**
 - End-to-end Stripe test: free account, upgrade with `4242 4242 4242 4242`, confirm `workspace.plan == 'pro'`, downgrade, confirm gate kicks back in.
+- **Bypass test (new, non-negotiable):** with a free workspace already at 5 boards,
+  attempt a board create *outside the app* — a direct Firestore REST write with a
+  valid auth token. It must be denied. A UI that hides the button is not enforcement.
 - Onboarding usability test: hand the app to one friend who's never seen it, no instructions, time-to-first-board.
 
 **Risks:**
-- App Store / Play Store rules around in-app payment. If you sell anything that unlocks app features, Apple wants its 30%. **Mitigation:** sell Pro on the web only initially. iOS/Android users can still pay via web Stripe, then their mobile app reflects the upgrade on next login. (This is what Notion, Slack, Spotify all do.)
+- App Store / Play Store rules around in-app payment. If you sell anything that unlocks app features, Apple wants its 30%. **Mitigation:** sell Pro on the web only initially. iOS/Android users can still pay via web Stripe, then their mobile app reflects the upgrade on next login. (This is what Notion, Slack, Spotify all do.) See item 14 for the specific thing that gets you rejected.
 - Pricing is a guess. Be willing to change it in Month 6 based on conversion data.
+- **Free-tier AI is a real per-signup cost, and it is still unvalidated.** Five free
+  vision-backed summaries per workspace per month is the one gate that costs money on
+  every signup, and the M4 meter has never run against production traffic — so
+  "$0.02/session" is an assumption, not a measurement. Treat the M4 exit validation
+  (cost measured over 5+ real sessions) as a **blocker for setting prices**, and set
+  the OpenAI hard cap before opening signups.
+- **The month is under-scoped by ~2 weeks** relative to the original item list — one
+  for the Stripe plumbing that was assumed free, one for the enforcement
+  architecture. That is what items 10/11/13 moving to M6 pays for. If the month still
+  slips, cut item 12 next, then item 9 — not the enforcement work.
 
 **Exit criteria:**
 - One paying customer that is not you, your co-developer, or a family member.
-- All five free-tier gates actually enforced.
+- All five free-tier gates actually enforced **at the database or in a Cloud
+  Function**. A client-side check does not count.
+- Stripe test-mode round-trip passes in *both* directions (upgrade and downgrade).
 
 ---
 
@@ -540,68 +656,107 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
 
 **Goal:** Get to 100 active users and decide whether to keep going.
 
-**Scope:**
-1. **Education vertical push**
-   - Build an instructor-facing flow: import a class roster (CSV), create a board per assignment, see all students' work in one grid.
-   - Reach out to 5 instructors at your university — TAs, lab leaders, study-group organizers. Offer free Edu tier for the semester in exchange for feedback.
-2. **Pick ONE second integration (driven by what M5 users actually asked for)**
-   - **Option A — Canvas LTI 1.3 integration:** instructors install B.O.A.R.D into a course, students authenticate via LTI, boards appear inline as assignments and grades sync back. Highest leverage for the education pivot; 2–3 weeks of work, plus partner-application paperwork.
-   - **Option B — Browser extension (Chrome + Edge):** toolbar button opens a quick-board side panel next to whatever the user is reading; drag an image from any web page onto the board; "send this Doc/Notion page to a board" action. Strongest fit if M5 surfaced "I want to whiteboard alongside docs and articles, not only meetings." 1–2 weeks of work.
-   - **Option C — Slack / Discord app:** post a board snapshot to a channel, get DM'd a join link, end-of-session summary auto-posts. Lighter than LTI, smaller education leverage, but huge for study-group word-of-mouth in CS Discords.
-   - **Do not build more than one.** Picking is the work; building is the easy part. Decide by the first week of the month.
-3. **Templates** *(see item 7 below for the full template library scope)*
-4. **Analytics + experiment harness**
-   - PostHog or Amplitude free tier. Track: signup, first board created, first session scheduled, first session completed, first AI summary, first paid upgrade, integration-install events for whichever surfaces you shipped.
-   - You can't optimize what you don't measure.
-5. **SEO / content**
+**Status:** Not started. Full investigation, gap analysis, and phased plan:
+[`docs/month-6-phases.md`](docs/month-6-phases.md). **Read it before scoping the
+month.** **To execute:** combined with M5 into one subagent-driven task list at
+[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
+(37 tasks; Tasks 21–37 are this month). Headline findings: (a) **this month is over-scoped by roughly 2×** — eight
+substantial features plus an integration plus a launch plus the go/no-go decision —
+and the recommendation is to split it around the launch (M6a: analytics → templates →
+export → reactions/polls → launch; M6b: flashcards, board Q&A, integration, scanner);
+(b) **analytics (item 4) must move to first**, since instrumentation shipped after the
+features it measures gives the launch no baseline — and the whole month exists to
+produce a number you can act on; (c) LTI 1.3 (item 2, option A) does not fit — the
+browser extension is the recommended pick, and it reuses M4's embed; (d) items 3 and 7
+are the same item, and onboarding is specified twice (M5 item 4 + M6 item 14) — build
+it once; (e) good news — Firestore KNN vector search is GA, so board Q&A (item 11)
+needs no external vector store.
+
+**Scope, restructured into two halves.** The original 14-item list does not fit in
+one month (see Status above), and cramming it produces the one thing this month
+cannot afford: eight features at 70% and a launch on top of them, yielding numbers
+too ambiguous to support a go/no-go. So the month splits at the launch.
+
+---
+
+#### M6a — instrument, sharpen, launch
+
+**A1. Analytics + experiment harness** *(was item 4 — moved to first)*
+   - PostHog free tier. Define the funnel up front: `signup`, `workspace_created`, `board_created`, `session_scheduled`, `session_completed`, `ai_summary_generated`, `upgrade_viewed`, `upgrade_completed`, plus an install event per integration surface.
+   - **This goes first, not fourth.** Instrumentation shipped after the features it measures gives the launch no baseline, and the entire month exists to produce a number you can act on.
+   - Hashed workspace id + role only — never names or emails. See A5 on why that matters.
+
+**A2. Template library** *(items 3 + 7 — these were always one item)*
+   - 15–20 templates as JSON board exports under `src/templates/`, surfaced in a gallery in the new-board flow. Groups per the original list: study / CS-engineering / classroom / meeting.
+   - Each is **data, not code** — the marginal cost after the first is small, and each one doubles as an indexable content-marketing landing page (`/templates/cornell-notes`).
+
+**A3. Print + export polish** *(was item 13 — pulled forward)*
+   - PNG (viewport / fit-content), PDF (multi-page tiling), SVG.
+   - Cheaper than it looks: [`recapExport.ts`](src/utils/recapExport.ts) already does HTML→PDF with the web/native split, [`canvasCapture.ts`](src/utils/canvasCapture.ts) already captures and crops. And **SVG export is nearly free** — the board *is* an SVG tree, so it's a pure serializer over the element union. Do SVG first.
+
+**A4. Reactions + polls** *(items 8 + 9)*
+   - Reactions anchored to elements, reusing the `Comment.anchorElementId` precedent that already works. Polls as a new element with live result bars — **persisted, not on the ephemeral cursor channel**; votes must survive a refresh. Dot-voting is a host-toggled variant of the same vote store.
+
+**A5. Education pilot — reshaped** *(was item 1)*
+   - ⚠️ **Compliance trigger the original scope under-weighted.** The moment you onboard a *class* rather than a study group: **under-13 users invoke COPPA's verifiable-parental-consent requirement** (which a CSV import cannot provide and a solo developer cannot easily operate); university coursework touches **FERPA** when the institution is the customer; and a roster CSV is **bulk PII for people who never signed up**.
+   - **Reshape:** university-level only (K-12 explicitly out of scope until there's a reason to take it on). **Invite-based self-enrollment, not CSV import** — students enroll with their own accounts. Same end state, *less* engineering, no bulk PII. Build the CSV importer later, with a DPA, if a real instructor insists.
+   - Reach out to 5 instructors at your university. Offer free Edu tier for the semester in exchange for feedback.
+
+**A6. Sample workspace seeding** *(was item 14, reduced)*
+   - ⚠️ **Onboarding is specified twice** — M5 item 4 and M6 item 14 describe the same 90-second tutorial. Build it once, in M5. What remains here is *seeding*: a sample workspace with an example study board, a finished session with an AI summary, and a mock roster, so a new signup lands somewhere populated.
+
+**A7. SEO / content, then launch** *(items 5 + 6)*
    - Three blog posts: "Best whiteboard for study groups in 2026," "How to use B.O.A.R.D for X" (X = group project planning, exam review, design jam).
    - Honest dev-log post about building it as a student. The integration story ("works inside Zoom / inside your LMS / inside your browser") is the headline.
-6. **Launch**
-   - ProductHunt, Hacker News (Show HN), r/learnprogramming, r/college, your university's CS Discord, LinkedIn, and — critically — the Zoom App Marketplace / Canvas Partner directory / Chrome Web Store page from your M5 / M6 integration.
-   - Pick one launch date and aim everything at it.
-7. **Template library v2 (15-20 templates)**
-   - **Study templates:** Cornell notes, flashcard deck, mind-map, spaced-repetition planner, exam-review grid (topics × confidence), study-streak tracker.
-   - **CS / engineering templates:** sprint planner, code-review checklist, system-design canvas, design-doc structure, sequence-diagram canvas, ERD canvas.
-   - **Classroom templates:** lab-report template, lecture-notes layout, group-brainstorm with zones, peer-review canvas, weekly project Kanban.
-   - **Meeting templates:** retro (start/stop/continue), 1:1 agenda, daily-standup board, decision log.
-   - Each template ships as a JSON board export under `src/templates/`. New-board flow shows them in a gallery.
-   - Templates are a content-marketing wedge: each gets an indexable landing page (`/templates/cornell-notes`) with a 30-second walkthrough video.
-8. **Quizzes + polls (engagement primitive)**
-   - Drop a poll widget on the board: question, 2-6 options, optional anonymous mode. Members tap to vote; live result bars update in real time.
-   - Quiz mode: multiple polls in sequence with a "show answer" reveal. Useful for study quizzes and instructor checks-for-understanding.
-   - Powers M6 dot-voting use case for design retros too.
-9. **Reactions + dot voting on elements**
-   - React to any element with 👍 / ❤️ / ❓ / ⭐ / 💡 — counts visible on the element corner.
-   - Dot-voting mode (host-toggled): each user gets N votes, drops them on elements, host can sort/cluster by vote count. Classic retro / design-sprint mechanic.
-10. **AI: flashcard generation**
-    - Select a region of notes → generate flashcard pairs (front/back) → review in a built-in spaced-repetition UI (SuperMemo SM-2 algorithm; small, well-studied).
-    - Export to Anki `.apkg` format for power users.
-    - Killer for exam-prep. Single highest-ROI student feature you can build.
-11. **AI: board Q&A (chat with your board)**
-    - Sidebar chat panel scoped to a single board. "When did we cover backpropagation?" "What's the deadline for the design doc?" "Summarize Maria's contributions."
-    - Indexes board content + session history + comments. Uses embeddings (`text-embedding-3-small`) cached per element; chat answers via gpt-4o-mini with retrieved context.
-    - Foundation: same RAG pattern can later expand to workspace-wide Q&A as a Pro feature.
-12. **Mobile camera capture / document scanner**
-    - On mobile, "+ → Scan a document" launches the camera with edge-detection (`expo-document-scanner` or VisionKit on iOS, ML Kit on Android).
-    - Output: rectified PNG placed on the board, plus optional OCR'd text element below it.
-    - Use case: snap a textbook page, drop it on the study board, AI explains a passage.
-13. **Print + export polish**
-    - Export a board to: PNG (with viewport / fit-content options), PDF (multi-page tiling for large boards), SVG (vector, lossless).
-    - "Print this board" → PDF on web; native print on mobile.
-    - Important for instructors who want hard copies and students who want to study offline.
-14. **Onboarding tutorial + sample workspace**
-    - First-run: an interactive 90-second tutorial that walks through draw → shape → invite → schedule session → end session → see AI summary.
-    - Sample workspace seeded with: a study-session example board, a finished session with AI summary, a class-roster mock.
-    - Cuts time-to-first-aha-moment from 5 min to under 60s. The single biggest funnel improvement available pre-launch.
+   - **Launch:** ProductHunt, Hacker News (Show HN), r/learnprogramming, r/college, your university's CS Discord, LinkedIn, and the Google Workspace Marketplace listing from the M5 integration. Pick one launch date and aim everything at it.
 
-**Out of scope:** New canvas tools, fancy AI features, anything not driving the funnel.
+**Template library detail** *(for A2)* — **Study:** Cornell notes, flashcard deck, mind-map, spaced-repetition planner, exam-review grid (topics × confidence), study-streak tracker. **CS / engineering:** sprint planner, code-review checklist, system-design canvas, design-doc structure, sequence-diagram canvas, ERD canvas. **Classroom:** lab-report, lecture-notes layout, group-brainstorm with zones, peer-review canvas, weekly project Kanban. **Meeting:** retro (start/stop/continue), 1:1 agenda, daily-standup, decision log.
+
+---
+
+#### M6b — post-launch, scoped by what the launch actually showed
+
+Everything below is deliberately *after* the launch, so the scope is chosen with
+data instead of guesses. This is also where M5's deferred rendering work lands.
+
+**B1. AI: flashcard generation** *(was item 10)*
+   - Select a region of notes → generate front/back pairs → review in a built-in spaced-repetition UI (SM-2).
+   - **The AI half is the easy half.** SM-2 is ~40 lines of well-specified arithmetic — put it in `src/lib/sm2.ts` with a full state-transition test table. Generation memoizes against a content hash, exactly like `ocrCache.ts`. The real cost is a *second app surface*: a review screen, per-user scheduling (`users/{uid}/decks/…` — two students studying the same board have different schedules), and a due-cards query. Budget a week, mostly UI.
+   - **Anki `.apkg` export: cut.** It's SQLite-in-a-zip and a genuine time sink. Ship CSV export, which Anki imports.
+
+**B2. AI: board Q&A (chat with your board)** *(was item 11)*
+   - Sidebar chat scoped to one board, over board content + session history + comments.
+   - ✅ **Good news that changes the design: Firestore KNN vector search is GA.** `findNearest` supports COSINE/EUCLIDEAN/DOT_PRODUCT, combines with `where()` filters, and caps at 2048 dimensions — `text-embedding-3-small` is 1536, so it fits. **No external vector store, no new infrastructure**: `boards/{id}/embeddings/{elementId}` holding a `FieldValue.vector`, embedded on write and skipped when the content hash is unchanged.
+   - ⚠️ **This is the first *unbounded* AI feature.** Summaries fire once per session; chat fires as often as someone types, and embeddings re-run on every meaningful edit. It needs its own rate-limit bucket (the M4 `aiRate` mechanism) and its own line in the plan-limits table, or one enthusiastic free-tier user outspends a paying one.
+
+**B3. Second integration — browser extension** *(was item 2)*
+   - ⚠️ **LTI 1.3 does not fit and is not the pick.** It needs OIDC third-party-initiated login, JWKS rotation, Deep Linking 2.0, Assignment & Grade Services for passback, and Names & Roles for the roster — *plus* a partner application and an admin willing to install it in a production LMS. The "2–3 weeks" estimate is optimistic for a first implementation, and the paperwork is not on a critical path you control. **Move to M7+**, started deliberately and early.
+   - **Build the Chrome + Edge extension.** Manifest V3, side panel wrapping the M4 embed, drag-an-image-to-board. Genuinely 1–2 weeks, and it reuses the embed work rather than inventing a surface. Web Store review runs days.
+   - ⚠️ **Coupled to M5:** the side panel needs the **editable** embed. If M5 ships only the read-only arm, this is view-only and much less compelling. Plan the two together.
+   - Slack / Discord stays the runner-up: lighter, great for CS-Discord word-of-mouth, but a notification surface more than a collaboration one.
+
+**B4. Mobile camera capture** *(was item 12 — descoped)*
+   - ⚠️ **`expo-document-scanner` does not exist.** The ecosystem reality: ML Kit's document scanner is **Android-only** (Google ships no iOS module); iOS needs VisionKit separately; the third-party wrappers covering both need a config plugin and an EAS build, and none work in Expo Go.
+   - **Descope to "camera capture + crop + OCR."** `expo-image-picker` is already a dependency and already opens the camera; run the result through the existing M4 OCR pipeline. That delivers "snap a textbook page, drop it on the board, AI explains it" with **zero new native dependencies**. True auto-edge-detection is M7 polish, not a launch blocker.
+
+**B5. Carried from M5: math + code elements**
+   - Math via MathJax→SVG in a Function (cached by hash); code via Shiki's `codeToTokens()` rendered as SVG `<TSpan>` runs. Both keep the elements first-class — selectable, transformable, exportable, printable. See M5 items 10–11 and [`docs/month-6-phases.md`](docs/month-6-phases.md).
+
+**B6. Carried from M5: sticky-note polish + remaining colour/stroke polish**
+
+**Out of scope:** New canvas tools beyond the carried M5 items, fancy AI features, anything not driving the funnel. Anki `.apkg`. LTI. K-12.
 
 **Verification:**
-- DAU / WAU / MAU pulled from analytics.
+- DAU / WAU / MAU pulled from analytics — which requires A1 to have shipped *before* the launch, not after.
 - Conversion rate from free → Pro (any conversion at all is a win at this stage).
 
 **Exit criteria + decision point:**
 - 100+ signups, 20+ weekly active, 3+ paying.
+- **The decision needs A1's analytics running through a real launch.** That is the
+  whole argument for splitting the month: a launch on top of eight half-finished
+  features produces numbers you cannot attribute, and an unattributable number
+  cannot support a go/no-go. M6a exists to make the M6b scope decision — and the
+  final one — with evidence.
 - Either: keep going with the same wedge → write the Month 7-12 plan with confidence.
 - Or: numbers don't support it → repivot using everything you've built. The infra (workspaces, billing, real-time collab, Cloud Functions) is reusable for any collaboration product. The pivot cost is weeks, not months.
 - Or: it's working but it's not fun → open-source it, write a great README, put it on your résumé, ship something else. This is a legitimate outcome.
@@ -616,8 +771,8 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
 | Google Play Developer | $25 one-time | Month 2 |
 | Domain (e.g. `board.app` is taken — pick something) | $10-30/yr | Month 2 |
 | EAS Build (production plan, optional but recommended once charging) | $0-19/mo | Month 2 |
-| Firebase Spark (free tier) | $0 | Months 1-4 |
-| Firebase Blaze (pay-as-you-go) | < $20/mo at low usage | Month 5 onward |
+| Firebase Spark (free tier) | $0 | Months 1-3 |
+| Firebase Blaze (pay-as-you-go) | < $20/mo at low usage | **Month 4 onward** — pulled in one month; the M4 Cloud Functions deploy requires it |
 | Firebase Storage (images, voice notes, snapshots) | included in Blaze | Month 2 onward |
 | Cloud Functions (AI + embed token mint + Stripe webhook) | included in Blaze | Month 4 onward |
 | OpenAI API (summary + Tier-1 AI features) | ~$5-30/mo at MVP scale | Month 4 |
@@ -626,12 +781,13 @@ they depend on a Cloud Functions deploy, prod flag cutover, and a real Android d
 | Ably / Liveblocks free tier (live cursors side-channel) | $0 (free tier ~3M msg/mo) | Month 4 |
 | Stripe | 2.9% + $0.30/txn | Month 5 |
 | Sentry free tier (5k errors/mo) | $0 | Month 1 |
-| PostHog free tier (1M events/mo) | $0 | Month 6 |
+| PostHog free tier (1M events/mo) | $0 | **Month 6a, first phase** — before the launch, not after |
 | Android test device (Pixel 6a or Galaxy A — used) | $150-250 one-time | Month 1 |
 | Mid-tier iPad (used, M1+) | $250-400 one-time | Month 2 or later (Pencil testing) |
-| Zoom Apps Marketplace listing | $0 | Month 5 |
-| Chrome Web Store developer account | $5 one-time | Month 6 (if extension option) |
-| Canvas Partner / LTI tools application | $0 | Month 6 (if LTI option) |
+| Google Workspace Marketplace listing (Meet add-on) | $0 | Month 5 — submit week 1, review runs days-to-weeks |
+| Chrome Web Store developer account | $5 one-time | Month 6b (the picked second integration) |
+| Canvas Partner / LTI tools application | $0 | **Month 7+** — LTI does not fit in M6 |
+| Stripe integration build (was assumed free via the Firebase extension) | ~4–6 dev-days | Month 5 — the extension is deprecated; see M5 item 1 |
 | **Estimated total Year 1, solo, lean execution** | **~$500-900** | |
 
 This is a viable solo budget. The biggest cost risks are Firebase (if you accidentally leave a hot listener or unbounded query) and OpenAI (if AI quota gates leak). Both have hard spending caps — set them on day one, not when the bill arrives.
@@ -675,7 +831,8 @@ This is a viable solo budget. The biggest cost risks are Firebase (if you accide
 | End of Month 2 | App on TestFlight + Play (closed) + PWA | Five non-team users have signed up |
 | End of Month 3 | Workspaces in prod, rules tested | Ten non-team users; have talked to 5 about needs |
 | End of Month 4 | AI summary cost < $0.02/session avg | Twenty real sessions completed by non-team users |
-| End of Month 5 | One real paying customer | Five active workspaces |
+| End of Month 5 | One real paying customer **+ every free-tier gate enforced server-side** (a bypass test must fail) | Five active workspaces |
+| End of Month 6a | Analytics live *before* launch; launch shipped | Templates + export + polls in users' hands |
 | End of Month 6 | 100 signups, 20 WAU, 3 paying | A clear yes/no on whether to keep going |
 
 If you miss two consecutive monthly hard metrics, stop adding features and spend a week on user interviews. Building features against the wrong problem is the most expensive mistake at this stage.
@@ -686,7 +843,7 @@ If you miss two consecutive monthly hard metrics, stop adding features and spend
 
 - **Live video / voice built in-house.** Real-time A/V is a tarpit. The M5 meeting-app integration *is* the A/V story — let Zoom / Meet handle pixels and audio while B.O.A.R.D handles the board.
 - **Native pencil / pressure sensitivity (Apple Pencil-specific gestures).** Cool, but a Phase 4 problem. Cross-platform parity matters more right now than iPad-only polish.
-- **Building every integration at once.** M5 ships exactly one meeting integration; M6 ships exactly one additional surface (LTI *or* extension *or* Slack/Discord). Splitting attention across three half-built integrations is the failure mode here.
+- **Building every integration at once.** M5 ships exactly one meeting integration (**Google Meet add-ons**); M6b ships exactly one additional surface (**the Chrome/Edge extension**). Zoom and Slack/Discord become M7+ stretch goals; **LTI 1.3 moves to M7+ outright** — it needs partner paperwork on a timeline you don't control. Splitting attention across three half-built integrations is the failure mode here.
 - **A desktop Electron app.** The web PWA is already installable. Electron is a Year-2 conversation, not a 6-month one.
 - **Mobile app store ASO.** Web + the headline integration are the acquisition channels until you have signal worth optimizing.
 - **Open-source community building.** Maybe later. For now it would split your attention.
@@ -694,15 +851,45 @@ If you miss two consecutive monthly hard metrics, stop adding features and spend
 
 ---
 
-## 9. Immediate Next Actions (This Week)
+## 9. Immediate Next Actions
 
-1. Read this doc, push back on anything you disagree with, commit a v2.
-2. Open a GitHub milestone for Month 1. Create issues for: throttling, eraser fix, offline persistence, error boundary, Sentry setup, Jest setup, **Android perf baseline**.
-3. **Get a mid-range Android test device.** Pixel 6a or Galaxy A-series, $150–250 used. This is the single best dollar-per-decision spend in the whole project — every monthly mobile-verification step assumes it's on your desk.
-4. Decide: solo, or actively recruit the second contributor now? If recruiting, write a one-paragraph "what this is and what I need" pitch and send it to two people this week. Their first useful contribution is likely the embed/integration work in M4–M5; bias the pitch toward someone who's curious about platform SDKs.
-5. Create a staging Firebase project. You'll need it by Month 3, but standing it up now is cheap.
-6. Pick a product name. "B.O.A.R.D" / "BOARD" is too generic for SEO and trademark. Spend an hour on this, not a week.
-7. Skim the Zoom Apps SDK docs and the Google Meet add-ons docs for ~30 minutes each. You don't need to decide between them until M5, but knowing which has the better DX shapes the M4 embed contract.
+> *Rewritten 2026-09-01. Months 1–4 are code-complete and merged to `main`; the
+> original Month-1-era list is preserved in git history.*
+
+**Everything below is about closing Month 4. Do not start Month 5 until it's done** —
+Stripe webhooks need the same deployed `functions/`, and you cannot price a product
+whose unit cost you have never measured.
+
+1. **Enable Firebase Blaze and set the hard spend caps first.** OpenAI monthly cap
+   $50, Google Cloud cap $50, Firebase alerts at $5/$20/$50 with a $100 cap. Caps
+   before deploy, not after the bill.
+2. **Deploy `functions/`** to staging, then prod. Three secrets via `defineSecret`:
+   `OPENAI_API_KEY`, `GOOGLE_VISION_API_KEY`, `EMBED_JWT_SECRET`. Runbook:
+   [`docs/functions-deploy-runbook.md`](docs/functions-deploy-runbook.md).
+3. **Flip the four AI flags in prod** (`EXPO_PUBLIC_AI_GATEWAY`, `_OCR`, `_EXPLAIN`,
+   `_DIAGRAM`) and verify each path end-to-end. They all still default OFF, so
+   **every AI feature built in M4 is currently dark.**
+4. **Then remove the legacy client OpenAI key path** — `aiService.ts`,
+   `users/{uid}/private/apiKeys`, and the key UI in `profile.tsx`. Until this ships,
+   the M4 exit criterion "OpenAI key fully removed from client" is not met.
+5. **Verify mobile snapshot capture on a real Android — highest technical risk.**
+   M4 used `react-native-svg`'s `toDataURL` rather than `react-native-view-shot`.
+   Confirm the snapshot is legible **and that `<Image href>` elements actually render
+   in it.** If they don't, the AI summary is visually blind on mobile.
+6. **Run the M3 migration on staging and soak it for a week**, then cut over prod.
+   This is the last genuinely open Month 3 item and it blocks removing the legacy
+   no-`workspaceId` rules fallback.
+7. **Seed 10–20 real users outside your class, starting now — in parallel with the
+   above.** The Month 3 mid-point gut check asked for this and has no recorded
+   answer anywhere in the repo. M5's exit criterion is *one paying customer*; if this
+   number is still zero when M5 starts, you will have built a payment system with
+   nobody to charge. This is the single highest-risk item on the list, and it is not
+   an engineering task.
+8. **Get a mid-range Android test device** if you still don't have one. Pixel 6a or
+   Galaxy A-series, $150–250 used. Every mobile-verification gate from M2 onward —
+   several of which are now stacked up unclosed — assumes it's on your desk.
+9. **Pick a product name.** "B.O.A.R.D" / "BOARD" is too generic for SEO and
+   trademark, and M6a's content strategy depends on it. An hour, not a week.
 
 ---
 

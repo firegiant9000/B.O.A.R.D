@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "cornell-notes",
+  "title": "Cornell Notes",
+  "category": "study",
+  "description": "Two-column cue/notes layout with a summary strip, for lecture or reading notes.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Cornell Notes",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 56,
+      "width": 220,
+      "height": 480,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "CUES",
+      "x": 12,
+      "y": 64,
+      "width": 196,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Jot questions & keywords here while you read or listen.",
+      "x": 12,
+      "y": 96
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 240,
+      "y": 56,
+      "width": 520,
+      "height": 480,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "NOTES",
+      "x": 252,
+      "y": 64,
+      "width": 496,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Take detailed notes during the lecture or reading.",
+      "x": 252,
+      "y": 96
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 556,
+      "width": 760,
+      "height": 140,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "SUMMARY",
+      "x": 12,
+      "y": 564,
+      "width": 300,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Summarize this page in 2-3 sentences within 24 hours.",
+      "x": 12,
+      "y": 596
+    }
+  ]
+}

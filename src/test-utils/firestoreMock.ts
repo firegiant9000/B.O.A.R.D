@@ -43,6 +43,7 @@ export const limit = jest.fn((n: number) => ({ __type: "limit", n }));
 export const addDoc = jest.fn();
 export const getDocs = jest.fn();
 export const getDoc = jest.fn();
+export const getCountFromServer = jest.fn();
 export const updateDoc = jest.fn(async () => undefined);
 export const deleteDoc = jest.fn(async () => undefined);
 export const setDoc = jest.fn(async () => undefined);
@@ -104,4 +105,9 @@ export function makeDocSnap(
 /** Wraps a Date so `.toDate()` works like a Firestore Timestamp on read. */
 export function ts(date: Date) {
   return { toDate: () => date };
+}
+
+/** Builds a fake AggregateQuerySnapshot, as returned by `getCountFromServer`. */
+export function makeCountSnap(count: number) {
+  return { data: () => ({ count }) };
 }

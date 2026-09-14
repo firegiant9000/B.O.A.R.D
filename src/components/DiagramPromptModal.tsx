@@ -23,7 +23,12 @@ interface DiagramPromptModalProps {
   prompt: string;
   busy: boolean;
   onChangePrompt: (text: string) => void;
-  onGenerate: () => void;
+  /** Undefined suppresses the "Draw" button (Month 5 presenter lock) — the
+   *  prompt stays open and "Cancel" stays available so it can still be
+   *  closed; generating a diagram writes a whole batch of elements and
+   *  spends AI quota, so a prompt already open when a presentation starts
+   *  must not still be able to submit. */
+  onGenerate?: () => void;
   onClose: () => void;
 }
 
@@ -44,7 +49,7 @@ export default function DiagramPromptModal({
   onGenerate,
   onClose,
 }: DiagramPromptModalProps) {
-  const canGenerate = prompt.trim().length > 0 && !busy;
+  const canGenerate = prompt.trim().length > 0 && !busy && !!onGenerate;
 
   return (
     <Modal

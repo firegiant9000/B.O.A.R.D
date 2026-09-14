@@ -1,4 +1,5 @@
 import { Bounds } from "../lib/viewport";
+import { LaserPing } from "../lib/laser";
 
 export interface UserProfile {
   uid: string;
@@ -56,6 +57,22 @@ export interface Workspace {
   // on the doc for membership queries — it is not surfaced on this type.
   members: Record<string, WorkspaceRole>;
   plan: Plan;
+  // Month 5 (ROADMAP items 12 + 14 — colour + stroke polish / Pro-affordance
+  // badges). Custom hex colours ("#rrggbb") the workspace has saved from the
+  // picker's swatch row, shared by every member. Optional / migration-
+  // tolerant: absent ⇒ [] (no board predates this, but every other workspace
+  // field here treats absence as the pre-feature default, so this follows
+  // suit) — see `workspaceService.ts#addWorkspaceSwatch`.
+  //
+  // TWO separate gates apply, and they are not the same rule:
+  //  - PLAN is advisory only (`workspaceService.ts#canUseCustomPalette`) —
+  //    nothing server-side reads `plan` before allowing this array to change.
+  //  - ROLE *is* enforced: firestore.rules' `workspaces/{id}` update rule
+  //    restricts every field but `name` (this one included) to workspace
+  //    owner/admin members, regardless of plan — a real, server-side gate,
+  //    which is exactly why `ColorPickerModal`'s `canManageWorkspace` prop
+  //    exists alongside the plan check, not in place of it.
+  swatches?: string[];
   createdAt: Date;
 }
 
@@ -90,8 +107,45 @@ export interface Board {
   // migration-tolerant: absent ⇒ no overrides (every member is an editor).
   roles?: Record<string, BoardRole>;
   backgroundTemplate?: BackgroundTemplate;
+  // Month 6 — education pilot (ROADMAP.md Appendix E.2 "Cohort views"). Links
+  // this board to a `classes/{classId}` doc as a student's assignment
+  // submission. Optional/migration-tolerant: absent ⇒ not part of any class
+  // (every pre-existing board). PINNED once set — firestore.rules'
+  // `classIdTransitionValid` refuses any later change or removal, the same
+  // way `workspaceIdUnchanged` pins `workspaceId` above, so a student can't
+  // detach their own board from instructor oversight after submitting it.
+  // Set only via classroomService.attachBoardToClass, which rules gate on
+  // the caller being an ENROLLED STUDENT of that class at write time.
+  classId?: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Month 6 — education pilot (invite-based class enrollment). A class is its
+// own top-level `classes/{classId}` collection, deliberately NOT an
+// overloaded workspace — see firestore.rules' `classes` match block for the
+// full argument (a class carries none of a workspace's plan/billing/seat-cap
+// semantics, and the edu tier is sold manually with no self-serve).
+//
+// University-level only; K-12 is explicitly out of scope (COPPA's
+// verifiable-parental-consent requirement for under-13 users, which nothing
+// here attempts to satisfy). `studentIds` holds only uids of students who
+// redeemed `joinCode` with their OWN account — no name, email, date of
+// birth, or minor-status field is ever collected, and there is no bulk/CSV
+// roster-import path. Do NOT add one; see ROADMAP.md's Education-pilot
+// section ("A5") for why that path was deliberately reshaped away from.
+export interface ClassRoom {
+  id: string;
+  name: string;
+  instructorId: string;
+  // Server-generated only (functions/src/callable/createClass.ts, reusing
+  // createBoard.ts's generateInviteCode) — a client can never choose or
+  // change this value; a guessable code lets a stranger self-enroll and
+  // hand their board to a class's instructor uninvited.
+  joinCode: string;
+  studentIds: string[];
+  schemaVersion: 1;
+  createdAt: Date;
 }
 
 export interface DrawPath {
@@ -99,6 +153,9 @@ export interface DrawPath {
   boardId: string;
   userId: string;
   points: { x: number; y: number }[];
+  // Plain opaque `#RRGGBB` — never an 8-digit hex embedding alpha. See
+  // `opacity` below for why alpha is a separate field rather than encoded
+  // into this string (src/lib/color.ts's own header explains the split).
   color: string;
   strokeWidth: number;
   tool: "pen" | "eraser";
@@ -109,6 +166,18 @@ export interface DrawPath {
   // Z-order within the paths layer (Phase 8). Optional/migration-tolerant: docs
   // predating it read as 0 and tiebreak on createdAt, preserving draw order.
   z?: number;
+  // Month 5 (ROADMAP item 12 — colour + stroke polish). Which pen variant
+  // drew this stroke; a rendering hint layered on top of `tool: "pen"` and
+  // never set for `tool: "eraser"`. Optional / migration-tolerant: absent ⇒
+  // "pen" (the pre-existing look) — see `src/lib/penStyles.ts`.
+  penStyle?: "pen" | "highlighter" | "marker" | "calligraphy";
+  // Stroke alpha (0-1), independent of `color`. Optional / migration-
+  // tolerant: absent ⇒ the active pen style's own default (1 for pen/marker/
+  // calligraphy, translucent for the highlighter — see
+  // `src/lib/penStyles.ts#DEFAULT_ALPHA_FOR_STYLE`), never a hard 1, so an
+  // old highlighter stroke saved before this field existed still renders
+  // translucent instead of silently turning opaque.
+  opacity?: number;
   createdAt: Date;
 }
 
@@ -124,6 +193,11 @@ export interface SnapshotPath {
   strokeWidth: number;
   tool: "pen" | "eraser";
   bbox?: Bounds;
+  // Mirrors DrawPath.penStyle/opacity (Month 5, ROADMAP item 12) — carried
+  // through a checkpoint so a highlighter/marker/calligraphy stroke doesn't
+  // revert to plain pen rendering once its board compacts into a snapshot.
+  penStyle?: "pen" | "highlighter" | "marker" | "calligraphy";
+  opacity?: number;
   createdAtMs: number;
 }
 
@@ -182,6 +256,27 @@ export interface CursorPresence {
   // The userId this author is currently following, or null. Broadcast so peers
   // can break a follow cycle (A follows B while B follows A).
   following?: string | null;
+  // Month 5/6 (presenter mode). True while this author is presenting
+  // to the whole board — an active presenter overrides every other viewer's
+  // individual follow choice (src/lib/presenter.ts#resolveViewportSource).
+  // Optional / migration-tolerant: a client that predates presenter mode never
+  // writes this field, and the subscriber maps its absence to `false`.
+  presenting?: boolean;
+  // True while the presenter above has paused. A pause releases the
+  // audience's viewport back to their own control (or their individual follow
+  // choice) but deliberately does NOT clear `presenting` — the audience
+  // banner stays up through a pause. Meaningless when `presenting` is
+  // false/absent. Same migration-tolerance as `presenting`.
+  presenterPaused?: boolean;
+  // Month 5 (laser pointer). This author's most recently sampled point while
+  // using the laser tool. The cursor doc holds at most one — `setDoc`
+  // replaces it whole on every write (see `cursorService.ts#writerFor`) — so
+  // `src/components/CursorLayer.tsx` accumulates a fading multi-point trail
+  // reader-side from a stream of these (`src/lib/laser.ts#appendPing`) rather
+  // than expecting an array here. Absent whenever the author isn't
+  // laser-pointing, or the doc predates the laser (migration-tolerant like
+  // every field above).
+  ping?: LaserPing;
 }
 
 export interface Session {
@@ -244,13 +339,82 @@ export interface SessionSummary {
   openQuestions: string[];
 }
 
+// Month 6 — sticky-note polish. Eight fixed colours, named rather than raw
+// hex so a corrupt/unknown stored string can be checked by simple membership
+// (`sanitizeStickyColor` in `lib/stickyNotes.ts`) instead of validated as a
+// hex string. Deliberately independent of `ColorPickerModal`'s custom
+// per-workspace palette (hex + alpha, Pro-gated) — see that decision's own
+// comment in `lib/stickyNotes.ts`.
+export type StickyColor =
+  | "yellow"
+  | "pink"
+  | "blue"
+  | "green"
+  | "orange"
+  | "purple"
+  | "gray"
+  | "red";
+
 export interface TextNote {
   id: string;
   boardId: string;
   userId: string;
+  // Unlike color/size below, `content` is NOT migration-tolerant in the same
+  // sense: markdown parsing (`lib/markdown.ts`) applies unconditionally to
+  // every note's `content`, including one written before Month 6. A
+  // pre-existing note reading "2. Buy milk" now renders as a list item with
+  // a "2." marker, "a*b*c" now renders "b" in italics, and a leading "- "
+  // gains a bullet — the same string renders differently than it did before
+  // this feature, with no opt-out.
   content: string;
   position: { x: number; y: number };
   createdAt: Date;
+  // Month 6 — sticky-note polish (8 colours, 3 sizes). Optional / migration-
+  // tolerant, the same convention as TextElement.z/rotation below: absent ⇒
+  // the pre-this-feature look — "yellow" at size 14, this note's existing
+  // hardcoded `#FFF9C4` fill and 200-wide/14px layout (see
+  // `lib/stickyNotes.ts`'s DEFAULT_STICKY_COLOR/DEFAULT_STICKY_SIZE). A
+  // stored value outside the fixed set (a corrupt doc, a future or
+  // rolled-back client) must never reach a style prop —
+  // `sanitizeStickyColor`/`sanitizeStickySize` in `lib/stickyNotes.ts` are the
+  // tolerant-reader boundary for that, applied at every render site, not just
+  // where the doc is first read from Firestore.
+  color?: StickyColor;
+  // fontSize in px — one of `STICKY_FONT_SIZES` (mirrors TextElement.fontSize's
+  // own plain-number convention rather than a named enum). `Number.isFinite`
+  // matters here specifically because `typeof NaN === "number"`: see
+  // `sanitizeStickySize`'s own comment.
+  size?: number;
+  // Month 6 — attach-to-element, the alternative to pin-to-position. When
+  // set, this note's LIVE render position tracks the named element's current
+  // bounds (resolved via `useBoardElements`'s `boxOfElement`, exactly like
+  // AudioElement's own `anchorElementId`) instead of `position` above, which
+  // becomes a write-time snapshot only once this is set (same reasoning as
+  // AudioElement.x/y's own comment) — kept so the doc still satisfies every
+  // reader that treats `position` as required, and as a last-resort value
+  // only until the first live resolution lands. Deleting the anchor element
+  // cascades to delete this note (`cascadeDeleteNotesForElements` in
+  // useBoardElements.ts, mirroring `cascadeDeleteVoiceNotes`) rather than
+  // leaving it permanently orphaned; until that cascade completes, a render
+  // path must OMIT an attached note whose anchor can't be resolved rather
+  // than falling back to (0, 0) — the corrected behavior the voice-note
+  // badges already landed on. Absent ⇒ pin-to-position (the pre-this-feature
+  // behavior; `position` is authoritative).
+  anchorElementId?: string;
+}
+
+/** Month 6 — a sticky note paired with its LIVE render position. Mirrors
+ *  `PositionedAudioNote` (BoardOverlayLayer.tsx) exactly: the caller
+ *  (BoardCanvas) resolves this from the anchor's current bounds for an
+ *  attached note, or from the note's own `position` for a pinned one — see
+ *  `TextNote.anchorElementId`'s comment for why the two diverge. Kept in
+ *  `types/index.ts`, not in either component, so neither
+ *  `TextNoteOverlay.tsx` nor `BoardOverlayLayer.tsx` has to import a
+ *  rendering type from the other. */
+export interface PositionedTextNote {
+  note: TextNote;
+  x: number;
+  y: number;
 }
 
 export interface TextElement {
@@ -348,6 +512,167 @@ export interface Comment {
   updatedAt: Date;
 }
 
+// Month 6 — reactions. Reuses Comment's anchoring exactly (`anchorElementId` +
+// `anchorKind` above) rather than inventing a second anchoring scheme: a
+// reaction pins to any canvas element the same way a comment does.
+//
+// Unlike Comment, `anchorKind` here is OPTIONAL, and readers/writers must NOT
+// coerce a missing/invalid value to some default kind the way this file's
+// comment-reading code does (`readAnchorKind` in commentService.ts defaults to
+// "shape"). `boxOfElement` (useBoardElements.ts) only scans the ONE collection
+// a hint names — passing a hint that happens to be wrong hides the element's
+// box forever, which is worse than passing no hint at all (which scans every
+// kind). A reaction started from a tap always knows its kind, same as a
+// comment; one started from the current canvas *selection* does not (the
+// selection model tracks ids only), so it is written with no kind rather than
+// a guessed one.
+//
+// Storage: `boards/{id}/reactions/{elementId}_{emoji}_{userId}` — the document
+// id is the uniqueness constraint (one user cannot double-react with the same
+// emoji on the same element: a second toggle addresses the same doc rather
+// than adding a row). Role authorization is the `userId` FIELD below, not the
+// id — but firestore.rules' `reactions` match still binds the id to the
+// fields by exact-match concatenation (id == anchorElementId + '_' + emoji +
+// '_' + userId, never by splitting the id apart), so a real commenter can't
+// launder unbounded extra reactions through ids the field check alone
+// wouldn't catch. See reactionService.ts's header and that match for the
+// full reasoning.
+export const REACTION_EMOJIS = ["👍", "❤️", "❓", "⭐", "💡"] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export interface Reaction {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  anchorElementId: string;
+  anchorKind?: CommentAnchorKind;
+  emoji: ReactionEmoji;
+  userId: string;
+  createdAt: Date;
+}
+
+// Month 6 — polls. Unlike Reaction (which only ever anchors to something that
+// already exists on the canvas), a poll is genuinely NEW canvas content: it
+// carries its own board-space (x, y) the way a shape or sticky note does.
+// Lives at `boards/{id}/polls/{pollId}`, member-readable, editor-writable —
+// the same read/write boundary as paths/shapes/textElements (see
+// firestore.rules), not comments/reactions' commenter-write boundary.
+//
+// Votes live in a SEPARATE subcollection, `boards/{id}/polls/{pollId}/votes/
+// {uid}` — **the document id is the voter's uid**, in EVERY mode, including
+// "dots". This is what enforces one vote DOC per user: a member who changes
+// their vote (or adds/removes a dot) overwrites their own doc — a Firestore
+// `update`, not a second row — which is why firestore.rules' `votes` match
+// allows `update` for the voter's own doc, unlike reactions (react/un-react
+// is create/delete only; there is no "change your reaction" concept).
+// Voting itself needs only commenter+ (mirrors reactions/comments), a lower
+// bar than the editor-only bar for creating the poll's canvas position.
+//
+// `anonymous: true` hides voter identity from other MEMBERS — never from the
+// system. The uid is still every vote doc's id (it must be, to dedupe); it
+// is simply kept out of every client-readable path. firestore.rules denies
+// `read` on an anonymous poll's `votes` subcollection outright, to EVERY
+// member (including the board admin and the voter reading their own doc
+// back) — even a listing reveals who voted, without revealing any one
+// choice, so there is no safe partial exception. One consequence: Firestore's
+// `count()` aggregation also requires read permission on the collection it
+// counts, so an anonymous poll cannot compute or display its own results
+// client-side AT ALL. See `PollTally` below for how anonymous polls show a
+// result anyway, and `functions/src/triggers/pollTally.ts` for the header on
+// why that path is eventually consistent.
+//
+// `mode`: "single" is the classic one-vote-counts poll (`optionIndices`
+// always length 1); "dots" is dot-voting, where a member may spread their
+// vote across MULTIPLE options at once, up to `pollService.MAX_DOT_VOTES`
+// (still ONE vote doc — `optionIndices` just holds more than one index).
+//
+// `quizId`/`quizIndex`/`active` sequence a set of polls sharing one `quizId`
+// into an ordered quiz: `active` is true on at most one poll per quizId at a
+// time, and `pollService.advanceQuiz` moves it forward by `quizIndex` order.
+// A standalone (non-quiz) poll carries none of the three.
+export type PollMode = "single" | "dots";
+
+// Kept here (not in pollService.ts) so a pure-presentation component like
+// PollComposer can import just these two numbers without pulling in
+// pollService's own `firebase/firestore` import chain — mirrors
+// REACTION_EMOJIS living here rather than in reactionService.ts, for the
+// same reason. pollService.ts re-exports both for its own callers.
+export const MIN_POLL_OPTIONS = 2;
+export const MAX_POLL_OPTIONS = 6;
+
+export interface PollElement {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  question: string;
+  /** Option labels, 2–6 — enforced by pollService.createPoll and
+   *  firestore.rules on create. A vote references one of these by INDEX
+   *  (PollVote.optionIndices), never by re-typing the label. */
+  options: string[];
+  anonymous: boolean;
+  mode: PollMode;
+  x: number;
+  y: number;
+  createdById: string;
+  /** Present only while this poll is one question of a quiz sequence;
+   *  absent for a standalone poll. */
+  quizId?: string;
+  quizIndex?: number;
+  /** True while this is the currently-shown question of its quiz. Absent/
+   *  false for a standalone poll and for a quiz question not yet reached. */
+  active?: boolean;
+  createdAt: Date;
+}
+
+/** One member's vote. `id` (the doc id) IS `userId` — see PollElement's type
+ *  comment for why, in every mode. `optionIndices` is length 1 in "single"
+ *  mode; 1..MAX_DOT_VOTES in "dots" mode. Firestore rules bound the SIZE of
+ *  this list per the poll's mode but — the rules language has no per-element
+ *  loop/bounds construct for a dynamic-length options array — do not verify
+ *  every index actually falls within the poll's own `options` range; a
+ *  reader must tolerate (never throw on) an out-of-range index, exactly like
+ *  every other tolerant-reader path in this file. That is a correctness gap
+ *  at worst (an uncounted stray vote), never a privacy or vote-stuffing one:
+ *  the doc id / `userId` field pinning is what actually enforces "one vote
+ *  per user," and neither depends on `optionIndices` being valid. */
+export interface PollVote {
+  id: string;
+  userId: string;
+  optionIndices: number[];
+  createdAt: Date;
+}
+
+/** Server-maintained tally for an ANONYMOUS poll, written by a Firestore
+ *  trigger (functions/src/triggers/pollTally.ts) off the `votes`
+ *  subcollection — never by a client; firestore.rules denies every client
+ *  write to `polls/{pollId}/tally/{docId}`, mirroring the metering/billing
+ *  collections' `allow write: if false`. `counts` keys are option INDICES
+ *  as strings (Firestore map keys are always strings), so `counts["0"]` is
+ *  option 0's vote count; an option with zero votes may be entirely absent
+ *  from the map — a reader defaults a missing key to 0, never throws.
+ *  `totalVotes` counts VOTERS (vote docs), not vote-doc-array entries, so it
+ *  undercounts total dot placements on a "dots" poll by design (it answers
+ *  "how many people voted", not "how many dots were placed").
+ *
+ *  EVENTUALLY CONSISTENT: the trigger runs in a separate invocation AFTER
+ *  the triggering vote write commits — there is no way to make a voter's own
+ *  vote land in this document atomically with their own write. A voter may
+ *  briefly see their vote accepted before this tally reflects it. Never
+ *  imply otherwise in UI copy (e.g. no "results update instantly" claim for
+ *  an anonymous poll). Non-anonymous polls never read this at all: their
+ *  `votes` subcollection is member-readable directly, and the client counts
+ *  it live (pollService.subscribeToVotes) instead.
+ *
+ *  Deliberately carries NO timestamp field (fix round 1, item 10 — an
+ *  earlier version had `updatedAt`, written via `serverTimestamp()`).
+ *  Nothing ever read it, and on an anonymity feature a timing signal a
+ *  member could correlate against presence ("the count moved while only
+ *  Alice was here") is a needless side channel, not a useful one. */
+export interface PollTally {
+  counts: Record<string, number>;
+  totalVotes: number;
+}
+
 // Phase 8 (Month 3, roadmap item 8). Append-only activity log. An event records a
 // single mutation ("actor did verb to target") and lives in a workspace-scoped
 // collection `workspaces/{wsId}/activity/{eventId}`. `boardId` is denormalized so
@@ -411,6 +736,44 @@ export interface ImageElement {
   createdAt: Date;
 }
 
+// Month 5 (ROADMAP.md:583-587, roadmap item 9). A voice note anchored to
+// another canvas element — a stroke, sticky, text, or image. The audio bytes
+// (AAC/.m4a, capped at 60s — see audioService.MAX_DURATION_MS) live in
+// Firebase Storage at `storagePath`; `downloadUrl` is the resolved download
+// URL persisted alongside it so playback has a usable source without an
+// async lookup per element, mirroring ImageElement's url/thumbnailUrl split.
+// `anchorElementId` names the element (of any kind, any collection) the note
+// is attached to.
+//
+// `x`/`y` are the board-space position the speaker-icon affordance was
+// placed at when the note was FIRST recorded — a write-time snapshot, not a
+// live position. Fix round 1 found that rendering the badge from these
+// directly leaves it behind when the anchor is moved/resized/rotated (no
+// write path updates them, and none should — that would mean touching every
+// element kind's commitMove/resize/rotate for a value only this badge
+// needs). The canvas instead derives each note's on-screen position from the
+// anchor's CURRENT bounds at render time (BoardCanvas + `boxOfElement`, kind-
+// agnostic the same way `anchorElementId` is), so the badge tracks its
+// element. These fields still round-trip through Firestore (harmless, and
+// readable as "where this was recorded") but are not what positions the
+// badge on a live board — do not reintroduce a render path that trusts them.
+// `schemaVersion: 1` from inception — see the Global Constraint on new
+// element types; readers tolerate a missing/partial doc (`data?.field ??
+// default`), same as every other element kind here.
+export interface AudioElement {
+  id: string;
+  schemaVersion: 1;
+  boardId: string;
+  userId: string;
+  anchorElementId: string;
+  storagePath: string;
+  downloadUrl: string;
+  durationMs: number;
+  x: number;
+  y: number;
+  createdAt: Date;
+}
+
 // Phase 10 (roadmap item 9). In-app notification, stored per-recipient under
 // `users/{recipientId}/notifications/{id}`. Created by the actor at mention time
 // (the rules pin `actorId` to the writer and `recipientId` to the path owner,
@@ -433,7 +796,218 @@ export interface AppNotification {
   createdAt: Date;
 }
 
-// Embeddable boards (Month 4, Phase 8). The scope an embed token grants. Phase 8
-// ships read-only ('view'); 'edit' is reserved for M5/M6 host integrations and is
-// not yet mintable client-side.
+// Embeddable boards (Month 4, Phase 8 — read-only; Month 5 — editable). The scope
+// an embed token grants. 'view' is the anonymous read-only embed any board member
+// can mint. 'edit' is the host-integration write scope: it requires a v2 token
+// carrying a host-asserted subject, only a board admin can mint one, and the
+// issuing host must be on the Functions-side allowlist. `createEmbedLink` below
+// mints 'view' only — nothing in this client asks for 'edit' today.
 export type EmbedScope = "view" | "edit";
+
+// Month 5/6 — billing. The narrowed set of Stripe subscription statuses this
+// client type surfaces. The document this mirrors (see `Subscription` below)
+// is written by the Stripe webhook from the RAW Stripe status string, which
+// carries more values than this ("trialing", "unpaid", "paused",
+// "incomplete_expired", ...) — src/services/billingService.ts's
+// `mapSubscriptionDoc` passes the stored value through as-is rather than
+// validating it against this union, matching the tolerant-reader convention
+// below. Treat any status this app doesn't explicitly branch on as "not
+// entitled to Pro" (see `isEntitledToPro`), never the reverse.
+export type SubscriptionStatus = "active" | "past_due" | "canceled" | "incomplete";
+
+/** Mirror of workspaces/{id}/billing/subscription, written only by the Stripe
+ *  webhook (functions/src/http/stripeWebhook.ts); this client never writes
+ *  it — firestore.rules denies every client write to `billing/{docId}` and
+ *  permits read only to the workspace owner/admin. Readers tolerate missing
+ *  fields (Global Constraints): the document is written by a Cloud Function
+ *  across several Stripe event types and can legitimately be partial.
+ *
+ *  `currentPeriodEndMs: 0` is the "unknown renewal date" sentinel, not an
+ *  error. The stored doc's underlying field is `number | null`, and it can
+ *  legitimately be `null` for a full billing period — an applied event that
+ *  doesn't itself carry a renewal date, with no earlier value to carry
+ *  forward (see the `currentPeriodEndMs` carry-forward line in
+ *  `applyStripeEvent`, functions/src/http/stripeWebhook.ts — a different
+ *  mechanism from that file's out-of-order guard, which only decides
+ *  whether an event applies at all). `0` is never a real Stripe renewal
+ *  timestamp in this app's lifetime, so it is safe to use as the "unknown"
+ *  marker rather than surfacing it as a failure. Consumers should check
+ *  `hasKnownRenewalDate` (src/services/billingService.ts) before formatting
+ *  this field — `new Date(0)` formats without error, so a naive "Renews on"
+ *  row would render 1 January 1970 with no visible sign of the problem. */
+export interface Subscription {
+  schemaVersion: 1;
+  status: SubscriptionStatus;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  currentPeriodEndMs: number;
+}
+
+// Month 6 — flashcard generation + review. Scheduling is PER-USER
+// (`users/{uid}/decks/{deckId}/cards/{cardId}`), never board-scoped: two
+// students studying the same board have different SM-2 schedules. See
+// src/lib/sm2.ts for the scheduling algorithm and src/services/
+// flashcardService.ts for the read/write surface over these two shapes.
+export interface FlashcardDeck {
+  id: string;
+  schemaVersion: 1;
+  name: string;
+  /** The board this deck's cards were generated from, if any — informational
+   *  only (e.g. "generated from Biology 101"); a deck is never re-scoped to a
+   *  board the way a Board/Session is scoped to a workspace. */
+  boardId?: string;
+  createdAt: Date;
+}
+
+/** One card's content + its SM-2 schedule, flattened into a single document
+ *  (rather than {content} + a nested `sm2.Card`) so a review write is one
+ *  `updateDoc` of the four schedule fields, not a nested-object merge.
+ *
+ *  The four schedule fields mirror `sm2.Card` exactly — see that interface's
+ *  own comment: `review()` does not validate them, so a caller that loads one
+ *  of these from Firestore MUST validate all four are finite numbers before
+ *  ever passing it to `review()`. `flashcardService.reviewCard` does this and
+ *  fails closed (throws rather than scheduling from corrupt data) on a
+ *  violation; see that function's own comment. */
+export interface FlashcardCard {
+  id: string;
+  schemaVersion: 1;
+  front: string;
+  back: string;
+  /** The board this card was generated from, if any. */
+  boardId?: string;
+  repetitions: number;
+  intervalDays: number;
+  easeFactor: number;
+  dueAtMs: number;
+}
+
+// Month 6 — math elements (ROADMAP.md's Month 6 "carried from M5" item; the
+// roadmap's own M5 entry records why this moved). A LaTeX equation as a
+// FIRST-CLASS canvas element.
+//
+// KaTeX cannot render here: it emits DOM HTML and this board is a
+// `react-native-svg` tree with no DOM on native. A WebView per equation is
+// unusable at thirty equations on a board and — decisively — opts the element
+// out of selection, transform, export and print. So `latex` is rendered to
+// flat SVG **path data** by a Cloud Function (MathJax's SVG output, flattened
+// — see functions/src/math/mathRender.ts) and cached on the element, which
+// then draws as an ordinary `<Path>` and gets all four for free.
+//
+// `latex` is the EDITABLE SOURCE OF TRUTH; `svgPath`/`width`/`height` are
+// cached output derived from it. Re-render only when `latex` changes — every
+// other operation (move, resize, delete) touches geometry alone and must
+// never call the function. `mathService.updateMathLatex` is the one write
+// path that re-renders; see its header.
+//
+// GEOMETRY. `svgPath` is in board units at `scale: 1`, with its origin at the
+// element's top-left, so a renderer draws it as
+// `translate(x, y) scale(scale)`. `width`/`height` are the RENDERED box —
+// natural size times `scale` — so they can be used directly for selection,
+// culling and hit-testing without anyone re-deriving them, exactly like
+// ImageElement's. `mathService` is the only writer of the pair and keeps them
+// consistent; a renderer should still treat all five numbers as untrusted
+// (`typeof NaN === "number"`, and every one of them is a stored number a
+// corrupt document could poison) — see `mathService.mapMathDoc`, which fails
+// them closed on read.
+//
+// There is deliberately no `rotation`. The brief's shape has none, and a
+// group rotate therefore ORBITS a math element about the pivot without
+// spinning it (useBoardElements' `commitRotate`) rather than silently
+// dropping it out of the group.
+//
+// There is also deliberately no `z`: unlike paths/shapes/text/images, math
+// elements do not participate in the shared z-order model, so Bring to
+// Front / Send to Back have no effect on an equation and equations always
+// render in creation order (oldest first — the same order the board already
+// subscribes to them in; see `mathService.subscribeToBoardMathElements`'s
+// `orderBy("createdAt", "asc")` and `useBoardElements`' `visibleMathElements`,
+// which filters but does not sort).
+//
+// `schemaVersion: 1` from inception; readers tolerate a missing/partial doc
+// (`data?.field ?? default`), like every other element kind here.
+export interface MathElement {
+  id: string;
+  schemaVersion: 1;
+  /** Discriminator, carried on the document as well as in this type so a
+   *  mixed-kind reader (export, print) can tell a math element apart without
+   *  knowing which subcollection it came from. */
+  type: "math";
+  boardId: string;
+  userId: string;
+  /** The editable source of truth. */
+  latex: string;
+  /** Rendered output, cached — flat SVG path data in board units at scale 1. */
+  svgPath: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  scale: number;
+  bbox?: Bounds;
+  createdAt: Date;
+}
+
+// Month 6 — code elements (syntax-highlighted source, tokenized client-side).
+// Unlike MathElement, there is NO Cloud Function here and nothing cached:
+// Shiki's fine-grained core (a JS-regex grammar engine, no WASM — see
+// `lib/codeRender.ts`'s header for why that matters on this stack) tokenizes
+// entirely on-device, synchronously, so `code`/`language` are the only source
+// of truth and every viewer re-tokenizes locally from the same two fields.
+// That is also why there is no `svgPath`-style cached-output pair to keep in
+// sync — a re-render is just calling the same pure function again, not an
+// unmetered network round-trip the way `updateMathLatex` is.
+//
+// Bundled grammars are exactly the brief's nine — see
+// `lib/codeRender.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
+// grammar Shiki ships," which would pull the full grammar set into the
+// client bundle for no board-content benefit.
+//
+// GEOMETRY. A full canvas primitive — move/resize/rotate/z-order/duplicate/
+// copy-paste all apply, the same as ShapeElement/ImageElement (unlike
+// MathElement, which deliberately opts out of rotation and z — see its own
+// type comment for why that doesn't apply here: a code block has no baked
+// path data to orbit around, it is ordinary positioned text). `width`/
+// `height` start as the box `lib/codeRender.ts`'s pure monospace line-layout
+// computes for `code` at `fontSize` (see `layoutCodeBox`); a resize then
+// scales them independently, exactly like TextElement, so the box and the
+// text can drift apart under a non-uniform drag the same way a resized text
+// box already can — that is accepted existing behavior here, not a new gap.
+// Editing `code`/`language` (not resizing) re-derives width/height from the
+// new source at the CURRENT `fontSize`, mirroring how `updateMathLatex`
+// re-derives its box from a new render at the current `scale`.
+//
+// Every numeric field here is a stored number a corrupt document could
+// poison (`typeof NaN === "number"`) — `codeService.mapCodeDoc` fails them
+// closed on read, mirroring `mathService.mapMathDoc`.
+//
+// `schemaVersion: 1` from inception; readers tolerate a missing/partial doc
+// (`data?.field ?? default`), like every other element kind here.
+export type CodeLanguage = "ts" | "js" | "py" | "java" | "c" | "cpp" | "sql" | "json" | "bash";
+
+export interface CodeElement {
+  id: string;
+  schemaVersion: 1;
+  /** Discriminator, carried on the document as well as in this type so a
+   *  mixed-kind reader (export, print) can tell a code element apart without
+   *  knowing which subcollection it came from. */
+  type: "code";
+  boardId: string;
+  userId: string;
+  /** The editable source of truth — tokenized locally, never on a server. */
+  code: string;
+  language: CodeLanguage;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  /** Degrees, about the box center (matches ShapeElement/ImageElement's
+   *  convention); absent/undefined reads as 0, same migration tolerance. */
+  rotation?: number;
+  bbox?: Bounds;
+  // Z-order within the codeElements layer (see DrawPath.z) — a normal
+  // participant in Bring to Front / Send to Back, unlike MathElement.
+  z?: number;
+  createdAt: Date;
+}

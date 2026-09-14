@@ -1,14 +1,26 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+const mockCallable = jest.fn();
+const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
+jest.mock("firebase/functions", () => ({
+  httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
+}));
+// The email lookup behind `addMemberByEmail` is a Cloud Function call now, not
+// a `users` query — firestore.rules denies `list` on that collection. Mocked at
+// the service seam so these tests stay about membership branching; the callable
+// binding itself is pinned in userService.test.ts.
+jest.mock("../userService", () => ({ lookupUserByEmail: jest.fn() }));
 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
+import { lookupUserByEmail } from "../userService";
 import * as workspaceService from "../workspaceService";
 
 const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
+const lookup = lookupUserByEmail as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -37,27 +49,47 @@ describe("role helpers", () => {
 });
 
 describe("createWorkspace", () => {
-  it("creates the workspace with the owner as sole 'owner' member and free plan", async () => {
-    addDoc.mockResolvedValueOnce({ id: "ws-1" });
+  it("returns the id the callable minted and writes nothing directly", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
 
     const id = await workspaceService.createWorkspace("Personal", "owner-1");
 
     expect(id).toBe("ws-1");
-    const payload = addDoc.mock.calls[0][1];
-    expect(payload).toMatchObject({
-      name: "Personal",
-      ownerId: "owner-1",
-      members: { "owner-1": "owner" },
-      memberIds: ["owner-1"],
-      plan: "free",
-    });
-    expect(payload.createdAt).toBe("__serverTimestamp__");
+    // The client no longer writes the workspace doc: firestore.rules denies a
+    // client create outright, so an `addDoc` here would simply be rejected.
+    expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("honors an explicit plan", async () => {
-    addDoc.mockResolvedValueOnce({ id: "ws-2" });
+  it("binds httpsCallable to the \"createWorkspace\" function name", async () => {
+    // Pins the callable's name against the mock factory's own second argument,
+    // not just the mock's configured return value — a typo here (e.g.
+    // "createworkspace") would satisfy every other assertion in this block
+    // while breaking signup for every new account.
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
+
+    await workspaceService.createWorkspace("Personal", "owner-1");
+
+    expect(mockHttpsCallable).toHaveBeenCalled();
+    expect(mockHttpsCallable.mock.calls[0][1]).toBe("createWorkspace");
+  });
+
+  it("sends only the name — ownerId comes from the auth token server-side", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-1" } });
+
+    await workspaceService.createWorkspace("Personal", "owner-1");
+
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Personal" });
+  });
+
+  it("does NOT forward an explicit plan — the function forces \"free\" regardless", async () => {
+    // The parameter survives for call-site compatibility only. Sending it would
+    // advertise a choice the server does not honour; a paid or edu workspace is
+    // provisioned out of band (the Stripe webhook, or an operator).
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-2" } });
+
     await workspaceService.createWorkspace("Class", "o", "edu");
-    expect(addDoc.mock.calls[0][1].plan).toBe("edu");
+
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Class" });
   });
 });
 
@@ -110,21 +142,21 @@ describe("ensurePersonalWorkspace", () => {
     const id = await workspaceService.ensurePersonalWorkspace("u1");
 
     expect(id).toBe("personal");
-    expect(addDoc).not.toHaveBeenCalled();
+    expect(mockCallable).not.toHaveBeenCalled();
   });
 
-  it("creates a personal workspace when the user has none (signup auto-create lagged)", async () => {
+  it("creates a personal workspace through the callable when the user has none", async () => {
+    // This is the signup path (src/services/authService.ts), and it is the one
+    // create the server-side cap must always permit: a brand-new user owns zero
+    // workspaces, so the free limit of 1 grants it without any special case.
     getDocs.mockResolvedValueOnce(makeQuerySnap([]));
-    addDoc.mockResolvedValueOnce({ id: "ws-new" });
+    mockCallable.mockResolvedValueOnce({ data: { workspaceId: "ws-new" } });
 
     const id = await workspaceService.ensurePersonalWorkspace("u1");
 
     expect(id).toBe("ws-new");
-    expect(addDoc.mock.calls[0][1]).toMatchObject({
-      name: "Personal",
-      ownerId: "u1",
-      members: { u1: "owner" },
-    });
+    expect(mockCallable).toHaveBeenCalledWith({ name: "Personal" });
+    expect(addDoc).not.toHaveBeenCalled();
   });
 });
 
@@ -160,32 +192,39 @@ describe("removeMember", () => {
 
 describe("addMemberByEmail", () => {
   it("returns not_found when no user matches the email (no write)", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    lookup.mockResolvedValueOnce(null);
 
     const res = await workspaceService.addMemberByEmail("ws-1", "nobody@x.com");
 
     expect(res).toEqual({ result: "not_found" });
     expect(updateDoc).not.toHaveBeenCalled();
-    // email is normalized (lowercased + trimmed) before lookup
-    expect((fs.where as jest.Mock).mock.calls.at(-1)).toEqual([
-      "email",
-      "==",
-      "nobody@x.com",
-    ]);
   });
 
-  it("normalizes the email before lookup", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+  it("resolves the email through the callable, never through a users query", async () => {
+    // This used to be `getDocs(query(collection(db,"users"), where("email",…)))`.
+    // firestore.rules now denies `list` on /users — the collection carries
+    // email addresses, and `allow read` covered `list`, so one unfiltered
+    // query dumped the whole directory. No rule could have admitted the
+    // filtered shape alone: rules never see a query's `where` clauses.
+    lookup.mockResolvedValueOnce(null);
+
+    await workspaceService.addMemberByEmail("ws-1", "nobody@x.com");
+
+    expect(lookup).toHaveBeenCalledWith("nobody@x.com");
+    expect(getDocs).not.toHaveBeenCalled();
+  });
+
+  it("sends the address unnormalized — the callable owns the lowercase/trim now", async () => {
+    // The lowercase/trim moved server-side so that all three email lookups
+    // share it; friendService never applied it, which made the same address
+    // resolve differently depending on which feature asked.
+    lookup.mockResolvedValueOnce(null);
     await workspaceService.addMemberByEmail("ws-1", "  Foo@Bar.COM ");
-    expect((fs.where as jest.Mock).mock.calls.at(-1)).toEqual([
-      "email",
-      "==",
-      "foo@bar.com",
-    ]);
+    expect(lookup).toHaveBeenCalledWith("  Foo@Bar.COM ");
   });
 
   it("returns already_member without writing when the uid is in the role map", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "u2@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "u2@x.com" });
     getDoc.mockResolvedValueOnce(
       makeDocSnap("ws-1", { members: { owner: "owner", u2: "member" } })
     );
@@ -197,7 +236,7 @@ describe("addMemberByEmail", () => {
   });
 
   it("adds the user with the given role and unions the parallel array", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u3", { email: "u3@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u3", displayName: "U3", email: "u3@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: { owner: "owner" } }));
 
     const res = await workspaceService.addMemberByEmail("ws-1", "u3@x.com", "admin");
@@ -208,8 +247,21 @@ describe("addMemberByEmail", () => {
     expect(update.memberIds).toEqual({ __type: "arrayUnion", values: ["u3"] });
   });
 
+  it("never touches ownerId when adding a member — the rules pin would deny the write", async () => {
+    // firestore.rules refuses any workspace update whose affected keys include
+    // `ownerId` (the pin the per-owner workspace cap depends on). This is the
+    // positive control on the client side: the invite path's write is
+    // `members`/`memberIds` only, so the pin costs it nothing.
+    lookup.mockResolvedValueOnce({ uid: "u3", displayName: "U3", email: "u3@x.com" });
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: { owner: "owner" } }));
+
+    await workspaceService.addMemberByEmail("ws-1", "u3@x.com");
+
+    expect(Object.keys(updateDoc.mock.calls[0][1])).not.toContain("ownerId");
+  });
+
   it("defaults the role to member", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u4", { email: "u4@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u4", displayName: "U4", email: "u4@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: {} }));
 
     await workspaceService.addMemberByEmail("ws-1", "u4@x.com");
@@ -218,11 +270,71 @@ describe("addMemberByEmail", () => {
   });
 
   it("throws when the workspace does not exist", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u5", { email: "u5@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u5", displayName: "U5", email: "u5@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", null));
 
     await expect(
       workspaceService.addMemberByEmail("ws-1", "u5@x.com")
     ).rejects.toThrow("Workspace not found");
+  });
+});
+
+describe("getWorkspace — swatches default", () => {
+  it("maps a missing swatches field to an empty array (migration-tolerant)", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { ownerId: "o1" }));
+    const ws = await workspaceService.getWorkspace("ws-1");
+    expect(ws?.swatches).toEqual([]);
+  });
+
+  it("passes an existing swatches array through", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { ownerId: "o1", swatches: ["#3366ff"] }));
+    const ws = await workspaceService.getWorkspace("ws-1");
+    expect(ws?.swatches).toEqual(["#3366ff"]);
+  });
+});
+
+describe("addWorkspaceSwatch / removeWorkspaceSwatch", () => {
+  it("unions the hex into the swatches array", async () => {
+    await workspaceService.addWorkspaceSwatch("ws-1", "#3366ff");
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.swatches).toEqual({ __type: "arrayUnion", values: ["#3366ff"] });
+  });
+
+  it("removes the hex from the swatches array", async () => {
+    await workspaceService.removeWorkspaceSwatch("ws-1", "#3366ff");
+    const update = updateDoc.mock.calls[0][1];
+    expect(update.swatches).toEqual({ __type: "arrayRemove", values: ["#3366ff"] });
+  });
+});
+
+describe("canUseCustomPalette — advisory Pro gate (mirrors canRecordVoiceNotes)", () => {
+  it("is false for the free plan", () => {
+    expect(workspaceService.canUseCustomPalette("free")).toBe(false);
+  });
+
+  it("is true for pro and edu", () => {
+    expect(workspaceService.canUseCustomPalette("pro")).toBe(true);
+    expect(workspaceService.canUseCustomPalette("edu")).toBe(true);
+  });
+});
+
+// Fix Wave F2 — mirrors the sibling test above exactly (same shape as
+// canRecordVoiceNotes/canUseCustomPalette): ROADMAP.md:615's third Pro
+// affordance had no predicate at all before this.
+describe("canUsePresenter — advisory Pro gate (mirrors canUseCustomPalette / canRecordVoiceNotes)", () => {
+  it("is false for the free plan", () => {
+    expect(workspaceService.canUsePresenter("free")).toBe(false);
+  });
+
+  it("is true for pro and edu", () => {
+    expect(workspaceService.canUsePresenter("pro")).toBe(true);
+    expect(workspaceService.canUsePresenter("edu")).toBe(true);
+  });
+
+  // Final correction (C1) — undefined means "not known yet" (workspace
+  // unresolved, legacy/workspace-less board, or a failed fetch), which is a
+  // different fact from "known to be on the free plan," and must fail OPEN.
+  it("is true for an unknown plan (undefined) — fails open, unlike the free plan", () => {
+    expect(workspaceService.canUsePresenter(undefined)).toBe(true);
   });
 });

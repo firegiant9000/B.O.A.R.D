@@ -20,6 +20,9 @@ import { useAuth } from "../../src/hooks/useAuth";
 import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
 import * as sessionService from "../../src/services/sessionService";
+import { isQuotaDenial } from "../../src/services/quotaService";
+import { track } from "../../src/services/analyticsService";
+import UpsellModal from "../../src/components/UpsellModal";
 
 const DURATION_OPTIONS = [
   { label: "30m", value: 30 },
@@ -48,6 +51,9 @@ export default function CreateSessionScreen() {
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardPickerVisible, setBoardPickerVisible] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  // The session-create plan-limit upsell, shown instead of the generic error
+  // alert when createSession is denied for being over the session cap.
+  const [upsellVisible, setUpsellVisible] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -130,10 +136,41 @@ export default function CreateSessionScreen() {
           participantIds: [],
           status: "scheduled",
         });
+        // Month 6 — ROADMAP.md:685's `session_scheduled`, booked-for-later
+        // half (StartSessionModal.tsx covers start-now). Inside the `else`,
+        // not after the `if`: `isEdit` re-saves an EXISTING session through
+        // `updateSession`, and counting an edit as a new scheduled session
+        // would let one user inflate this by repeatedly renaming a session
+        // they already have. The comment on the catch below already relies on
+        // exactly that "only the create path" distinction for the upsell.
+        //
+        // `participantCount` is 0 by construction here — this screen creates
+        // with an empty `participantIds` and invites happen later — and is
+        // sent anyway so the two `session_scheduled` paths have the same shape
+        // downstream rather than one of them being a missing key.
+        track("session_scheduled", {
+          status: "scheduled",
+          participantCount: 0,
+          durationMinutes: finalDuration,
+        });
       }
       router.back();
-    } catch {
-      Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);
+    } catch (error) {
+      // A session-cap denial can arrive two ways: the server's own rejection
+      // (createSession callable) or the client-side pre-flight's own
+      // QuotaExceededError — isQuotaDenial catches both. Any other rejection
+      // (network, permission, ...) keeps the plain alert; catching broadly
+      // here would make a real failure read as "upgrade". Only the create
+      // path can hit this cap — editing an existing session (isEdit) never
+      // calls createSession. No throttle ambiguity here (unlike the AI
+      // callables): createSession has exactly one resource-exhausted throw
+      // site, the plan cap itself, so no workspace-plan lookup is needed to
+      // tell this apart from anything else.
+      if (!isEdit && isQuotaDenial(error)) {
+        setUpsellVisible(true);
+      } else {
+        Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);
+      }
     } finally {
       setLoading(false);
     }
@@ -174,6 +211,13 @@ export default function CreateSessionScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <UpsellModal
+        visible={upsellVisible}
+        resource="session"
+        workspaceId={selectedBoard?.workspaceId}
+        onDismiss={() => setUpsellVisible(false)}
+      />
+
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>

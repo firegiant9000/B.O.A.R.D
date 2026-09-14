@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../hooks/useAuth";
 import { useWorkspace } from "../hooks/useWorkspace";
+import { track } from "../services/analyticsService";
 import {
   createWorkspace,
   getWorkspaceRole,
@@ -49,7 +50,26 @@ export default function WorkspaceSwitcher() {
 
   const handleCreate = async (name: string) => {
     if (!user) throw new Error("You must be signed in.");
-    return createWorkspace(name, user.uid);
+    const id = await createWorkspace(name, user.uid);
+    // Month 6 — ROADMAP.md:685's `workspace_created`. Emitted HERE, at the
+    // "Create workspace" action a person actually pressed, and deliberately
+    // NOT inside `workspaceService.createWorkspace`: signup auto-creates a
+    // personal workspace through `authService.ensureUserProvisioned` ->
+    // `ensurePersonalWorkspace` -> `createWorkspace`, and
+    // `WorkspaceContext.load` calls `ensurePersonalWorkspace` again as a lazy
+    // repair when that write lagged. A workspace the system made for you is
+    // not a workspace you created, so an emit in the service would make this
+    // metric report signups a second time under a different name. The
+    // boundary is enforced, not just described — see
+    // src/services/__tests__/analyticsBoundary.test.ts.
+    //
+    // After the await, so a workspace that failed to be created is never
+    // reported as one. No name, no id, no uid: the name is free text the user
+    // just typed and the ids are exactly what analyticsService's Global
+    // Constraint forbids, which leaves nothing worth sending — the event is
+    // the whole signal.
+    track("workspace_created");
+    return id;
   };
 
   const handleCreated = async (id: string) => {

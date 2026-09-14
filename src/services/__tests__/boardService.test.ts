@@ -1,9 +1,19 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+const mockCallable = jest.fn();
+const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
+jest.mock("firebase/functions", () => ({
+  httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
+}));
+// The email lookup behind `addMemberByEmail` is a Cloud Function call now, not
+// a `users` query — firestore.rules denies `list` on that collection. Mocked at
+// the service seam; the callable binding itself is pinned in userService.test.ts.
+jest.mock("../userService", () => ({ lookupUserByEmail: jest.fn() }));
 
 import * as fs from "firebase/firestore";
 import { auth } from "../../config/firebase";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
+import { lookupUserByEmail } from "../userService";
 import * as boardService from "../boardService";
 import * as quotaService from "../quotaService";
 
@@ -11,6 +21,7 @@ const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
+const lookup = lookupUserByEmail as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -18,31 +29,64 @@ beforeEach(() => {
 });
 
 describe("createBoard", () => {
-  it("creates the board with owner as sole member, the workspaceId, and a BORD- invite code", async () => {
-    addDoc.mockResolvedValueOnce({ id: "board-1" });
+  // Server-enforced since M5 (Task 5): board creation and invite-code
+  // generation moved into the `createBoard` callable, so the client no longer
+  // writes the board doc directly. See functions/src/callable/createBoard.ts.
+  it("calls the createBoard callable with the workspace and title, returning its boardId", async () => {
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
     const id = await boardService.createBoard("My Board", "owner-1", "ws-1");
 
     expect(id).toBe("board-1");
-    const payload = addDoc.mock.calls[0][1];
-    expect(payload).toMatchObject({
-      workspaceId: "ws-1",
-      title: "My Board",
-      ownerId: "owner-1",
-      adminId: "owner-1",
-      members: ["owner-1"],
-    });
-    expect(payload.inviteCode).toMatch(/^BORD-[A-Z0-9]{6}$/);
+    expect(mockCallable).toHaveBeenCalledWith({ workspaceId: "ws-1", title: "My Board" });
+    // The client no longer writes the board doc (or an invite code) directly.
+    expect(addDoc).not.toHaveBeenCalled();
   });
 
-  it("invokes the quota choke point for the board's workspace (Phase 5)", async () => {
+  it("invokes the quota choke point for the board's workspace, forwarding no plan/count when the caller omits them", async () => {
     const spy = jest.spyOn(quotaService, "assertQuota");
-    addDoc.mockResolvedValueOnce({ id: "board-1" });
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
 
     await boardService.createBoard("My Board", "owner-1", "ws-1");
 
-    expect(spy).toHaveBeenCalledWith("ws-1", "board");
+    expect(spy).toHaveBeenCalledWith("ws-1", "board", undefined, undefined);
     spy.mockRestore();
+  });
+
+  it("forwards the caller's real plan and current board count to the pre-flight", async () => {
+    const spy = jest.spyOn(quotaService, "assertQuota");
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
+
+    await boardService.createBoard("My Board", "owner-1", "ws-1", "free", 4);
+
+    expect(spy).toHaveBeenCalledWith("ws-1", "board", "free", 4);
+    spy.mockRestore();
+  });
+
+  it("does NOT call the createBoard callable when the pre-flight's own QuotaExceededError fires — the pre-flight short-circuits the request", async () => {
+    // `assertQuota` throwing is NOT silently swallowed — createBoard doesn't
+    // catch/ignore it — but that also means the callable never runs on this
+    // path, so a caller catching only the server's resource-exhausted code
+    // (isResourceExhausted) would MISS this rejection entirely and fall
+    // through to a generic error. Callers must use quotaService.isQuotaDenial,
+    // which recognizes both this and the server's own denial.
+    await expect(
+      boardService.createBoard("My Board", "owner-1", "ws-1", "free", 5)
+    ).rejects.toBeInstanceOf(quotaService.QuotaExceededError);
+    expect(mockCallable).not.toHaveBeenCalled();
+  });
+
+  it("binds httpsCallable to the \"createBoard\" function name", async () => {
+    // Pins the callable's name against the mock factory's own second
+    // argument, not just the mock's configured return value — a typo here
+    // (e.g. "createboard") would still satisfy every other assertion in this
+    // block while breaking every board create in production.
+    mockCallable.mockResolvedValueOnce({ data: { boardId: "board-1", inviteCode: "ABC123" } });
+
+    await boardService.createBoard("My Board", "owner-1", "ws-1");
+
+    expect(mockHttpsCallable).toHaveBeenCalled();
+    expect(mockHttpsCallable.mock.calls[0][1]).toBe("createBoard");
   });
 });
 
@@ -135,6 +179,19 @@ describe("getBoard", () => {
     );
     expect((await boardService.getBoard("board-1"))?.backgroundTemplate).toBe("coordinate");
   });
+
+  // Month 6, fix round 1 (I1) — classId was added to the Board type but
+  // never wired into mapBoard, so AttachToClassButton's "is this board
+  // already submitted" check would have silently seen `undefined` forever.
+  it("maps classId through when the board is attached to a class", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { ownerId: "o1", classId: "class1" }));
+    expect((await boardService.getBoard("board-1"))?.classId).toBe("class1");
+  });
+
+  it("leaves classId undefined for a board that isn't attached to any class", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { ownerId: "o1" }));
+    expect((await boardService.getBoard("board-1"))?.classId).toBeUndefined();
+  });
 });
 
 describe("updateBoard", () => {
@@ -161,14 +218,14 @@ describe("leaveBoard", () => {
 
 describe("addMemberByEmail", () => {
   it("returns not_found when no user has that email", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    lookup.mockResolvedValueOnce(null);
     expect(await boardService.addMemberByEmail("board-1", "x@y.z")).toEqual({
       result: "not_found",
     });
   });
 
   it("returns already_member when the user is already on the board", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "x@y.z" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "x@y.z" });
     getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { members: ["u2"] }));
 
     expect(await boardService.addMemberByEmail("board-1", "x@y.z")).toEqual({
@@ -179,13 +236,28 @@ describe("addMemberByEmail", () => {
   });
 
   it("adds the user and returns added otherwise", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "x@y.z" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "x@y.z" });
     getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { members: ["u1"] }));
 
     const res = await boardService.addMemberByEmail("board-1", "X@Y.Z");
 
     expect(res).toEqual({ result: "added", uid: "u2" });
     expect(updateDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves the email through the callable, never through a users query", async () => {
+    // firestore.rules denies `list` on /users (it carries email addresses), so
+    // the old `getDocs(query(collection(db,"users"), where("email","==",…)))`
+    // would now be rejected outright — and before that it was the query that
+    // made the whole directory dumpable. The raw address goes over the wire:
+    // the callable owns the lowercase/trim this line used to do, so that all
+    // three email lookups in the app normalize identically.
+    lookup.mockResolvedValueOnce(null);
+
+    await boardService.addMemberByEmail("board-1", "  X@Y.Z ");
+
+    expect(lookup).toHaveBeenCalledWith("  X@Y.Z ");
+    expect(getDocs).not.toHaveBeenCalled();
   });
 });
 

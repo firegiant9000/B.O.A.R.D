@@ -19,8 +19,12 @@ import * as boardService from "../services/boardService";
 import * as friendService from "../services/friendService";
 import { createEmbedLink } from "../services/embedService";
 import { getWorkspace } from "../services/workspaceService";
+import AttachToClassButton from "./classroom/AttachToClassButton";
 import { BoardRole, WorkspaceRole } from "../types";
 import { captureException } from "../lib/errorReporting";
+import { Bounds } from "../lib/viewport";
+import { BoardElementSets, toSvgExportElements, SvgExportBounds } from "../lib/svgExport";
+import { exportBoardPdf, exportBoardPng, exportBoardSvg } from "../utils/recapExport";
 
 interface Friend {
   uid: string;
@@ -56,6 +60,31 @@ interface ShareBoardModalProps {
   onMemberAdded: (uid: string) => void;
   /** Board access (members and/or per-board role overrides) changed. */
   onAccessChanged: (next: { members: string[]; roles: Record<string, BoardRole> }) => void;
+
+  // Month 6 (ROADMAP A3 — "Print + export polish": PNG, PDF, SVG). Board
+  // export lives here rather than a dedicated modal since this is already
+  // the board's one "get this board out of the app" surface (invite code,
+  // embed link). `canvasRef`/`boardElements`/`getContentBounds` are thin
+  // references to LIVE state the screen already owns (`useBoardElements`'s
+  // own return values and the canvas ref) — this component decides WHEN and
+  // HOW to export (see `handleExportPdf`/`handleExportPng`), not the screen.
+  /** Used for the share-sheet/print-dialog title and the web PNG's filename. */
+  boardTitle: string;
+  /** The live `<Svg>`/DOM-svg ref PNG export rasterizes — same ref the
+   *  screen already passes to `BoardCanvas` and to `captureBoardImage` for
+   *  the session-recap snapshot. */
+  canvasRef: { current: any };
+  /** The board's full (not viewport-culled) per-kind element arrays —
+   *  exactly `useBoardElements`'s own `paths`/`shapes`/`texts`/`notes`/
+   *  `images`/`audioNotes` fields, passed through unconverted so the actual
+   *  `SvgExportElement[]` construction (`toSvgExportElements`) happens here,
+   *  where it's covered by a render test, not in the untestable screen. */
+  boardElements: BoardElementSets;
+  /** `useBoardElements#contentBounds()` itself, not a snapshot of its
+   *  result — called fresh at export time so a board edited while this
+   *  modal is open still exports its current content. Null for an empty
+   *  board (nothing to export). */
+  getContentBounds: () => Bounds | null;
 }
 
 export default function ShareBoardModal({
@@ -71,6 +100,10 @@ export default function ShareBoardModal({
   onClose,
   onMemberAdded,
   onAccessChanged,
+  boardTitle,
+  canvasRef,
+  boardElements,
+  getContentBounds,
 }: ShareBoardModalProps) {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(false);
@@ -89,6 +122,11 @@ export default function ShareBoardModal({
   const [wsMembers, setWsMembers] = useState<Record<string, WorkspaceRole>>({});
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [roleBusyUid, setRoleBusyUid] = useState<string | null>(null);
+  // Month 6 — board export (PNG/PDF/SVG). `null` idle; the in-progress
+  // format while busy, so the buttons can independently show their own
+  // spinner and none of them can be pressed mid-export.
+  const [exportBusy, setExportBusy] = useState<"png" | "pdf" | "svg" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Sync member/role lists when props change
   useEffect(() => {
@@ -180,6 +218,77 @@ export default function ShareBoardModal({
       setEmbedError(e?.message ?? "Couldn't create an embed link.");
     } finally {
       setEmbedBusy(false);
+    }
+  };
+
+  // Month 6 — `useBoardElements#contentBounds()`'s `{minX,minY,maxX,maxY}`
+  // converted to the `{x,y,width,height}` shape `svgExport.ts`'s functions
+  // take — exactly the conversion that module's own `SvgExportBounds` doc
+  // comment says a caller building bounds from `contentBounds()` must do.
+  // Null for an empty board (nothing to export yet).
+  const buildExportBounds = (): SvgExportBounds | null => {
+    const b = getContentBounds();
+    if (!b) return null;
+    return { x: b.minX, y: b.minY, width: b.maxX - b.minX, height: b.maxY - b.minY };
+  };
+
+  const handleExportPdf = async () => {
+    const bounds = buildExportBounds();
+    if (!bounds) {
+      setExportError("Nothing to export yet — add some content to the board first.");
+      return;
+    }
+    setExportError(null);
+    setExportBusy("pdf");
+    try {
+      await exportBoardPdf(toSvgExportElements(boardElements), bounds, { title: boardTitle });
+    } catch (e: any) {
+      captureException(e, { op: "ShareBoardModal.exportPdf" });
+      setExportError(e?.message ?? "Couldn't export the board as a PDF.");
+    } finally {
+      setExportBusy(null);
+    }
+  };
+
+  const handleExportPng = async () => {
+    setExportError(null);
+    setExportBusy("png");
+    try {
+      // PNG export rasterizes the live canvas directly — see
+      // canvasCapture.ts#captureBoardImage's own G7 caveat (native, boards
+      // with images: unverified pending a real Android device, shipped
+      // anyway rather than disabled). SVG/PDF export above carry no such
+      // risk.
+      await exportBoardPng(canvasRef.current, { title: boardTitle });
+    } catch (e: any) {
+      captureException(e, { op: "ShareBoardModal.exportPng" });
+      setExportError(e?.message ?? "Couldn't export the board as a PNG.");
+    } finally {
+      setExportBusy(null);
+    }
+  };
+
+  // Month 6 (ROADMAP A3) — runs on BOTH platforms. `exportBoardSvg` used to
+  // throw on native for want of a filesystem dependency, so this button was
+  // rendered on web only; `expo-file-system` closed that, and the button is
+  // now unconditional (below) like PNG's and PDF's. The error branch here is
+  // no longer a dead "can't happen on native" path — a failed cache write or
+  // a rejected share surfaces through it the same way a web failure does.
+  const handleExportSvg = async () => {
+    const bounds = buildExportBounds();
+    if (!bounds) {
+      setExportError("Nothing to export yet — add some content to the board first.");
+      return;
+    }
+    setExportError(null);
+    setExportBusy("svg");
+    try {
+      await exportBoardSvg(toSvgExportElements(boardElements), bounds, { title: boardTitle });
+    } catch (e: any) {
+      captureException(e, { op: "ShareBoardModal.exportSvg" });
+      setExportError(e?.message ?? "Couldn't export the board as an SVG.");
+    } finally {
+      setExportBusy(null);
     }
   };
 
@@ -329,6 +438,64 @@ export default function ShareBoardModal({
           <Text style={styles.hint}>
             Anyone with this code can join the board.
           </Text>
+
+          {/* Month 6 — education pilot (Appendix E.2 "Cohort views"). Renders
+              nothing for a non-admin (see the component's own isAdmin gate)
+              and needs nothing beyond props this modal already receives. */}
+          <AttachToClassButton boardId={boardId} isAdmin={isAdmin} />
+
+          {/* Month 6 (ROADMAP A3 — Print + export polish). PNG rasterizes the
+              live canvas; PDF tiles the board across A4 pages; SVG exports the
+              same standalone document `toSvgDocument` produces. All three work
+              on both platforms — web downloads the file, native writes it and
+              opens the share sheet. SVG was web-only until `expo-file-system`
+              was added for it; see `exportBoardSvg`'s NATIVE section. */}
+          <Text style={styles.label}>Export Board</Text>
+          <View style={styles.exportRow}>
+            <TouchableOpacity
+              style={styles.exportBtn}
+              onPress={handleExportPng}
+              disabled={exportBusy !== null}
+            >
+              {exportBusy === "png" ? (
+                <ActivityIndicator size="small" color="#2563eb" />
+              ) : (
+                <Ionicons name="image-outline" size={16} color="#2563eb" />
+              )}
+              <Text style={styles.exportBtnText}>PNG</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.exportBtn}
+              onPress={handleExportPdf}
+              disabled={exportBusy !== null}
+            >
+              {exportBusy === "pdf" ? (
+                <ActivityIndicator size="small" color="#2563eb" />
+              ) : (
+                <Ionicons name="document-outline" size={16} color="#2563eb" />
+              )}
+              <Text style={styles.exportBtnText}>PDF</Text>
+            </TouchableOpacity>
+            {/* Month 6 (ROADMAP A3) — no longer behind `Platform.OS === "web"`:
+                `exportBoardSvg` now writes the file via expo-file-system and
+                shares it on native, so gating this would hide a working
+                format. See that function's NATIVE section. */}
+            <TouchableOpacity
+              style={styles.exportBtn}
+              onPress={handleExportSvg}
+              disabled={exportBusy !== null}
+            >
+              {exportBusy === "svg" ? (
+                <ActivityIndicator size="small" color="#2563eb" />
+              ) : (
+                <Ionicons name="code-slash-outline" size={16} color="#2563eb" />
+              )}
+              <Text style={styles.exportBtnText}>SVG</Text>
+            </TouchableOpacity>
+          </View>
+          {exportError && (
+            <Text style={[styles.hint, styles.errorText]}>{exportError}</Text>
+          )}
 
           {/* Embed link (Phase 8) — web-only read-only iframe link. */}
           {Platform.OS === "web" && (
@@ -656,6 +823,27 @@ const styles = StyleSheet.create({
   },
   copiedText: {
     color: "#16a34a",
+  },
+  exportRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  exportBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+  exportBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#2563eb",
   },
   hint: {
     fontSize: 12,

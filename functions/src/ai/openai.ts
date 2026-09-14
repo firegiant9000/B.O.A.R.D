@@ -5,6 +5,7 @@ import type {
   ChatResult,
   ChatMessage,
 } from "./provider";
+import type { EmbeddingProvider, EmbedResult } from "./embeddings";
 
 // OpenAI adapter behind the AIProvider seam. The API key never leaves the
 // function runtime — it is read from the `OPENAI_API_KEY` secret and passed in by
@@ -21,6 +22,14 @@ const MODEL_MAP: Record<string, string> = {
   "explain-vision": "gpt-4o-mini",
   // Phase 12 — text → diagram. Text-only (returns Mermaid syntax), so no vision tier.
   "diagram-text": "gpt-4o-mini",
+  // Month 6 — flashcard generation (ROADMAP.md's model table). One tier for
+  // both text-only and vision selections, like explain-vision.
+  "flashcards": "gpt-4o-mini",
+  // Month 6 — board Q&A generation over retrieved element excerpts
+  // (ROADMAP.md's model table pairs text-embedding-3-small with this model for
+  // the RAG path). Text-only: the retrieved context is already text, so there
+  // is nothing for a vision tier to look at.
+  "board-qa": "gpt-4o-mini",
 };
 
 export function resolveModel(tier: string): string {
@@ -61,6 +70,38 @@ export class OpenAIProvider implements AIProvider {
         promptTokens: usage?.prompt_tokens ?? 0,
         completionTokens: usage?.completion_tokens ?? 0,
         totalTokens: usage?.total_tokens ?? 0,
+      },
+    };
+  }
+}
+
+// Month 6 — board Q&A embedding write path (functions/src/ai/embeddings.ts,
+// functions/src/triggers/embeddings.ts). A separate class rather than a
+// second method on OpenAIProvider: embeddings are a different OpenAI API
+// surface entirely (`client.embeddings.create`, not `chat.completions`) with
+// a different request/response shape, and `EmbeddingProvider` is its own
+// narrow interface for exactly that reason — see embeddings.ts's header.
+const EMBEDDING_MODEL = "text-embedding-3-small";
+
+export class OpenAIEmbeddingProvider implements EmbeddingProvider {
+  private client: OpenAI;
+
+  constructor(apiKey: string) {
+    this.client = new OpenAI({ apiKey });
+  }
+
+  async embed(text: string): Promise<EmbedResult> {
+    const res = await this.client.embeddings.create({
+      model: EMBEDDING_MODEL,
+      input: text,
+    });
+
+    return {
+      vector: res.data?.[0]?.embedding ?? [],
+      model: res.model ?? EMBEDDING_MODEL,
+      usage: {
+        promptTokens: res.usage?.prompt_tokens ?? 0,
+        totalTokens: res.usage?.total_tokens ?? 0,
       },
     };
   }

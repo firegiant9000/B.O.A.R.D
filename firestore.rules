@@ -1,5 +1,48 @@
 rules_version = '2';
 
+// ⚠️ DEPLOY ORDER — READ BEFORE `firebase deploy --only firestore:rules`.
+//
+// This file denies client-side board, session and workspace creates outright;
+// the only creation paths are the `createBoard`, `createSession` and
+// `createWorkspace` Cloud Functions, which write via the Admin SDK and so
+// bypass these rules entirely.
+//
+// Those functions MUST already be deployed when these rules go live. Deploying
+// this file first takes board, session and workspace creation down for every
+// user: the client path is denied and its replacement does not exist yet.
+// Deploy `functions` first, confirm all three callables respond, then deploy
+// rules.
+//
+// ⚠️ `createWorkspace` is the worst of the three to get wrong, and not by a
+// little. Signing up creates a workspace (src/services/authService.ts ->
+// `ensurePersonalWorkspace` -> `workspaceService.createWorkspace`), so
+// deploying this file ahead of that function does not merely disable a feature
+// — it breaks account creation for every new user.
+//
+// ⚠️ A FOURTH callable is deploy-ordered here, and it is not a create. This
+// file denies `list` on /users, so the email lookup behind invite-by-email
+// (boards and workspaces) and friend search can no longer run as a client
+// query; `lookupUserByEmail` is its only replacement. Deploying this file
+// first breaks all three: the denied query rejects, and none of those call
+// sites catches it, so adding a collaborator or sending a friend request
+// throws a permissions error in the user's face. Deploy `functions` first
+// here as well.
+//
+// Rolling back is the mirror image: roll rules back BEFORE removing the
+// functions, never after.
+//
+// ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the three `allow create`
+// blocks (boards, sessions and workspaces) to their pre-callable predicates.
+// For workspaces that predicate is signed-in + `ownerId` is the caller +
+// `members[caller] == 'owner'` + `plan == 'free'`, and the `plan == 'free'`
+// clause must come back WITH it — without it a rollback hands out Pro for a
+// single client write, since `createWorkspace` is what forces that value today.
+// Do NOT `git revert` the commit that introduced the board/session blocks — it
+// landed as one commit, so reverting it would also make `plan` client-writable
+// on update (handing anyone Pro for a single write) and drop the collaborator
+// cap entirely. The create rules are the emergency surface; the rest of that
+// commit must stay.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -136,19 +179,348 @@ service cloud.firestore {
     // account who exchanged a short-lived signed embed token for a Firebase custom
     // token carrying these claims (functions/src/callable/exchangeEmbedToken.ts).
     // The claim is board-scoped: it grants READ to exactly the one board it names
-    // and that board's canvas — never another board, and (since the identity is
-    // neither owner nor member) never any write. This is the token-scoped embed
+    // and that board's canvas — never another board. This is the token-scoped embed
     // read path the roadmap requires be explicitly rules-tested. `.get(..,default)`
     // so a normal user's token (no embed claims) reads as false, not an error.
+    //
+    // NOTE: this predicate is scope-agnostic on purpose — it is the "is an embed
+    // identity for this board" test, and both scopes read. Writes are gated by
+    // isEmbedEditor below, never by this one.
+    //
+    // isEmbedIdentity is the board-agnostic form: "this caller arrived through the
+    // embed exchange at all". Used to keep embed identities out of paths that gate
+    // only on being signed in — the board invite-code self-join arm below.
+    function isEmbedIdentity() {
+      return isSignedIn() && request.auth.token.get('embed', false) == true;
+    }
+
     function isEmbedViewer(boardId) {
       return isSignedIn() &&
         request.auth.token.get('embed', false) == true &&
         request.auth.token.get('embedBoardId', '') == boardId;
     }
 
+    // Month 5 — editable embed identity. The same custom-token identity, but
+    // exchanged from a v2 token that carried a HOST-ASSERTED subject, so its uid is
+    // namespaced per issuer (`embed:<iss>:<sub>`) and its writes attribute to a
+    // stable person rather than to a shared anonymous per-board uid. A v1 token can
+    // never produce this: verifyEmbedToken rejects v1 + edit outright.
+    //
+    // EXACTLY what it grants, on exactly the one board the claim names:
+    //   - write to paths, notes, textElements, shapes, codeElements and snapshots;
+    //   - read presence/cursors, and write its OWN presence/cursor doc.
+    //
+    // What it does NOT grant, deliberately. This identity is not a board member and
+    // must never become one:
+    //   - the board document (title, members, roles, invite code) stays read-only,
+    //     and the invite-code self-join arm explicitly excludes it (isEmbedIdentity);
+    //   - COMMENTS stay member-only. The roadmap's motivation for host-asserted
+    //     identity names comments and the activity feed, but neither ships here:
+    //     commenting writes an authorId and can fan out notifications, and the
+    //     activity feed is workspace-scoped and so unreachable to a board-scoped
+    //     claim. Read this list, not the roadmap, for what is wired.
+    //   - IMAGES and AUDIO are excluded even though they are canvas content: their
+    //     bytes live in Cloud Storage, gated on isBoardMember by storage.rules'
+    //     matching block — except storage.rules is NOT currently deployed
+    //     (firebase.json now HAS a `storage` entry and the ruleset is covered by
+    //     firestore-tests/storage.rules.test.js, but nobody has pushed it to the
+    //     bucket yet — see the banner at the top of storage.rules), so
+    //     that gate is not a compensating control today, just a written-but-inert
+    //     one. The exclusion here still stands even once it is deployed — an embed
+    //     identity is not a board member either way — but until then, nothing is
+    //     actually stopping an embed editor at the Storage layer; only the
+    //     Firestore-side exclusion below does. Granting the Firestore document
+    //     alone would let an embed editor create an element pointing at an object
+    //     it can neither upload nor read back — a broken element, not a feature.
+    //     Re-add here only together with a matching, ACTUALLY DEPLOYED
+    //     storage.rules predicate.
+    //   - every other board is unreachable, same as a view embed.
+    //
+    // The subject behind this uid is asserted by the host, not proved. See the
+    // trust-model note at the top of functions/src/embed/token.ts: a compromised
+    // allowlisted host can impersonate its OWN users to each other; it cannot reach
+    // a real B.O.A.R.D account or a board its token does not name.
+    function isEmbedEditor(boardId) {
+      return isEmbedViewer(boardId) &&
+        request.auth.token.get('embedScope', '') == 'edit';
+    }
+
+    // ── M5 seat cap ───────────────────────────────────────────────────────────
+    // The per-board collaborator cap. Enforced here as a rules predicate rather
+    // than in a Cloud Function because the invite-code self-join path is a client
+    // `update` to `members`, not a create — a callable would leave that door open.
+    // This is the only enforcement point for `collaboratorsPerBoard`; nothing on
+    // the Functions side reads that limit today.
+    //
+    // ⚠️ DUPLICATED NUMBERS. These three must equal
+    // `PLAN_LIMITS[*].collaboratorsPerBoard` in functions/src/billing/limits.ts,
+    // which is the source of truth. Rules cannot import TypeScript, so the
+    // agreement is held by a drift test — `functions/src/__tests__/limits.test.ts`
+    // parses this map as text and fails if the two disagree in either direction.
+    // Edit both files together.
+    function seatCaps() {
+      return {'free': 4, 'pro': 25, 'edu': 100};
+    }
+
+    // The workspace's plan. Missing workspace, missing field, or a legacy board
+    // with no workspaceId all resolve to 'free' — an unreadable or unknown plan
+    // fails closed to the smallest cap, matching `limitFor`'s fallback on the
+    // Functions side. `plan` itself is not client-writable (see the workspaces
+    // rules below), so this value is trustworthy.
+    function planOfWorkspace(wsId) {
+      return wsId != null && wsId != '' &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) ?
+        get(/databases/$(database)/documents/workspaces/$(wsId)).data.get('plan', 'free') : 'free';
+    }
+
+    // An unrecognized plan string falls back to the free cap, same as limitFor.
+    function planSeatLimit(wsId) {
+      return seatCaps().get(planOfWorkspace(wsId), seatCaps().free);
+    }
+
+    // Whether a board `update` leaves `members` within the plan's cap. The cap
+    // counts the whole `members` array (the owner included) — that is the unit
+    // both this rule and the limits table use.
+    //
+    // The plan is resolved from the STORED workspaceId (`board`, not `next`), so a
+    // write cannot re-parent a board into a richer workspace and be measured
+    // against that workspace's cap in the same operation. `workspaceIdUnchanged`
+    // below closes re-parenting outright; this makes the cap safe even if that
+    // rule is ever relaxed.
+    //
+    // The second clause permits any update that does not GROW the membership —
+    // shrinking it, leaving it the same size, or swapping one member for another.
+    // It exists for the board that is ALREADY over cap (what a pro → free
+    // downgrade leaves behind): without it such a board freezes permanently, and
+    // a member could not even leave. A same-size swap is allowed as a consequence;
+    // it never increases the seat count, so it is not a way around the cap.
+    function withinSeatCap(board, next) {
+      let nextSize = next.get('members', []).size();
+      return nextSize <= planSeatLimit(board.get('workspaceId', null)) ||
+        nextSize <= board.get('members', []).size();
+    }
+
+    // A board's `workspaceId` is immutable from the client: a board that has one
+    // keeps it, and a legacy board that has none stays that way. Only the ADMIN
+    // arm of the board `update` rule below can write arbitrary fields, so without
+    // this it could re-parent a board — and that breaks two gates at once:
+    //
+    //   • The board cap. `countBoards` (functions/src/billing/usage.ts) counts
+    //     `boards where workspaceId == ws`, so a patched client could unset
+    //     `workspaceId` on each of its 5 boards and they would STAY USABLE —
+    //     `inBoardWorkspace` treats a null workspaceId as permitted and the board
+    //     list deliberately keeps such boards visible. The count would then return
+    //     0 and the callable would grant 5 more boards, repeatable indefinitely.
+    //   • The seat cap, if it ever resolved the plan from the incoming write
+    //     rather than the stored doc (see `withinSeatCap` above).
+    //
+    // Safe for every real path: no client writes this field on update
+    // (boardService.updateBoard accepts only title/adminId/backgroundTemplate),
+    // creates are Cloud-Function-only, and the Phase 9 backfill stamps it via the
+    // Admin SDK, which bypasses these rules. This pins the TRANSITION, so existing
+    // legacy boards keep working and the backfill is unaffected.
+    function workspaceIdUnchanged(board, next) {
+      return next.get('workspaceId', null) == board.get('workspaceId', null);
+    }
+
+    // ── M6 education pilot (invite-based class enrollment + instructor grid) ──
+    // A class is its own top-level `classes/{classId}` collection (see that
+    // match block below for why), and a board links to one via `classId`.
+    // The instructor's cross-board read must be a rules predicate resolvable
+    // in a BOUNDED number of get()s, because rules cannot query — so the
+    // linkage lives on the board doc itself (`classId`), never only inside
+    // `classes/{id}/...`, and this resolves it with exactly one get() on the
+    // named class.
+
+    // Whether `uid` is an enrolled student of `classId` — the enrollment
+    // proof `classIdTransitionValid` requires before a board may ever be
+    // stamped with that class. `.get('studentIds', [])` so a class doc with
+    // no enrollments yet reads as an empty list rather than erroring.
+    function isEnrolledInClass(classId, uid) {
+      return classId != null && classId != '' &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        uid in get(/databases/$(database)/documents/classes/$(classId)).data.get('studentIds', []);
+    }
+
+    // The instructor cohort grid's read path (Appendix E.2 "Cohort views —
+    // see all student boards for an assignment in one grid"). A board whose
+    // `classId` names a real class is readable by THAT class's instructor,
+    // resolved from the class doc's own `instructorId` — never from a
+    // client-supplied claim.
+    function isInstructorOfClass(classId, uid) {
+      return classId != null && classId != '' &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        get(/databases/$(database)/documents/classes/$(classId)).data.instructorId == uid;
+    }
+
+    // A board's `classId` is pinned the same way `workspaceIdUnchanged` pins
+    // `workspaceId` above (see that helper's comment for the re-parenting
+    // hazard this mirrors) — ANDed into the whole board `update` rule below,
+    // so it binds even the admin arm, which otherwise has no field
+    // restriction. Without this, a board's own owner — typically the exact
+    // student who submitted it — could simply update `classId` away (or
+    // clear it) to escape the instructor's cohort view after the fact.
+    //
+    // The one legitimate transition is null -> a real classId, and even that
+    // requires the CALLER (request.auth.uid — the uid performing this write,
+    // not necessarily the board's owner) to be an enrolled student of that
+    // class at this instant. Without that check, any board admin could
+    // attach a board to an arbitrary/guessed classId and hand its content to
+    // a class's instructor without ever having joined that class — exactly
+    // the kind of forged-membership hole a bounded-get() rules predicate
+    // must keep out, since it cannot verify enrollment any other way.
+    //
+    // Fix round 1, I3 — the pin above left a polluted roster with NO cleanup
+    // lever: an instructor can't unpin a wrongly-attached board, and there
+    // was no way to ever clear `classId` again once set. The one additional
+    // legitimate transition added here is real classId -> null, and ONLY
+    // when that class no longer EXISTS (the instructor deleted it) — checked
+    // with `!exists(...)`, never a client-supplied "trust me" flag. Safe
+    // because nothing anywhere derives readability or roster membership from
+    // a class that isn't there: `isInstructorOfClass`/`isEnrolledInClass`
+    // both start with `exists(...)` themselves and fail closed the moment
+    // the class doc is gone. A board can freely re-attach to a DIFFERENT,
+    // still-existing class afterward under the same null -> real rule above.
+    function classIdTransitionValid(board, next) {
+      let prevClassId = board.get('classId', null);
+      let nextClassId = next.get('classId', null);
+      return nextClassId == prevClassId ||
+        (prevClassId == null && nextClassId != null && isEnrolledInClass(nextClassId, request.auth.uid)) ||
+        (prevClassId != null && nextClassId == null &&
+         !exists(/databases/$(database)/documents/classes/$(prevClassId)));
+    }
+
+    // ── M6 plan gates (feature tiers other than the seat cap) ──────────────────
+    // A board's plan, resolved through the SAME `planOfWorkspace` helper the M5
+    // seat cap uses above — never a second way to read `plan`. A legacy board
+    // (no workspaceId) resolves through planOfWorkspace's own null handling to
+    // 'free', same as everywhere else that helper is used.
+    function planOfBoard(boardId) {
+      return planOfWorkspace(get(/databases/$(database)/documents/boards/$(boardId)).data.get('workspaceId', null));
+    }
+
+    // Voice notes are Pro-tier (ROADMAP.md:583-587). An ALLOW-list of paid
+    // tiers, not `planOfBoard(boardId) != 'free'`: an unrecognized plan string
+    // (a future tier, corrupt data) must fail CLOSED to "not paid", mirroring
+    // `planSeatLimit`'s own fallback-to-free behavior above. This is a
+    // deliberate, narrow divergence from the advisory client check
+    // (`canRecordVoiceNotes` in src/services/audioService.ts, which tests
+    // `plan !== 'free'` instead) — the two agree on every real `Plan` value
+    // and differ only on data neither should ever see.
+    function boardOnPaidPlan(boardId) {
+      return planOfBoard(boardId) in ['pro', 'edu'];
+    }
+
+    // ── Month 6 polls ─────────────────────────────────────────────────────────
+    // Helpers for the `polls`/`votes` match blocks below (inside `boards`).
+    // Split out (rather than inlined at each call site) because `pollData`
+    // and `isValidVotePayload` are each used from more than one `allow`
+    // clause, and the doc-access cache within one rules evaluation (noted
+    // at the board `allow update` above) means the repeat `get()`s below
+    // cost nothing extra.
+    function pollExists(boardId, pollId) {
+      return exists(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId));
+    }
+
+    function pollData(boardId, pollId) {
+      return get(/databases/$(database)/documents/boards/$(boardId)/polls/$(pollId)).data;
+    }
+
+    // Fix round 2 (CRITICAL) — this file used to gate votes-read on
+    // `isAnonymousPoll(boardId, pollId)`, which read the PARENT poll doc's
+    // CURRENT `anonymous` field. That field is mutable (round 1 pinned it on
+    // `update`) but NOT recreate-proof: Firestore never cascade-deletes
+    // subcollections (pollService.ts's deletePoll/clearBoardPolls headers),
+    // so an effective editor could `deleteDoc` the poll directly — skipping
+    // the client-side votes/tally cleanup `deletePoll` does — then
+    // `setDoc` a FRESH poll at the SAME id with `anonymous: false` (a
+    // `create`, since `resource` is null after the delete, so round 1's
+    // `allow update` pin never runs). The old votes were never deleted; they
+    // sit right there under the recreated poll's own path, and
+    // `isAnonymousPoll` would then read the NEW doc's `false` and open the
+    // entire subcollection — whose document ids ARE the voters' uids.
+    //
+    // The fix: a vote's readability no longer derives from the parent poll
+    // AT ALL. Each vote doc stamps its OWN `anonymous` boolean, fixed at the
+    // moment THAT SPECIFIC doc is first created (validated below against the
+    // poll's value at that instant — a voter can't just declare themselves
+    // anonymous) and pinned immutable on every later update to that SAME
+    // doc (`votes/{voterId}`'s `allow update`, below) — independent of
+    // whatever the parent poll claims afterward, through an update, a
+    // delete, or a delete-then-recreate alike. Votes-read gates on THIS
+    // field (`resource.data.anonymous == false`), never on `pollData(...)`.
+    //
+    // Consequence for READS: because the condition now depends on the vote
+    // document's OWN data (not a fixed cross-document fact true for the
+    // whole collection), an unfiltered collection query can no longer be
+    // proven safe ahead of time — Firestore requires a LIST query to be
+    // satisfiable from the query's own shape, not from re-checking each
+    // potential result. `pollService.subscribeToVotes` adds
+    // `where('anonymous', '==', false)` for exactly this reason (see its
+    // own comment). `pollService.deletePoll` no longer queries votes at
+    // all (fix round 3 moved subcollection cleanup server-side, below), so
+    // it needs no such filter.
+    //
+    // No client-side path ever needed to LIST anonymous votes — but they
+    // are NOT permanently orphaned (fix round 3): once the poll doc is
+    // gone, `functions/src/triggers/pollTally.ts`'s `onPollDeleted` removes
+    // every vote doc (anonymous or not) and the tally doc, via the Admin
+    // SDK, which bypasses this same read gate.
+
+    // Bounds `optionIndices`' SIZE against the poll's mode (single = exactly
+    // one; dots = 1..MAX_DOT_VOTES, mirrored from pollService.MAX_DOT_VOTES —
+    // keep the two in sync — src/services/__tests__/pollService.test.ts's
+    // "firestore.rules dot-vote cap mirror" is the drift test that enforces
+    // it, parsing this function's own source as text, mirroring
+    // src/lib/__tests__/planLimits.test.ts's cross-package technique) and its
+    // TYPE (a list of DISTINCT entries — `idx.toSet().size() == idx.size()`
+    // rejects e.g. `[0,0,0]`, which would otherwise pass the size bound and
+    // let one voter inflate a single option's count by repeating an index;
+    // `toggleDotVote` can never produce such a doc itself, so this is a
+    // client/rules boundary check, not a UX affordance anyone loses).
+    // Deliberately does NOT validate that every element actually falls
+    // within [0, options.size()) — the rules language has no per-element
+    // loop/bounds construct for a dynamic-length list, and an out-of-range
+    // index is a correctness gap a tolerant reader absorbs (PollVote's type
+    // comment in src/types/index.ts), never a security one: the doc id /
+    // `userId` field pinning below is what actually enforces "one vote per
+    // user," independent of this list's contents.
+    function isValidVotePayload(boardId, pollId) {
+      let idx = request.resource.data.optionIndices;
+      return pollExists(boardId, pollId) &&
+        idx is list && idx.size() >= 1 && idx.toSet().size() == idx.size() &&
+        (pollData(boardId, pollId).get('mode', 'single') == 'dots' ? idx.size() <= 3 : idx.size() == 1);
+    }
+
     // ── users ─────────────────────────────────────────────────────────────────
+    // `get`/`list` split, for the same reason as `joinCodes` below and with a
+    // worse payload. A bare `allow read: if isSignedIn()` covers BOTH verbs,
+    // and with no `resource` reference it is trivially list-provable: one
+    // `getDocs(collection(db, 'users'))` returns the whole directory. These
+    // documents carry `email` (src/services/authService.ts writes it on
+    // signup), so that query is a bulk address-book dump.
+    //
+    // What makes it a live disclosure rather than a theoretical one is WHO
+    // counts as signed in. An embed identity is a real Firebase Auth session:
+    // `exchangeEmbedToken` (functions/src/callable/exchangeEmbedToken.ts) signs
+    // the bearer of a PUBLIC read-only embed link into one, so `request.auth !=
+    // null` is satisfied by anyone who has ever been handed such a link — not
+    // just by account holders.
+    //
+    // `get` stays open to any signed-in user because profile lookup by id is
+    // load-bearing everywhere a display name is rendered beside someone else's
+    // content. Denying `list` costs no feature: email lookup — invite-by-email
+    // on boards and workspaces, and friend search — moved to the
+    // `lookupUserByEmail` callable (functions/src/callable/lookupUserByEmail.ts),
+    // which returns only `{ uid, displayName, email }` for one exact address.
+    // It could NOT stay client-side under a narrower rule: Firestore exposes
+    // only `request.query.limit`, `.offset` and `.orderBy` to rules, never the
+    // `where` clauses, so no predicate can admit "the email-equality query" and
+    // refuse an unfiltered dump. The lookup has to move, or `list` has to stay
+    // open. See the deploy-order warning at the top of this file.
     match /users/{uid} {
-      allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
+      allow get:  if isSignedIn();          // profile lookup by id (display names, friend rows)
+      allow list: if false;                 // never enumerable — these documents carry `email`
       allow create: if isOwner(uid);
       allow update: if isOwner(uid);
       allow delete: if false;               // accounts are not deleted client-side
@@ -175,6 +547,42 @@ service cloud.firestore {
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
         allow delete: if isOwner(uid);
       }
+
+      // Flashcard decks + cards (Month 6 — flashcard generation + review).
+      // Scheduling is per-user, never board-scoped: two students
+      // studying the same board have different SM-2 schedules (ROADMAP.md's
+      // flashcard item), so a deck lives under the OWNING user, not under a
+      // board. This subcollection has no rule until this block — without it
+      // every deck/card write is denied outright by the default deny, and the
+      // feature simply cannot work.
+      //
+      // Gated strictly on isOwner(uid) for BOTH read and write, on both the
+      // deck and the card — as private as the `private` API-key subcollection
+      // above, deliberately NOT as permissive as the parent `users/{uid}`
+      // document itself (whose `allow get: if isSignedIn()` exists only for
+      // profile lookup by id). A person's study decks are theirs
+      // alone; nothing about "what I'm studying" is meant to be as
+      // discoverable as a display name, so that looser parent rule is not
+      // inherited here — it never would be automatically (Firestore rules
+      // don't cascade to subcollections), but is called out because every
+      // other subcollection under `users/{uid}` in this file (private,
+      // notifications) already made the same deliberate choice and this one
+      // must too.
+      //
+      // No field-shape validation on the card's numeric schedule fields
+      // (repetitions/intervalDays/easeFactor/dueAtMs) beyond the owner gate.
+      // Unlike a cross-user surface (votes, reactions, ...), the only party
+      // who can ever corrupt this data is the deck's own owner — there is no
+      // second party to protect from a bad write here, so that validation is
+      // the CLIENT's job on read (src/services/flashcardService.ts, mirroring
+      // src/lib/sm2.ts's own Card-interface contract), not a rules concern.
+      match /decks/{deckId} {
+        allow read, write: if isOwner(uid);
+
+        match /cards/{cardId} {
+          allow read, write: if isOwner(uid);
+        }
+      }
     }
 
     // ── workspaces ──────────────────────────────────────────────────────────────
@@ -183,12 +591,92 @@ service cloud.firestore {
     // time-to-first-paint perf gate clear). Role/membership changes are owner/admin
     // only; ordinary members may rename the workspace. Boards bind to a workspace in
     // Phase 2, where this becomes the root of board access.
+    //
+    // `plan` is the one field a client may never choose (M5). Every server-side
+    // quota gate — checkAiQuota, handleCreateBoard, handleCreateSession,
+    // handleCreateWorkspace and `planSeatLimit` above — reads it, so a client
+    // that could write it could hand itself Pro with a single Firestore write and
+    // every one of those gates would agree. No client write of the field survives
+    // anywhere: `create` is denied outright (see the create rule below, which
+    // moved the workspace cap and the `plan: 'free'` stamp into the
+    // `createWorkspace` callable), and `update` may not touch the field at all —
+    // which leaves the Stripe webhook and that callable, both Admin SDK and both
+    // bypassing these rules, as the only writers of `plan` at any point in a
+    // workspace's life. Note the update restriction is on the FIELD, not on a
+    // field allowlist: every other workspace field (name, members, memberIds,
+    // settings, anything added later) keeps its existing role gate untouched.
+    //
+    // One trap to know about: `affectedKeys()` counts REMOVALS as well as
+    // changes, so a full-document `setDoc` that simply omits `plan` is denied too.
+    // No client path does that today (every workspace write is an `updateDoc`),
+    // and the behaviour is the safe direction — but a future full-overwrite writer
+    // would have to carry `plan` through unchanged.
     match /workspaces/{workspaceId} {
       allow read:   if isSignedIn() && request.auth.uid in resource.data.members;
-      allow create: if isSignedIn() &&
-                      request.resource.data.ownerId == request.auth.uid &&
-                      request.resource.data.members[request.auth.uid] == 'owner';
-      allow update: if isSignedIn() && (
+      // Creating a workspace is Cloud-Function-only
+      // (functions/src/callable/createWorkspace.ts). The function counts the
+      // workspaces the caller already OWNS, denies past the plan's cap (free: 1),
+      // and writes with the Admin SDK, which bypasses these rules. A client
+      // create is denied here because no rules predicate can count a caller's
+      // existing documents — so leaving the direct path open would make the cap
+      // bypassable by a patched bundle or a raw REST call, exactly as it was
+      // until now. The function also forces `plan: 'free'`, which is why this
+      // rule no longer carries a `plan` predicate of its own.
+      //
+      // This is the highest-stakes of the three Cloud-Function-only creates:
+      // SIGNUP creates a workspace (src/services/authService.ts ->
+      // ensurePersonalWorkspace), not just the workspace-switcher button. See
+      // the deploy-order warning at the top of this file.
+      //
+      // The cap rests on the `update` rule below as well as on the callable,
+      // exactly as the board cap rests on `workspaceIdUnchanged`. That rule
+      // pins `ownerId` alongside `plan`: `countOwnedWorkspaces` filters on
+      // `ownerId`, so an owner who could rewrite it would keep their `members`
+      // entry (the workspace stays fully usable, and still appears in their
+      // `memberIds array-contains` listing), vanish from the count, and earn a
+      // fresh allowance for one client write. Do not relax either predicate in
+      // isolation.
+      //
+      // Pinning `ownerId` breaks nothing, and that was checked rather than
+      // assumed: nothing writes the field after create. The only writers in the
+      // repo are `createWorkspace` (functions/src/callable/createWorkspace.ts)
+      // and the one-off backfill (scripts/migrate-workspaces.js), both Admin
+      // SDK — which bypasses these rules — and both only on the create itself.
+      // Every client-side occurrence is a read: `mapWorkspace`'s default in
+      // src/services/workspaceService.ts and the ownership comparisons in the
+      // UI. There is no ownership-transfer flow to break, and if one is ever
+      // built it belongs server-side anyway, where the Admin SDK bypasses this
+      // rule exactly as the Stripe webhook already does for `plan`.
+      //
+      // Remaining honest caveat, unchanged by the pin and not closable here:
+      // `allow delete` below lets an owner delete a workspace, which FREES a
+      // slot. That is intended — the cap is on how many you hold at once, not
+      // on how many you have ever made.
+      //
+      // Month 6 adds a THIRD pinned field, `welcomeSessionGrantUsed`, for the
+      // same structural reason. The onboarding seed's demo session is created
+      // un-metered exactly once per workspace (functions/src/callable/
+      // createSession.ts), and the only thing stopping that from being an
+      // unlimited free-session tap is this marker: the callable's transaction
+      // refuses the grant once the field is `true`. A client that could write
+      // the field could set it back to `false` and re-claim the grant every
+      // month — a strictly worse leak than the 1-in-3 tax the grant was added
+      // to remove. Setting it to `true` themselves would only deny themselves
+      // the grant, and is harmless, but the pin is on the field CHANGING
+      // rather than on a direction, exactly as with `plan` above: a rule that
+      // reasons about which way a value moved is a rule with a case it has not
+      // thought about yet.
+      //
+      // Pinning it breaks nothing, and that was checked rather than assumed:
+      // the only writer in the repo is that callable's transaction, Admin SDK,
+      // which bypasses these rules. The onboarding seed's own client write
+      // (src/services/onboardingService.ts) touches `sampleSeededAt` and
+      // nothing else, so it stays on the owner/admin arm below untouched —
+      // and `sampleSeededAt` is deliberately NOT pinned, because that one IS
+      // a client write and pinning it would break seeding outright.
+      allow create: if false;
+      allow update: if isSignedIn() &&
+                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan', 'ownerId', 'welcomeSessionGrantUsed']) && (
                       resource.data.members[request.auth.uid] in ['owner', 'admin'] ||
                       (request.auth.uid in resource.data.members &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']))
@@ -231,6 +719,185 @@ service cloud.firestore {
       match /aiRate/{bucketId} {
         allow read, write: if false;
       }
+
+      // Plan metering (M5). Written ONLY by Cloud Functions via the Admin SDK,
+      // exactly like aiUsage/aiLog above. Owner/admin read it for the usage page.
+      match /usage/{period} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
+      // Stripe subscription state (M5). The webhook is the only writer; a client
+      // that could write here could grant itself Pro.
+      match /billing/{docId} {
+        allow read:  if isSignedIn() &&
+                       get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.members[request.auth.uid] in ['owner', 'admin'];
+        allow write: if false;
+      }
+    }
+
+    // ── classes (Month 6 — education pilot) ─────────────────────────────────────
+    // A class is its own top-level collection, deliberately NOT an overloaded
+    // workspace: a workspace carries plan/billing/seat-cap semantics a class
+    // does not want, and the edu tier is sold manually with no self-serve
+    // (ROADMAP.md's Education-pilot section).
+    //
+    // University-level only; K-12 is explicitly out of scope (COPPA's
+    // verifiable-parental-consent requirement for under-13 users, which this
+    // invite-based flow makes no attempt to satisfy). Enrollment is
+    // self-service by design: a student redeems `joinCode` with THEIR OWN
+    // account, so no roster of a person who has never signed up is ever
+    // collected here. Do not "helpfully" add a bulk/CSV roster importer —
+    // that is exactly the bulk-PII path the education pilot was reshaped
+    // away from (ROADMAP.md A5).
+    match /classes/{classId} {
+      // Fix round 1, I4 — read is instructor + enrolled students ONLY. This
+      // used to also allow any signed-in user holding/guessing the classId
+      // to read the WHOLE document (mirroring the board `inviteCode`
+      // lookup), which was rejected on review: a class roster is precisely
+      // the bulk-PII artifact A5 was reshaped to avoid, unlike a board's
+      // `members` list (the roster of a thing you were already invited to).
+      // The self-enrollment lookup now goes through the narrower
+      // `joinCodes/{code}` collection below instead, which holds nothing but
+      // a classId.
+      allow read: if isSignedIn() && (
+                    request.auth.uid == resource.data.instructorId ||
+                    request.auth.uid in resource.data.get('studentIds', [])
+                  );
+
+      // Creating a class is Cloud-Function-only
+      // (functions/src/callable/createClass.ts) for the same reason board/
+      // session creation is: the join code must be generated where a client
+      // cannot choose it (see generateInviteCode's header on
+      // functions/src/callable/createBoard.ts). A client that could pick its
+      // own join code could plant a class document whose code collides with
+      // (or is more memorable than) a real instructor's, silently diverting
+      // that instructor's students' self-enrollment lookup into an
+      // attacker-controlled class instead — the same query-collision hazard
+      // a guessable board invite code would create.
+      allow create: if false;
+
+      // The instructor may rename their class, or remove ONE student from
+      // the roster (fix round 1, I3 — without a removal lever, a roster
+      // polluted via a bad write had no cleanup path at all: `joinCode` is
+      // immutable and the only other lever, deleting the whole class, is
+      // destructive). The removal arm is kept exactly as narrow as
+      // self-enroll below — it may ONLY shrink the roster by exactly one
+      // DISTINCT entry that was already present, never touch any other
+      // field, and never add anyone — so it cannot become a general
+      // roster-write arm.
+      //
+      // Fix round 2, S1 — an earlier version of this arm (and this
+      // comment) claimed "exactly one" while only checking
+      // `hasAll(prev)` + `size == prev-1`, which a SET-containment check
+      // doesn't actually enforce: `hasAll` ignores duplicates, so writing
+      // `[s1,s1]` from `[s1,s2,s3]` passed both checks (2 == 3-1) while
+      // actually removing TWO distinct entries and duplicating a third —
+      // confirmed empirically, and a duplicated uid would also produce
+      // duplicate React keys in ClassroomHome's roster list. The
+      // `toSet().size() == size()` clause below closes it in one clause
+      // (chosen over merely softening the comment, since the fix was that
+      // cheap): combined with `hasAll` + `size-1`, a next array that is
+      // distinct, a subset of prev, and exactly one shorter can only be
+      // prev with exactly one distinct element removed.
+      //
+      // Fix round 2, S2 — `arrayRemove` of a uid already gone from the
+      // roster (stale client list, another device already removed them) is
+      // a client-side no-op: `next.studentIds == prev.studentIds` exactly.
+      // This arm's OWN shrink-by-one clause denies that outright (size
+      // diff is 0, not -1) — but a dedicated removal-arm idempotent clause
+      // would be a THIRD, entirely redundant grant. This exact write is
+      // ALREADY allowed, REDUNDANTLY, by two other arms at once:
+      //   1. The RENAME arm just above. `diff().affectedKeys()` on a write
+      //      that only resends the CURRENT `studentIds` value is EMPTY (or
+      //      `{updatedAt}` for the real client write, which stamps
+      //      `serverTimestamp()`) — and `hasOnly(['name','updatedAt'])` is
+      //      satisfied vacuously by an empty set, or trivially by
+      //      `{updatedAt}` alone. Neither check reads `studentIds` at all.
+      //   2. The self-enroll arm's own `next == prev` clause below, which
+      //      has no instructorId check and grants an idempotent resend to
+      //      ANY signed-in caller (the same accepted tradeoff this file's
+      //      N4 ruling covers), not just the instructor.
+      // Fix round 3 (BLOCKING) — an earlier version of this comment
+      // attributed this SOLELY to the self-enroll arm and called that
+      // "verified empirically" from disabling only the (never-shipped)
+      // removal-arm clause; that check could not distinguish "two
+      // redundant grantors" from "three," so the claim was unfalsifiable
+      // by construction — the same class of mistake as S1's fixture miss,
+      // in prose instead of a test. Re-verified properly this round by
+      // ARM ISOLATION: disabling the rename arm alone still passes (via
+      // self-enroll); disabling self-enroll's idempotent branch alone
+      // still passes (via rename); disabling BOTH together is what
+      // actually fails. The conclusion (no removal-arm clause needed) was
+      // right; the reasoning was not, and now is.
+      //
+      // Self-enrollment mirrors the board invite-code self-join rule:
+      // append EXACTLY the caller's own uid to `studentIds`. Fix round 1,
+      // C1 (CRITICAL) — the ORIGINAL form of this arm only checked
+      // `hasAll(prev)` + `size == prev+1` + `hasAny([caller])`, which an
+      // ALREADY-ENROLLED caller trivially satisfies while adding an
+      // ARBITRARY third uid: the caller is already in `prev`, so they're
+      // also (trivially) in `next`, and nothing pinned the ADDED element
+      // specifically. `!(caller in prev)` below closes that: it forces the
+      // "grow by one" branch to apply only to a genuinely NEW enrollment, so
+      // the single new entry can only be attributed to the caller. The
+      // separate `next == prev` branch exists so a student who is ALREADY
+      // enrolled can harmlessly re-submit the same join flow (`arrayUnion`
+      // is a client-side no-op for them) without that idempotent retry being
+      // rejected outright.
+      allow update: if isSignedIn() && (
+                      (request.auth.uid == resource.data.instructorId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt'])) ||
+                      (request.auth.uid == resource.data.instructorId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
+                       resource.data.get('studentIds', []).hasAll(request.resource.data.studentIds) &&
+                       request.resource.data.studentIds.toSet().size() == request.resource.data.studentIds.size() &&
+                       request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() - 1) ||
+                      (
+                        resource.data.joinCode != null &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt']) &&
+                        (
+                          request.resource.data.studentIds == resource.data.get('studentIds', []) ||
+                          (
+                            request.resource.data.studentIds.hasAll(resource.data.get('studentIds', [])) &&
+                            !(request.auth.uid in resource.data.get('studentIds', [])) &&
+                            request.resource.data.studentIds.size() == resource.data.get('studentIds', []).size() + 1 &&
+                            request.resource.data.studentIds.hasAny([request.auth.uid])
+                          )
+                        )
+                      )
+                    );
+
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.instructorId;
+    }
+
+    // Fix round 1, I4 — the self-enrollment lookup credential, narrowed away
+    // from the class document itself. Holds ONLY `{classId}` per code: any
+    // signed-in user may read ONE BY ID (needed to resolve a code before the
+    // caller is enrolled anywhere), but that discloses nothing but "this
+    // code maps to this classId" — never a roster, never who teaches it.
+    // Written ONLY by `createClass` (functions/src/callable/createClass.ts)
+    // via the Admin SDK in the SAME batch as the class document itself, so
+    // the two can never diverge. The document ID IS the join code, so a
+    // lookup is a plain `get()` by ID — never a `where()` query — which
+    // sidesteps the query-collision hazard a client-chosen code would
+    // otherwise create entirely, rather than merely relying on obscurity.
+    //
+    // Fix round 2, N1 (CRITICAL, caught on re-review) — `allow read` covers
+    // BOTH `get` (by id) and `list` (the whole collection), and a bare
+    // `isSignedIn()` with no `resource` reference is trivially
+    // list-provable: any signed-in user could `getDocs(collection(db,
+    // 'joinCodes'))` and harvest every join code (and therefore, via a
+    // cheap self-enroll write per code, every class's full roster) in ONE
+    // query — exactly the bulk-PII outcome this whole collection exists to
+    // prevent, and worse than the pre-fix-round-1 state (which needed one
+    // classId per class). `get`/`list` split below closes it: nothing in
+    // this app ever lists this collection, only `getDoc`s it by a known id,
+    // so narrowing to `get` breaks no real path.
+    match /joinCodes/{code} {
+      allow get:  if isSignedIn();
+      allow list: if false;
+      allow write: if false;
     }
 
     // ── boards ────────────────────────────────────────────────────────────────
@@ -243,68 +910,216 @@ service cloud.firestore {
       allow read:   if (isSignedIn() && (
                       (request.auth.uid == resource.data.ownerId && inBoardWorkspace(resource.data)) ||
                       (request.auth.uid in resource.data.members && inBoardWorkspace(resource.data)) ||
-                      resource.data.inviteCode != null
+                      resource.data.inviteCode != null ||
+                      // Month 6 — the instructor cohort grid (Appendix E.2).
+                      // Deliberately NOT gated by `inBoardWorkspace`: the
+                      // instructor is very likely not a member of the
+                      // student's own workspace at all, and this is a
+                      // narrow, class-scoped grant, not general board access.
+                      isInstructorOfClass(resource.data.get('classId', null), request.auth.uid)
                     )) ||
                     // Phase 8 — a board-scoped embed token grants read-only access.
                     isEmbedViewer(boardId);
-      // Creator must own the new board AND belong to the workspace it's stamped
-      // into (can't plant a board in someone else's workspace). Legacy/no-ws
-      // creates still allowed during the migration window.
-      allow create: if isSignedIn() &&
-                      request.auth.uid == request.resource.data.ownerId &&
-                      (request.resource.data.get('workspaceId', null) == null ||
-                       isMemberOfWorkspace(request.resource.data.get('workspaceId', null)));
+      // Creating a board is Cloud-Function-only (functions/src/callable/createBoard.ts).
+      // The function reads the live board count and denies past the plan's cap,
+      // then writes with the Admin SDK, which bypasses these rules. A client
+      // create is denied here because no rules predicate can count a workspace's
+      // boards — so leaving the direct path open would make the cap bypassable by
+      // a patched bundle or a raw REST call. See the deploy-order warning at the
+      // top of this file: the callable must be live before this is deployed.
+      //
+      // The cap holds because of two rules together: every create goes through
+      // the function, AND `workspaceIdUnchanged` pins a board's workspaceId on
+      // update. Without the second, a client could unset `workspaceId` on its
+      // existing boards to hide them from the function's `countBoards` filter and
+      // earn a fresh allowance — see that helper for the full route.
+      //
+      // Remaining honest caveat: boards that predate the Phase 2 migration have
+      // no `workspaceId`, so `countBoards` cannot see them and they don't consume
+      // a slot. That undercounts the cap for those accounts until the backfill
+      // runs. It is a property of existing data, not a route a client can take.
+      allow create: if false;
       // Admin can change anything (incl. the per-board `roles` map — Phase 6);
       // an effective editor can change the shared backgroundTemplate (Phase 12);
       // any member can still touch members/updatedAt (leave/self-join bookkeeping)
       // so a viewer can leave a board; a non-member can self-join via invite code
       // (mirrors the sessions rule).
-      allow update: if isBoardAdmin(boardId) ||
+      //
+      // The seat cap gates ALL of those arms, not just the self-join one: the
+      // admin/editor/member arms can each grow `members` too (boardService's
+      // addMemberById / addMemberByEmail land on them), so capping only self-join
+      // would leave the ordinary "share this board" path uncapped. An update that
+      // does not grow `members` always satisfies the predicate, so no pre-existing
+      // legitimate edit changes behavior.
+      //
+      // The two trailing predicates are ANDed last on purpose: an unauthorized
+      // caller is rejected by the arms without ever paying for `planSeatLimit`'s
+      // workspace get(). For an authorized caller the arms have already loaded
+      // that same doc, and the rules engine caches document access within one
+      // evaluation, so the cap adds no read to the requests that reach it.
+      // `workspaceIdUnchanged` comes first of the two because it reads no
+      // documents at all.
+      allow update: if (
+                      isBoardAdmin(boardId) ||
                       (isBoardEditor(boardId) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt', 'backgroundTemplate'])) ||
                       (isBoardMember(boardId) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt'])) ||
                       (
                         resource.data.inviteCode != null &&
+                        // Month 5 — an embed identity may NEVER self-join. Its entry
+                        // point is the exchange, which scopes it to exactly one
+                        // board; an invite code is a different, broader credential
+                        // and this arm gates on nothing but "is signed in". Without
+                        // this guard an embed identity (either scope) could join any
+                        // invite-coded board whose id it knows — and on a LEGACY
+                        // board (no workspaceId) isBoardEditor's null-workspace
+                        // disjunct would then make it a full editor of a board it was
+                        // never scoped to. Open since Phase 8; closed here because
+                        // Month 5 gives an embed identity write powers.
+                        !isEmbedIdentity() &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'updatedAt']) &&
                         request.resource.data.members.hasAll(resource.data.members) &&
                         request.resource.data.members.size() == resource.data.members.size() + 1 &&
                         request.resource.data.members.hasAny([request.auth.uid])
-                      );
+                      )
+                    ) &&
+                    workspaceIdUnchanged(resource.data, request.resource.data) &&
+                    withinSeatCap(resource.data, request.resource.data) &&
+                    // Month 6 — see classIdTransitionValid's own header: ANDed
+                    // here (not scoped to one arm) so even the otherwise-
+                    // unrestricted admin arm above can't re-parent or clear a
+                    // board's class linkage once set.
+                    classIdTransitionValid(resource.data, request.resource.data);
       allow delete: if isBoardAdmin(boardId);
 
-      // Canvas content (paths, notes, textElements, shapes, images, snapshots):
+      // Canvas content (paths, notes, textElements, shapes, images, audio, snapshots):
       // any board member reads; only an effective editor writes (Phase 6 —
       // viewer/commenter are read-only on the canvas). This is the "viewer write
       // denied" gate the rules tests assert.
+      //
+      // Month 5 — an edit-scoped embed identity writes here too. It is the ONLY
+      // non-member write path on the canvas, it is board-scoped by its claim, and
+      // a read-only ('view') embed is unaffected: isEmbedEditor requires
+      // embedScope == 'edit'. NOT extended to images/audio below — see the
+      // storage.rules note on isEmbedEditor. Month 6 adds `codeElements` (below,
+      // near `mathElements`) to this same embed-write set, and `mathElements`
+      // deliberately to neither this set nor this enumeration — see that
+      // block's own comment for why the two Month 6 kinds diverge.
       match /paths/{pathId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /notes/{noteId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /textElements/{elementId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       match /shapes/{shapeId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
-        allow write: if isBoardEditor(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
+      // No embed write: the image BYTES are (in principle) member-gated in
+      // storage.rules, so an embed editor could only ever create a document
+      // pointing at an object it cannot upload or read. In practice storage.rules
+      // is not deployed today (it is now wired into firebase.json and tested, but
+      // not yet pushed to the bucket — see isEmbedEditor's comment above and the
+      // banner atop storage.rules), so that gate isn't actually in force yet —
+      // this deny is still the right call regardless, since an embed identity
+      // should never get this write either way, but nothing should read this
+      // comment as proof the Storage side is enforced. Editor-only until
+      // storage.rules is deployed and matches.
       match /images/{imageId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
       }
 
-      match /snapshots/{snapshotId} {
+      // Voice notes (Month 5, ROADMAP.md:583-587 — roadmap item 9; Month 6 —
+      // the Pro-tier gate). Same member-read / editor-write gate as every
+      // other canvas-content subcollection above, PLUS `boardOnPaidPlan` on
+      // create: voice notes are billed Pro-tier, and this is what actually
+      // enforces it server-side now (see the updated header on
+      // src/services/audioService.ts's `canRecordVoiceNotes` — it is an
+      // affordance gate now, not the only enforcement). The matching
+      // storage.rules block for the audio bytes does NOT carry this plan
+      // check and is not meant to: its own comment now describes that split
+      // (document gated on membership + plan, bytes on membership alone) and
+      // why the worst case is an orphaned object rather than a tier bypass.
+      //
+      // Gated on CREATE only, not update/delete: a workspace that downgrades
+      // after notes already exist must still let its editors delete (or, if
+      // ever added, edit) those notes — bricking existing content on a
+      // downgrade is not this gate's job, only stopping NEW Pro-tier usage
+      // on a free plan is.
+      //
+      // Read-budget note: `boardOnPaidPlan` → `planOfBoard` → `planOfWorkspace`
+      // is a SECOND `get()` of this same board doc (isBoardEditor's own
+      // `get()`, just above, is the first) plus an `exists()` + `get()` of
+      // the workspace doc. Same as the seat cap's own note on this: the
+      // rules engine caches document access within one evaluation, so this
+      // adds no new read beyond the board+workspace docs isBoardEditor
+      // already touches — but it's one more `get()`-bearing predicate on
+      // this match, worth knowing about before adding a third.
+      // No embed write, for the same reason as images: the audio bytes are (in
+      // principle) member-gated in storage.rules — not actually in force today,
+      // since storage.rules is not deployed (see the images match's own comment
+      // above), but the right deny regardless.
+      match /audio/{audioId} {
+        allow read:   if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow create: if isBoardEditor(boardId) && boardOnPaidPlan(boardId);
+        allow update, delete: if isBoardEditor(boardId);
+      }
+
+      // Math elements (Month 6) — LaTeX equations stored as flat SVG path
+      // data. Same member-read / editor-write gate as every other canvas-
+      // content subcollection above.
+      //
+      // No `isEmbedEditor` disjunct, deliberately, and NOT for images'/audio's
+      // reason (there are no Storage bytes here — the path data lives on the
+      // document). It is polls' reason: creating one means calling the
+      // `renderMath` Cloud Function, whose own trust boundary resolves board
+      // MEMBERSHIP for the caller, and an embed identity is never a member.
+      // An embed editor allowed to write here could therefore only ever
+      // create an element whose `svgPath` it had no way to obtain. The
+      // Toolbar's equation button is hidden in an embed session to match (see
+      // `canInsertMath` there) — that is an affordance, this is the gate.
+      //
+      // There is no `mathCache` block below on purpose: nothing client-side
+      // reads a cached rendering (a hit is served back through the same
+      // callable response as a miss), so the file's default deny covers it —
+      // same call as flashcardCache, and see that module's header for why it
+      // differs from ocrCache, which DOES grant members a read.
+      match /mathElements/{elementId} {
         allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
         allow write: if isBoardEditor(boardId);
+      }
+
+      // Code elements (Month 6) — syntax-highlighted source, tokenized
+      // entirely client-side (Shiki, no Cloud Function — see
+      // src/lib/codeRender.ts's header). Same member-read / editor-write
+      // gate as paths/notes/textElements/shapes above, INCLUDING the
+      // `isEmbedEditor` disjunct those carry and `mathElements` above
+      // deliberately does not: a code element needs no callable and no
+      // Storage bytes, so there is nothing an embed editor's write could
+      // reach that it couldn't already produce itself — unlike math (which
+      // needs `renderMath`, a members-only callable) and unlike images/audio
+      // (Storage-gated bytes), a code element is exactly as reachable to an
+      // embed editor as a path or shape already is.
+      match /codeElements/{elementId} {
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
+      }
+
+      match /snapshots/{snapshotId} {
+        allow read:  if isBoardMember(boardId) || isEmbedViewer(boardId);
+        allow write: if isBoardEditor(boardId) || isEmbedEditor(boardId);
       }
 
       // OCR memoization cache (Month 4, Phase 10). The handwriting-OCR function
@@ -332,10 +1147,180 @@ service cloud.firestore {
                          resource.data.authorId == request.auth.uid);
       }
 
-      // presence — each user manages only their own presence doc
-      match /presence/{userId} {
+      // Reactions (Month 6) — 👍 ❤️ ❓ ⭐ 💡 anchored to canvas elements.
+      // Reuses isBoardCommenter directly (same commenter+ boundary as
+      // comments above, including its legacy-board tolerance and per-board
+      // override floor-capping) rather than a second write-role predicate.
+      //
+      // UNLIKE comments: no update — react/un-react is create/delete only,
+      // there is no body to edit or thread to resolve. Delete DOES carry the
+      // same admin-moderation arm comments' delete has, though, for a reason
+      // comments' delete rule doesn't need to worry about: clearBoardReactions
+      // (reactionService.ts) batch-deletes every reaction on the board as
+      // part of "clear board" (app/board/[id].tsx), and a Firestore batched
+      // write is atomic — ONE reaction the clearing admin doesn't own would
+      // reject the WHOLE batch and leave the board half-cleared (elements and
+      // comments already gone, reactions not). `isBoardAdmin` closes that
+      // exactly like it does for comments' own moderation delete.
+      //
+      // The document id `{elementId}_{emoji}_{userId}` (reactionService.ts)
+      // is the UNIQUENESS constraint (one user cannot double-react with the
+      // same emoji on the same element). It is bound to the fields below by
+      // exact-match CONCATENATION, not by splitting the id apart: splitting
+      // would mean trusting a fixed `_`-separated segment count, which
+      // breaks the moment any segment itself contains an underscore, but
+      // rebuilding the expected id from the fields and comparing makes no
+      // assumption about how many segments anything has. Without this, the
+      // `userId` field check alone still stops one user from reacting AS
+      // another, but does nothing to stop that SAME user from creating
+      // `el1_👍_me`, `el1_👍_me_2`, `x`, … — every one with a valid `userId`
+      // field — which would inflate `countsFor`'s per-(element, emoji) count
+      // without bound, permanently (toggleReaction only ever deletes the
+      // canonical id). `emoji` is also checked against the fixed 5-value set
+      // the client offers, so a create can't seed the collection with
+      // anything else for a future reader to have to tolerate.
+      match /reactions/{reactionId} {
         allow read:   if isBoardMember(boardId);
-        allow write:  if isBoardMember(boardId) && isOwner(userId);
+        allow create: if isBoardCommenter(boardId) &&
+                        request.resource.data.userId == request.auth.uid &&
+                        request.resource.data.emoji in ['👍', '❤️', '❓', '⭐', '💡'] &&
+                        reactionId == request.resource.data.anchorElementId + '_' +
+                                      request.resource.data.emoji + '_' + request.auth.uid;
+        allow update: if false;
+        allow delete: if isBoardAdmin(boardId) ||
+                        (isBoardCommenter(boardId) &&
+                         resource.data.userId == request.auth.uid);
+      }
+
+      // Polls (Month 6) — quiz sequencing + dot voting. UNLIKE reactions, a
+      // poll is genuinely NEW canvas content (its own board-space x/y), not
+      // something anchored to an existing element — so CREATE/UPDATE/DELETE
+      // of the poll doc itself uses `isBoardEditor`, the same canvas-content
+      // write role as paths/shapes/textElements above, not the commenter-level
+      // bound reactions/comments use. VOTING, below, is the commenter-level
+      // action — a viewer sees a poll's position but cannot vote.
+      //
+      // NO `isEmbedEditor` disjunct on the poll doc, unlike paths/shapes/
+      // textElements — deliberately, mirroring comments' own member-only
+      // stance (see isEmbedEditor's header: "COMMENTS stay member-only...
+      // neither ships here"). A poll's voter-identity model (uid dedup,
+      // anonymous-mode masking) is a MEMBER-engagement feature the same way
+      // comments are, not bare canvas geometry; extending it to a host-
+      // asserted embed identity is a real product decision, not an oversight
+      // this file happens to have skipped, and it should be made and rules-
+      // tested on its own if it's ever wanted.
+      match /polls/{pollId} {
+        allow read:   if isBoardMember(boardId);
+        allow create: if isBoardEditor(boardId) &&
+                        request.resource.data.createdById == request.auth.uid &&
+                        request.resource.data.anonymous is bool &&
+                        request.resource.data.options is list &&
+                        request.resource.data.options.size() >= 2 &&
+                        request.resource.data.options.size() <= 6;
+        // Fix round 1, item 1 — an EARLIER version of this rule was
+        // `allow update, delete: if isBoardEditor(boardId)`, with no field
+        // constraint at all. That let any editor flip `anonymous` to false
+        // post hoc, retroactively de-anonymizing every vote already cast —
+        // and on a LEGACY (no-workspaceId) board `isBoardEditor` grants
+        // editor to every member, so the unmasker could be anyone. The same
+        // unconstrained rule also let `options` be rewritten to any length
+        // (the [2,6] bound was create-only), `createdById` reassigned to
+        // another user, and (fix round 2) `mode` switched between "single"
+        // and "dots" — which would reinterpret every vote already cast the
+        // same way flipping `anonymous` would unmask them (this is exactly
+        // why creation-time-only mode selection was accepted in the first
+        // place: a live mode switch changes the MEANING of existing votes,
+        // not just their display). `active` (quiz sequencing's own field —
+        // pollService.advanceQuiz) is the only field this update path is
+        // FOR, so everything else that was true before the write must stay
+        // true after it. NOTE: pinning fields on the POLL doc is necessary
+        // but — as fix round 2 found — NOT sufficient for `anonymous`; see
+        // `votes/{voterId}`'s own header below for why that guarantee had
+        // to move to the vote doc itself.
+        allow update: if isBoardEditor(boardId) &&
+                        request.resource.data.anonymous == resource.data.anonymous &&
+                        request.resource.data.createdById == resource.data.createdById &&
+                        request.resource.data.mode == resource.data.mode &&
+                        request.resource.data.options.size() >= 2 &&
+                        request.resource.data.options.size() <= 6;
+        allow delete: if isBoardEditor(boardId);
+
+        // The document id `{voterId}` IS the uid, in EVERY mode including
+        // "dots" — this is what enforces one vote DOC per user (see
+        // PollElement's type comment, src/types/index.ts). UNLIKE reactions
+        // (`allow update: if false` — react/un-react is create/delete only),
+        // changing your vote is a legitimate UPDATE to that SAME doc, and
+        // this is the one place this file must diverge from the reactions
+        // shape it otherwise mirrors: denying update here would make
+        // "change your vote" impossible, not just idempotent.
+        //
+        // Fix round 1, item 6 — `hasOnly` pins the vote doc's field set so a
+        // commenter can't smuggle arbitrary extra fields into their own vote
+        // doc (member-readable on a non-anonymous poll).
+        //
+        // Fix round 2 (CRITICAL) — `anonymous` here is the VOTE's OWN
+        // stamp, not a read of the parent poll (see the big comment above
+        // `isValidVotePayload`, and pollService.ts's `castVote`/
+        // `toggleDotVote` headers for the write side, which preserve an
+        // EXISTING doc's original stamp on every later write rather than
+        // re-deriving it): `create` requires it to match the poll's value
+        // at THIS instant; `update` pins it to whatever THIS doc already
+        // has, forever, regardless of what the parent poll does later
+        // (update, delete, or delete-then-recreate alike). Read gates on
+        // `resource.data.anonymous` directly — never on `pollData(...)`.
+        //
+        // The denial still applies to EVERY member when that field is
+        // `true`, including the board admin and the voter reading their
+        // own doc back — "anonymous to other users" (the brief's own
+        // words) means anonymous to every user, the voter included; there
+        // is no safe partial exception, because even a single-doc read
+        // reveals that THIS uid voted. A voter's UI tracks its own
+        // just-cast selection locally (the write resolving is the
+        // confirmation) rather than reading it back.
+        match /votes/{voterId} {
+          allow read:   if isBoardMember(boardId) && resource.data.anonymous == false;
+          allow create: if isBoardCommenter(boardId) &&
+                          voterId == request.auth.uid &&
+                          request.resource.data.userId == request.auth.uid &&
+                          pollExists(boardId, pollId) &&
+                          request.resource.data.anonymous == pollData(boardId, pollId).get('anonymous', true) &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'anonymous', 'createdAt']) &&
+                          isValidVotePayload(boardId, pollId);
+          allow update: if isBoardCommenter(boardId) &&
+                          voterId == request.auth.uid &&
+                          resource.data.userId == request.auth.uid &&
+                          request.resource.data.userId == request.auth.uid &&
+                          request.resource.data.anonymous == resource.data.anonymous &&
+                          request.resource.data.keys().hasOnly(['userId', 'optionIndices', 'anonymous', 'createdAt']) &&
+                          isValidVotePayload(boardId, pollId);
+          allow delete: if isBoardAdmin(boardId) ||
+                          (isBoardCommenter(boardId) &&
+                           voterId == request.auth.uid &&
+                           resource.data.userId == request.auth.uid);
+        }
+
+        // Server-maintained tally for an anonymous poll (PollTally, src/types/
+        // index.ts) — written ONLY by the Admin SDK from
+        // functions/src/triggers/pollTally.ts, which bypasses these rules, so
+        // every client write is denied here exactly like usage/billing above.
+        // Member-readable unconditionally (never gated on the votes'
+        // anonymity check above): it carries vote COUNTS only, never a
+        // voter's identity, so it is exactly as safe to read as a
+        // non-anonymous poll's live vote count.
+        match /tally/{tallyId} {
+          allow read:  if isBoardMember(boardId);
+          allow write: if false;
+        }
+      }
+
+      // presence — each user manages only their own presence doc.
+      // Month 5: an edit-scoped embed identity is present on the board it is
+      // writing to, so it reads presence and writes its OWN doc (keyed by its
+      // namespaced uid) — the `isOwner(userId)` guard is what keeps it from
+      // impersonating a member's presence. A read-only embed stays out entirely.
+      match /presence/{userId} {
+        allow read:   if isBoardMember(boardId) || isEmbedEditor(boardId);
+        allow write:  if (isBoardMember(boardId) || isEmbedEditor(boardId)) && isOwner(userId);
       }
 
       // Live cursors (Month 4, Phase 6) — ephemeral pointer side channel. Any
@@ -343,8 +1328,8 @@ service cloud.firestore {
       // the paths/* collections so cursor jitter never touches the persisted-
       // state listeners (Appendix A.4). Same own-uid trust model as presence.
       match /cursors/{userId} {
-        allow read:   if isBoardMember(boardId);
-        allow write:  if isBoardMember(boardId) && isOwner(userId);
+        allow read:   if isBoardMember(boardId) || isEmbedEditor(boardId);
+        allow write:  if (isBoardMember(boardId) || isEmbedEditor(boardId)) && isOwner(userId);
       }
     }
 
@@ -352,11 +1337,13 @@ service cloud.firestore {
     // Phase 4 (multi-tenancy). Sessions inherit a workspaceId from their board.
     // A workspace member can read sessions in their workspace; the creator and
     // participants still read directly, and the joinCode public-lookup path is
-    // unchanged (needed for join-by-code). Create can't plant a session in a
-    // workspace the user doesn't belong to. Migration-tolerant: a legacy session
-    // with no workspaceId keeps the pre-Phase-4 behavior.
-    // TODO(phase-9-cutover): remove the `workspaceId == null` tolerance once the
-    // migration has stamped every session and the staging soak closes.
+    // unchanged (needed for join-by-code). Migration-tolerant on READ: a legacy
+    // session with no workspaceId keeps the pre-Phase-4 read behavior. Creates are
+    // Cloud-Function-only as of M5 (see the create rule below), and the function
+    // requires a workspaceId — so no new workspace-less session can appear, but
+    // existing ones stay readable.
+    // TODO(phase-9-cutover): remove the `workspaceId == null` read tolerance once
+    // the migration has stamped every session and the staging soak closes.
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
@@ -364,16 +1351,53 @@ service cloud.firestore {
                       isMemberOfWorkspace(resource.data.get('workspaceId', null)) ||
                       resource.data.joinCode != null
                     );
-      allow create: if isSignedIn() &&
-                      request.auth.uid == request.resource.data.createdById &&
-                      (request.resource.data.get('workspaceId', '') == '' ||
-                       isMemberOfWorkspace(request.resource.data.get('workspaceId', '')));
+      // Creating a session is Cloud-Function-only (functions/src/callable/createSession.ts).
+      // The function bumps the workspace's monthly session counter and writes the
+      // session in one transaction, then writes with the Admin SDK, which bypasses
+      // these rules. One exception, also decided inside that transaction: Month 6's
+      // welcome-session grant creates the onboarding seed's demo session un-metered,
+      // at most once per workspace ever, bounded by the `welcomeSessionGrantUsed`
+      // marker this file pins on the workspace `update` rule above.
+      // Denied here for two reasons a rules predicate cannot cover:
+      // rules cannot read a monthly counter to enforce sessions/period, and a
+      // client create could pick its own `joinCode` (the function generates one
+      // server-side). Reads, updates, the joinCode self-join and delete are all
+      // unchanged. See the deploy-order warning at the top of this file.
+      allow create: if false;
+      // Fix round 3, A — same shape as `classes`' C1, NOT the same severity
+      // (corrected here; an earlier version of this comment overstated it,
+      // matching the test's own now-corrected name in
+      // firestore-tests/firestore.rules.test.js). This arm was the pre-C1
+      // shape verbatim: `hasAll` + `size==prev+1` + `hasAny([caller])`, with
+      // no check that the caller wasn't ALREADY a participant. Exactly C1's
+      // MECHANISM (firestore.rules' `classes` match block, self-enroll arm):
+      // an existing participant could add an ARBITRARY uid to
+      // `participantIds` — they're already in `prev`, so trivially in `next`
+      // too, and nothing pinned the ADDED element to the caller. `!(caller in
+      // prev)` below closes it the same way, forcing this arm to apply only
+      // to a genuinely NEW join.
+      //
+      // Unlike C1, this injection grants no read that wasn't already
+      // available: this arm only fires when `resource.data.joinCode != null`,
+      // and the read rule above already grants read to ANY signed-in user in
+      // exactly that case (`resource.data.joinCode != null`) — so planting a
+      // victim's uid into `participantIds` opens no read the victim's uid
+      // didn't already have. The real, marginal harm is participant-LIST
+      // injection: the victim's uid lands in `array-contains` schedule/
+      // history queries and `sessionService.ts#getParticipantPushTokens`, and
+      // in recap participant lists — plus a durable read if a creator ever
+      // nulls the `joinCode` (nothing in this app's client does that today).
+      // Caught on a full-file sweep after the `classes` fix, not by this
+      // task's own scope — the same vector, unfixed one match block away,
+      // would have been exactly the "fixed the named instance, not the class
+      // of bug" mistake this branch has already paid for once.
       allow update: if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||
                       (
                         resource.data.joinCode != null &&
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantIds']) &&
                         request.resource.data.participantIds.hasAll(resource.data.participantIds) &&
+                        !(request.auth.uid in resource.data.participantIds) &&
                         request.resource.data.participantIds.size() == resource.data.participantIds.size() + 1 &&
                         request.resource.data.participantIds.hasAny([request.auth.uid])
                       )

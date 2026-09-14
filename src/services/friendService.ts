@@ -12,15 +12,8 @@ import {
   arrayRemove,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { lookupUserByEmail } from "./userService";
 import { FriendRequest } from "../types";
-
-async function getUserByEmail(email: string) {
-  const q = query(collection(db, "users"), where("email", "==", email));
-  const snap = await getDocs(q);
-  if (snap.empty) return null;
-  const d = snap.docs[0];
-  return { uid: d.id, ...(d.data() as any) };
-}
 
 function mapRequest(d: any): FriendRequest {
   const data = d.data();
@@ -43,7 +36,14 @@ export async function sendFriendRequest(
   fromEmail: string,
   toEmail: string
 ): Promise<"sent" | "not_found" | "already_friends" | "pending" | "self"> {
-  const target = await getUserByEmail(toEmail);
+  // Server-side lookup since the /users `list` deny (see userService.ts). Two
+  // things changed for this function beyond where the query runs: the address
+  // is now normalized before matching — friend search was the one call site
+  // that did NOT lowercase/trim, so `Bob@X.Z` used to come back "not_found"
+  // here while the same address resolved fine through a board invite — and the
+  // result carries only `{ uid, displayName, email }` rather than the whole
+  // profile document. Those three fields are all this function ever read.
+  const target = await lookupUserByEmail(toEmail);
   if (!target) return "not_found";
   if (target.uid === fromId) return "self";
 

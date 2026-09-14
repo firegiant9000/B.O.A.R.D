@@ -13,10 +13,12 @@ import {
   Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { BoardPresence, FriendRequest } from "../types";
+import { BoardPresence, FriendRequest, Plan } from "../types";
 import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as notificationService from "../services/notificationService";
+import { isQuotaDenial } from "../services/quotaService";
+import { track } from "../services/analyticsService";
 import { showAlert } from "../utils/alerts";
 
 interface StartSessionModalProps {
@@ -28,8 +30,16 @@ interface StartSessionModalProps {
   adminId: string;
   adminName: string;
   presenceUsers: BoardPresence[];
+  /** The board's workspace plan, for the advisory quota pre-flight — already
+   *  loaded by the caller (useBoardDocument's boardWorkspace), so this never
+   *  triggers an extra read. */
+  plan?: Plan;
   onClose: () => void;
   onSessionCreated: (sessionId: string) => void;
+  /** This create was denied for being over the session cap (or the
+   *  client-side pre-flight predicted it would be): the caller should close
+   *  this modal and show the upsell instead of the generic error alert. */
+  onQuotaExceeded: () => void;
 }
 
 interface SelectableUser {
@@ -46,8 +56,10 @@ export default function StartSessionModal({
   adminId,
   adminName,
   presenceUsers,
+  plan,
   onClose,
   onSessionCreated,
+  onQuotaExceeded,
 }: StartSessionModalProps) {
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState("60");
@@ -131,18 +143,43 @@ export default function StartSessionModal({
     try {
       const participantIds = Array.from(selectedIds);
 
-      const sessionId = await sessionService.createSession({
-        boardId,
-        workspaceId,
-        boardTitle,
-        title: title.trim(),
-        description: "",
-        scheduledAt: new Date(),
-        durationMinutes: durationNum,
-        createdById: adminId,
-        createdByName: adminName,
-        participantIds,
+      const sessionId = await sessionService.createSession(
+        {
+          boardId,
+          workspaceId,
+          boardTitle,
+          title: title.trim(),
+          description: "",
+          scheduledAt: new Date(),
+          durationMinutes: durationNum,
+          createdById: adminId,
+          createdByName: adminName,
+          participantIds,
+          status: "active",
+        },
+        { plan }
+      );
+
+      // Month 6 — ROADMAP.md:685's `session_scheduled`. One of two genuine
+      // user paths (the other is app/session/create.tsx); neither is
+      // `sessionService.createSession`, which onboardingService's sample seed
+      // calls directly for every new account — see
+      // src/services/__tests__/analyticsBoundary.test.ts.
+      //
+      // `status` is the session's own closed union and is the useful
+      // distinction between the two paths: this modal starts a session NOW
+      // ("active"), while the schedule screen books one for later
+      // ("scheduled"). Both are "scheduled" as far as the funnel's event name
+      // goes — the event counts sessions a user set up — so recording which
+      // kind is what keeps that name from hiding the difference.
+      //
+      // After the await: a session denied by the plan cap (handled below) is
+      // not a scheduled session. No title, no board title, no participant ids
+      // — only the count.
+      track("session_scheduled", {
         status: "active",
+        participantCount: participantIds.length,
+        durationMinutes: durationNum,
       });
 
       // Send push notifications to participants who have tokens
@@ -165,8 +202,18 @@ export default function StartSessionModal({
           ? `Session created and ${participantIds.length} participant(s) have been notified.`
           : "Session created. No participants were notified."
       );
-    } catch {
-      showAlert("Error", "Failed to create session. Please try again.");
+    } catch (error) {
+      // A session-cap denial can arrive two ways: the server's own rejection
+      // (after the callable ran) or the client-side pre-flight's own
+      // QuotaExceededError (thrown before the callable ever runs) —
+      // isQuotaDenial catches both. Any other rejection (network,
+      // permission, ...) keeps the plain alert; catching broadly here would
+      // make a real failure read as "upgrade".
+      if (isQuotaDenial(error)) {
+        onQuotaExceeded();
+      } else {
+        showAlert("Error", "Failed to create session. Please try again.");
+      }
     } finally {
       setSubmitting(false);
     }

@@ -12,18 +12,25 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
-import { Session, Board } from "../../src/types";
+import { Session, Board, Plan } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as boardService from "../../src/services/boardService";
 import * as notificationService from "../../src/services/notificationService";
 import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
+import { isQuotaDenial } from "../../src/services/quotaService";
+import { getWorkspace } from "../../src/services/workspaceService";
 import { getUsersByIds } from "../../src/services/friendService";
+import {
+  trackSessionCompleted,
+  trackAiSummaryGenerated,
+} from "../../src/services/sessionAnalytics";
 import { exportRecapPdf } from "../../src/utils/recapExport";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 import SessionLobby from "../../src/components/session/SessionLobby";
 import SessionLive from "../../src/components/session/SessionLive";
 import SessionRecap from "../../src/components/session/SessionRecap";
+import UpsellModal from "../../src/components/UpsellModal";
 
 type Profile = { uid: string; displayName: string; email: string };
 
@@ -43,6 +50,13 @@ export default function SessionDetailScreen() {
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // The AI-summary plan-limit upsell, shown instead of a generic alert when
+  // the summary call hits resource-exhausted. `upsellPlan` is looked up
+  // fresh (see handleGenerateSummary) rather than assumed: the workspace's
+  // real plan is what tells the modal whether this can even be a plan-cap
+  // denial or must be the (plan-independent) AI rate throttle.
+  const [upsellVisible, setUpsellVisible] = useState(false);
+  const [upsellPlan, setUpsellPlan] = useState<Plan | undefined>();
   const [exporting, setExporting] = useState(false);
 
   const isCreator = session?.createdById === user?.uid;
@@ -138,6 +152,11 @@ export default function SessionDetailScreen() {
             participantCount: session.participantIds.length,
             title: session.title,
           });
+          // Month 6 — ROADMAP.md:685's `session_completed`, recap-screen half
+          // (the third and last end path). Same `false` for snapshotCaptured,
+          // and for the same reason as the schedule screen: no canvas ref
+          // here, which is why the endSession call above passes no snapshot.
+          trackSessionCompleted(session, "session-detail", false);
           setSession((prev) =>
             prev ? { ...prev, status: "ended", endedAt: new Date(), participants: frozen } : prev
           );
@@ -170,9 +189,26 @@ export default function SessionDetailScreen() {
         session.canvasSnapshot
       );
       await sessionService.updateSessionSummary(session.id, summary);
+      // Month 6 — ROADMAP.md:685's `ai_summary_generated`, recap-screen half.
+      // See the schedule screen's twin for why this is after the store and
+      // never inside `sessionService.updateSessionSummary`.
+      trackAiSummaryGenerated(session, summary, "session-detail");
       setSession((prev) => (prev ? { ...prev, summary } : prev));
     } catch (error: any) {
-      showAlert("Summary Failed", error?.message ?? "Failed to generate summary.");
+      // checkAiQuota's resource-exhausted covers BOTH the per-workspace AI
+      // rate throttle (plan-independent) and the real plan-cap denial — the
+      // server attaches no `details` to tell them apart, so look up the
+      // workspace's actual plan before deciding what to show. UpsellModal
+      // itself renders the throttle copy instead of the paywall when that
+      // plan already grants this resource an unlimited allowance.
+      if (isQuotaDenial(error)) {
+        const workspaceId = session.workspaceId || board?.workspaceId;
+        const ws = workspaceId ? await getWorkspace(workspaceId).catch(() => null) : null;
+        setUpsellPlan(ws?.plan);
+        setUpsellVisible(true);
+      } else {
+        showAlert("Summary Failed", error?.message ?? "Failed to generate summary.");
+      }
     } finally {
       setGenerating(false);
     }
@@ -247,6 +283,14 @@ export default function SessionDetailScreen() {
 
   return (
     <View style={styles.container}>
+      <UpsellModal
+        visible={upsellVisible}
+        resource="aiSummary"
+        plan={upsellPlan}
+        workspaceId={session.workspaceId || board?.workspaceId}
+        onDismiss={() => setUpsellVisible(false)}
+      />
+
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#333" />

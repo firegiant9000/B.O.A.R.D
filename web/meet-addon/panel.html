@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>B.O.A.R.D for Google Meet</title>
+<style>
+  /*
+   * Month 5 — Google Meet add-on shell (see README.md in this directory for
+   * what is and is not verified about this file).
+   *
+   * This page is the add-on's side-panel entry point (manifest.json's
+   * sidePanelUrl). Its ONE job is what ROADMAP.md item 6 asks for: a thin
+   * iframe around the embed route that already exists
+   * (app/embed/b/[id].tsx). It holds no secret and mints no token — see the
+   * script block below for exactly what it does and does not do.
+   */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #ffffff;
+    color: #111827;
+  }
+  #board-frame {
+    display: none;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+  #status {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  #status h1 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+  }
+  #status p {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #4b5563;
+    margin: 0;
+  }
+  #status code {
+    font-size: 11px;
+    background: #f3f4f6;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+  <!--
+    Two states, nothing more: a short "not configured" explanation, or the
+    iframed board. There is no sign-in flow, no board picker and no retry
+    countdown here — building those is future work, not this shell. See
+    README.md's "What this shell does not do" section before assuming
+    anything below is more finished than it is.
+  -->
+  <div id="status">
+    <h1>B.O.A.R.D board not loaded</h1>
+    <p id="status-detail">Loading…</p>
+  </div>
+  <iframe id="board-frame" title="B.O.A.R.D board" allow="clipboard-write"></iframe>
+
+  <script>
+    (function () {
+      "use strict";
+
+      // ⚠️ Replace before deploying anywhere. This must be the origin the web
+      // build is actually served from — see README.md's "Domain placeholders"
+      // section. It is duplicated in manifest.json's sidePanelUrl/addOnOrigins;
+      // keep the two in sync by hand until this repo has a build step that
+      // templates both from one source.
+      var BOARD_ORIGIN = "https://board-6b415.web.app";
+
+      var statusDetail = document.getElementById("status-detail");
+      var statusBlock = document.getElementById("status");
+      var frame = document.getElementById("board-frame");
+
+      function showError(message) {
+        statusDetail.textContent = message;
+      }
+
+      function showBoard(boardId, token) {
+        // The embed route (app/embed/b/[id].tsx) does its own token exchange
+        // and — as of Month 5 — its own scope resolution: whatever scope the
+        // token actually carries (view or edit) is what the exchange reports
+        // back, and that is what decides whether the embedded board shows
+        // editing tools. This page never decides scope itself and never reads
+        // the token — it only relays the two values it was given.
+        var src =
+          BOARD_ORIGIN +
+          "/embed/b/" +
+          encodeURIComponent(boardId) +
+          "?token=" +
+          encodeURIComponent(token);
+        frame.src = src;
+        frame.style.display = "block";
+        statusBlock.style.display = "none";
+      }
+
+      // This page's own query string is how it learns which board to open and
+      // with which link. Neither value is produced here: something outside
+      // this shell (today: nothing — see README.md) is responsible for
+      // minting an embed token via the `mintEmbedToken` callable and handing
+      // this page a URL that already carries both. `token` is exactly the
+      // opaque, short-lived value `createEmbedLink`/`mintEmbedToken` produce
+      // (src/services/embedService.ts) — this page cannot mint one itself: it
+      // has no B.O.A.R.D-authenticated session, and the signing secret never
+      // leaves the Functions runtime (EMBED_JWT_SECRET, via defineSecret).
+      var params = new URLSearchParams(window.location.search);
+      var boardId = params.get("boardId");
+      var token = params.get("token");
+
+      if (!boardId || !token) {
+        showError(
+          "This panel needs a boardId and an embed token in its URL " +
+            "(?boardId=...&token=...). Nothing in this shell mints one yet " +
+            "— see README.md."
+        );
+      } else {
+        showBoard(boardId, token);
+      }
+
+      // Best-effort Meet Add-ons SDK bootstrap, called from the SDK script
+      // tag's own `onload` below — NOT run inline here. The SDK loads `async`
+      // (it must never delay the iframe/status logic above), so at the point
+      // this IIFE runs, `window.meet` does not exist yet; checking for it
+      // here would silently no-op every time regardless of whether the SDK
+      // URL below is even correct. Exposed on `window` because an inline
+      // `onload=""` attribute runs in global scope, not this closure.
+      //
+      // This is NOT verified against a live Meet session (no Workspace
+      // Marketplace SDK project or live host exists for this repo — see
+      // README.md's G6 note), so it is written defensively: if the SDK script
+      // fails to load, or its shape differs from what is coded here, the
+      // board above still renders exactly the same — this only signals
+      // "finished loading" to Meet's own chrome so its spinner clears
+      // promptly, per https://developers.google.com/workspace/meet/add-ons.
+      // It does not otherwise participate in scope/attribution — those come
+      // entirely from the token, as above.
+      window.__boardMeetSdkLoaded = function () {
+        try {
+          if (window.meet && window.meet.addon && typeof window.meet.addon.createAddonSession === "function") {
+            window.meet.addon
+              .createAddonSession({ cloudProjectNumber: "REPLACE_WITH_GCP_PROJECT_NUMBER" })
+              .then(function (session) {
+                return session.createSidePanelClient();
+              })
+              .catch(function () {
+                // Non-fatal: the iframed board above already works without this.
+              });
+          }
+        } catch (e) {
+          // Same: non-fatal by design.
+        }
+      };
+    })();
+  </script>
+
+  <!--
+    Async on purpose (must never delay the status/iframe logic above), which
+    is exactly why its bootstrap runs from `onload` rather than inline in the
+    script above — see that block's comment. The URL/version below is this
+    task's best reconstruction from Google's public docs, NOT a value
+    confirmed by loading it — this repo has no Workspace Marketplace SDK
+    project or live Meet session to check it against (G6 — see README.md).
+    Reconfirm it against
+    https://developers.google.com/workspace/meet/add-ons/guides/quickstart
+    before this shell is actually submitted; treat it as a placeholder, not a
+    verified value, until then. A failed/blocked load simply never calls
+    `onload` — the panel is unaffected either way.
+  -->
+  <script
+    src="https://www.gstatic.com/meetjs/addons/1.1.0/meet.addons.js"
+    async
+    onload="window.__boardMeetSdkLoaded && window.__boardMeetSdkLoaded()"
+  ></script>
+</body>
+</html>

@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "id": "group-brainstorm-zones",
+  "title": "Group Brainstorm Zones",
+  "category": "classroom",
+  "description": "One zone per team to drop ideas into during a timed brainstorm.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Group Brainstorm",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 60,
+      "width": 220,
+      "height": 320,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#ef4444",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TEAM A",
+      "x": 10,
+      "y": 70,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add one idea per sticky note.",
+      "x": 10,
+      "y": 104
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 244,
+      "y": 60,
+      "width": 220,
+      "height": 320,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#2563eb",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TEAM B",
+      "x": 254,
+      "y": 70,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add one idea per sticky note.",
+      "x": 254,
+      "y": 104
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 488,
+      "y": 60,
+      "width": 220,
+      "height": 320,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#16a34a",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TEAM C",
+      "x": 498,
+      "y": 70,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add one idea per sticky note.",
+      "x": 498,
+      "y": 104
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 732,
+      "y": 60,
+      "width": 220,
+      "height": 320,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#f59e0b",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TEAM D",
+      "x": 742,
+      "y": 70,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add one idea per sticky note.",
+      "x": 742,
+      "y": 104
+    }
+  ]
+}

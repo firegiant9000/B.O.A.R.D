@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>B.O.A.R.D</title>
+<style>
+  /*
+   * Month 6 — browser extension side panel. See README.md in this directory
+   * for what is and is not wired, and sidepanel.js for the logic behind this
+   * markup. Manifest V3's default extension-page CSP forbids inline
+   * <script> (script-src 'self' only) — that's why all behavior lives in the
+   * external sidepanel.js rather than here, unlike web/meet-addon/panel.html,
+   * which is a hosted web page and isn't subject to that CSP.
+   */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #ffffff;
+    color: #111827;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  #link-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    border-bottom: 1px solid #e5e7eb;
+    box-sizing: border-box;
+  }
+  #link-input {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+  }
+  #link-open {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+  }
+  #link-open:disabled { background: #93c5fd; cursor: default; }
+  #status {
+    font-size: 12px;
+    color: #6b7280;
+    padding: 0 8px 8px;
+  }
+  #status.error { color: #b91c1c; }
+  #board-area {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  #board-frame {
+    display: none;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+  #empty-state {
+    height: 100%;
+    box-sizing: border-box;
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #empty-state h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  #empty-state p { font-size: 12px; line-height: 1.5; color: #4b5563; margin: 0; }
+  /* Drop overlay — shown only while a drag is over the panel (see
+     sidepanel.js's dragenter/dragleave/drop handlers). Sits above the iframe
+     so a drop lands on this panel's own listeners, not inside the (cross-
+     origin) board document. */
+  #drop-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(37, 99, 235, 0.08);
+    border: 2px dashed #2563eb;
+    box-sizing: border-box;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d4ed8;
+    pointer-events: none;
+  }
+  #drop-overlay.active { display: flex; }
+  #pending-item {
+    display: none;
+    border-top: 1px solid #e5e7eb;
+    padding: 10px;
+    gap: 8px;
+    box-sizing: border-box;
+    font-size: 12px;
+  }
+  #pending-item.visible { display: flex; flex-direction: column; }
+  #pending-item .row { display: flex; gap: 8px; align-items: center; }
+  #pending-item img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: #f3f4f6; }
+  #pending-item .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pending-item .note { color: #6b7280; }
+  #pending-item .actions { display: flex; gap: 8px; }
+  #pending-item button {
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    background: #f9fafb;
+    cursor: pointer;
+  }
+  #pending-item button.primary {
+    background: #e5e7eb;
+    color: #6b7280;
+    cursor: not-allowed;
+    border-color: #e5e7eb;
+  }
+</style>
+</head>
+<body>
+  <!--
+    Board-link bar: the panel has no B.O.A.R.D-authenticated session of its
+    own (see sidepanel.js's header), so a link pasted from the app's existing
+    Share ▸ "Embed (read-only)" action is the only way it learns which board
+    to show. See src/lib/extension/embedLink.ts for the parse/validate logic
+    mirrored below.
+  -->
+  <div id="link-bar">
+    <input id="link-input" type="text" placeholder="Paste a B.O.A.R.D embed link…" autocomplete="off" />
+    <button id="link-open" type="button">Open</button>
+  </div>
+  <div id="status"></div>
+
+  <div id="board-area">
+    <div id="empty-state">
+      <h1>No board open</h1>
+      <p>
+        In B.O.A.R.D, open a board's Share menu and choose
+        <strong>"Embed (read-only)" ▸ Copy link</strong>, then paste it above.
+      </p>
+    </div>
+    <iframe id="board-frame" title="B.O.A.R.D board" allow="clipboard-write"></iframe>
+    <div id="drop-overlay">Drop image to send to this board</div>
+  </div>
+
+  <!--
+    Pending-item card: shown after a dropped image or a "send this page"
+    action arrives. Its "Add to board" action is intentionally disabled — see
+    src/lib/extension/editActionsGate.ts and sidepanel.js's header for why.
+  -->
+  <div id="pending-item">
+    <div class="row">
+      <img id="pending-thumb" alt="" hidden />
+      <div style="min-width:0; flex:1;">
+        <div class="title" id="pending-title"></div>
+        <div class="note" id="pending-note"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="pending-add" type="button" disabled>Add to board</button>
+      <button id="pending-dismiss" type="button">Dismiss</button>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

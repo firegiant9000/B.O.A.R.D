@@ -150,10 +150,27 @@ describe("group batch operations", () => {
     expect(batch.commit).toHaveBeenCalledTimes(1);
   });
 
+  // Month 5 — orphan fix: a group delete used to remove only the Firestore
+  // docs, leaving both Storage objects per image behind forever.
+  it("batchDeleteImages also deletes each id's full.jpg + thumb.jpg (orphan fix)", async () => {
+    const batch = { update: jest.fn(), delete: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+    await imageService.batchDeleteImages("board-1", ["i1", "i2"]);
+    expect(storage.deleteObject).toHaveBeenCalledTimes(4);
+    const paths = (storage.deleteObject as jest.Mock).mock.calls.map((c) => c[0].path).sort();
+    expect(paths).toEqual([
+      "boards/board-1/images/i1/full.jpg",
+      "boards/board-1/images/i1/thumb.jpg",
+      "boards/board-1/images/i2/full.jpg",
+      "boards/board-1/images/i2/thumb.jpg",
+    ]);
+  });
+
   it("is a no-op on empty input", async () => {
     await imageService.batchUpdateImages("board-1", []);
     await imageService.batchDeleteImages("board-1", []);
     expect(fs.writeBatch).not.toHaveBeenCalled();
+    expect(storage.deleteObject).not.toHaveBeenCalled();
   });
 
   it("clearBoardImages commits a delete batch for all docs", async () => {
@@ -163,5 +180,28 @@ describe("group batch operations", () => {
     await imageService.clearBoardImages("board-1");
     expect(batch.delete).toHaveBeenCalledTimes(2);
     expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  // Month 5 — orphan fix: clear-board used to remove only the Firestore docs.
+  it("clearBoardImages also deletes every doc's Storage objects (orphan fix)", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([["i1", {}], ["i2", {}]]));
+    const batch = { delete: jest.fn(), update: jest.fn(), commit: jest.fn(async () => undefined) };
+    (fs.writeBatch as jest.Mock).mockReturnValueOnce(batch);
+    await imageService.clearBoardImages("board-1");
+    expect(storage.deleteObject).toHaveBeenCalledTimes(4);
+    const paths = (storage.deleteObject as jest.Mock).mock.calls.map((c) => c[0].path).sort();
+    expect(paths).toEqual([
+      "boards/board-1/images/i1/full.jpg",
+      "boards/board-1/images/i1/thumb.jpg",
+      "boards/board-1/images/i2/full.jpg",
+      "boards/board-1/images/i2/thumb.jpg",
+    ]);
+  });
+
+  it("clearBoardImages is a no-op when the board has no images", async () => {
+    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    await imageService.clearBoardImages("board-1");
+    expect(fs.writeBatch).not.toHaveBeenCalled();
+    expect(storage.deleteObject).not.toHaveBeenCalled();
   });
 });

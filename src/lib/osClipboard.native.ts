@@ -19,3 +19,16 @@ export async function getClipboardImage(): Promise<OsClipboardImage | null> {
     return null;
   }
 }
+
+/** Month 6 — writes plain text to the OS clipboard via expo-clipboard (native
+ *  sibling of osClipboard.ts's web implementation — see that file's comment
+ *  for why this exists). Best-effort: a clipboard failure surfaces as `false`,
+ *  never a thrown error. */
+export async function setClipboardText(text: string): Promise<boolean> {
+  try {
+    await Clipboard.setStringAsync(text);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -176,6 +176,21 @@ describe("gateway path (AI_GATEWAY_ENABLED)", () => {
     );
   });
 
+  it("preserves the callable's code on rejection, so a resource-exhausted AI-quota denial can be detected", async () => {
+    // functions/src/ai/usage.ts#checkAiQuota denies via HttpsError("resource-
+    // exhausted", ...); a plain `Error(message)` here would silently drop the
+    // code a caller needs to show the upsell modal instead of a generic error.
+    const svc = loadWithGateway();
+    mockCallable.mockRejectedValueOnce(
+      Object.assign(new Error("Monthly AI limit reached."), {
+        code: "functions/resource-exhausted",
+      })
+    );
+
+    const err: any = await svc.generateSessionSummary("board-1", ctx).catch((e) => e);
+    expect(err.code).toBe("functions/resource-exhausted");
+  });
+
   it("isSummaryConfigured is true with the gateway on even without a key", () => {
     const svc = loadWithGateway();
     expect(svc.isSummaryConfigured()).toBe(true);
@@ -213,6 +228,18 @@ describe("recognizeHandwriting (Phase 10 OCR)", () => {
     await expect(
       aiService.recognizeHandwriting("board-1", "data:image/png;base64,AA", ["p1"])
     ).rejects.toThrow(/Too many AI requests/);
+  });
+
+  it("preserves the callable's code on rejection", async () => {
+    mockCallable.mockRejectedValueOnce(
+      Object.assign(new Error("Monthly AI limit reached."), {
+        code: "functions/resource-exhausted",
+      })
+    );
+    const err: any = await aiService
+      .recognizeHandwriting("board-1", "data:image/png;base64,AA", ["p1"])
+      .catch((e) => e);
+    expect(err.code).toBe("functions/resource-exhausted");
   });
 
   it("isOcrConfigured requires both the OCR and gateway flags", () => {
@@ -257,6 +284,18 @@ describe("explainSelection (Phase 11)", () => {
     );
   });
 
+  it("preserves the callable's code on rejection", async () => {
+    mockCallable.mockRejectedValueOnce(
+      Object.assign(new Error("Monthly AI limit reached."), {
+        code: "functions/resource-exhausted",
+      })
+    );
+    const err: any = await aiService
+      .explainSelection("board-1", undefined, "x")
+      .catch((e) => e);
+    expect(err.code).toBe("functions/resource-exhausted");
+  });
+
   it("isExplainConfigured requires both the explain and gateway flags", () => {
     expect(aiService.isExplainConfigured()).toBe(false);
   });
@@ -285,6 +324,16 @@ describe("textToDiagram (Phase 12)", () => {
   it("surfaces the function error message", async () => {
     mockCallable.mockRejectedValueOnce(new Error("Too many AI requests right now."));
     await expect(aiService.textToDiagram("board-1", "x")).rejects.toThrow(/Too many AI requests/);
+  });
+
+  it("preserves the callable's code on rejection", async () => {
+    mockCallable.mockRejectedValueOnce(
+      Object.assign(new Error("Monthly AI limit reached."), {
+        code: "functions/resource-exhausted",
+      })
+    );
+    const err: any = await aiService.textToDiagram("board-1", "x").catch((e) => e);
+    expect(err.code).toBe("functions/resource-exhausted");
   });
 
   it("isDiagramConfigured requires both the diagram and gateway flags", () => {

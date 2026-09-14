@@ -11,6 +11,11 @@ export interface BoardAccess {
   workspaceId: string;
   /** Whether `uid` is a member of the board. */
   isMember: boolean;
+  /** Whether `uid` is the board's owner or its admin — the `isBoardAdmin`
+   *  predicate in firestore.rules, resolved server-side. Month 5: minting an
+   *  editable embed link is an administrative act, so it gates on this rather
+   *  than on plain membership. */
+  isAdmin: boolean;
 }
 
 export async function resolveBoardAccess(
@@ -20,11 +25,17 @@ export async function resolveBoardAccess(
 ): Promise<BoardAccess | null> {
   const snap = await db.doc(`boards/${boardId}`).get();
   if (!snap.exists) return null;
-  const data = snap.data() as { members?: string[]; workspaceId?: string };
+  const data = snap.data() as {
+    members?: string[];
+    workspaceId?: string;
+    ownerId?: string;
+    adminId?: string;
+  };
   const members = Array.isArray(data.members) ? data.members : [];
   return {
     workspaceId: data.workspaceId ?? "",
     isMember: members.includes(uid),
+    isAdmin: data.ownerId === uid || data.adminId === uid,
   };
 }
 

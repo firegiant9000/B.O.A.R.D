@@ -1,0 +1,606 @@
+import { Point } from "./viewport";
+import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
+import { renderParamsFor, calligraphyWidthRange } from "./penStyles";
+import { calligraphyPathD } from "./calligraphy";
+import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
+import { MATH_DEFAULT_COLOR, mathTransform } from "./mathInk";
+import {
+  CODE_BACKGROUND_COLOR,
+  CODE_BORDER_COLOR,
+  CODE_DEFAULT_FOREGROUND,
+  codeTransform,
+  layoutCodeBox,
+  tokenizeCode,
+} from "./codeRender";
+import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyNotes";
+
+/**
+ * Month 6 — pure SVG export serializer.
+ *
+ * The board's live canvas already renders paths/shapes/images as
+ * `react-native-svg` nodes (`DrawingCanvas.tsx`) — this module is a second,
+ * standalone renderer of the SAME element data straight to an SVG-document
+ * *string*, reusing the canvas's own pure geometry helpers
+ * (`penStyles.renderParamsFor`, `calligraphy.calligraphyPathD`,
+ * `shapes.trianglePoints`/`arrowheadPoints`) so a stroke or shape's exported
+ * look doesn't quietly drift from what the screen actually draws. It adds NO
+ * new rendering path and touches no `react-native-svg` runtime — no
+ * WebViews, nothing mounted, just string building — so it runs equally well
+ * off the render thread (a background export job, a later PNG/PDF task).
+ *
+ * Text elements and sticky notes are the one place export and canvas
+ * intentionally diverge: on screen they're absolutely-positioned React
+ * Native `View`/`Text` overlays (`TextElementView.tsx`, `TextNoteOverlay.tsx`),
+ * not SVG nodes at all — there is no existing SVG rendering of them to stay
+ * faithful to. Here they become real `<text>` nodes instead, so the whole
+ * export is one uniform tree of SVG elements rather than a mix of SVG shapes
+ * and un-exportable RN view overlays. That is a best-effort visual match,
+ * not a pixel-identical one, and the two kinds diverge from each other here:
+ * a `TextElement` has no wrap of its own (this serializer has no real
+ * text-measurement pass, so it only respects explicit `\n` line breaks in
+ * the source text), while a sticky note DOES estimate a width-driven wrap
+ * (`wrapByEstimatedWidth`, below) against its OWN size's width
+ * (`lib/stickyNotes.ts#stickySizeMetrics`, the same lookup
+ * `TextNoteOverlay.tsx` renders from), since ordinary note content routinely
+ * exceeds one line at any of the three widths and a `\n`-only render would
+ * just spill text past the note's coloured rect.
+ * Neither is a pixel-accurate match for the live editor's own text layout —
+ * see `AVG_CHAR_WIDTH_RATIO`'s comment for exactly how the note's estimate
+ * falls short of that.
+ *
+ * ELEMENT KINDS: `SvgExportElement`'s `kind` tag covers every element kind
+ * that exists on the board today (path/shape/text/note/image/audio/math/
+ * code). `math` (Month 6) is the cheapest of them all: an equation is stored
+ * as flat SVG path data already, so exporting one is emitting the `<path>` it
+ * literally is. That is the entire reason LaTeX is rendered to path data in a
+ * Cloud Function rather than displayed in a WebView — a WebView would have
+ * left this module with nothing exportable at all. `code` (Month 6) reuses
+ * the SAME tokenize-then-lay-out pure functions the live canvas does
+ * (`lib/codeRender.ts`), so a printed snippet is colored identically to the
+ * one on screen with no separate export-only highlighting path to drift.
+ * NOTE for whoever adds the next kind: the `default` branch below SKIPS
+ * anything it hasn't been taught, silently, which is right for a non-visual
+ * kind and wrong for a visual one. Math and code would have exported as
+ * nothing without their cases added here. Voice
+ * notes (`kind: "audio"`) are a canvas AFFORDANCE — a mic/speaker badge a
+ * viewer taps to play (`AudioAffordance.tsx`) — not board content the way a
+ * stroke or shape is: they carry no drawable geometry of their own, only an
+ * anchor id and the point they were recorded at. Exporting one as a visual
+ * node would mean inventing a badge shape nobody asked for, so `toSvgDocument`
+ * deliberately emits nothing for it. A board that HAS a voice note must
+ * still export cleanly, though: an unrecognized or non-visual kind is always
+ * skipped, never thrown on, so future non-visual kinds (and any element kind
+ * this module hasn't been taught about yet) degrade the same way instead of
+ * making an otherwise-exportable board fail to export at all.
+ *
+ * IMAGE PORTABILITY — the one real design decision here. An `ImageElement`'s
+ * `url` is a Firebase Storage download URL: a bearer-token link, readable by
+ * whoever holds it today, with no guarantee it stays valid or accessible
+ * forever. `toSvgDocument` is a pure, synchronous function — it cannot fetch
+ * those bytes itself — so BY DEFAULT an exported image is only a REFERENCE
+ * to that URL (`href`/`xlink:href`), exactly what the live canvas does.
+ * That makes the exported SVG render correctly for the exporting user right
+ * now, and NOT self-contained: opened by someone without read access to this
+ * app's Storage bucket, or after the link's signing window lapses, the image
+ * will not resolve. Do not treat an exported SVG as a portable, standalone
+ * artifact for its images on this basis alone. A caller that needs a truly
+ * self-contained file can pre-fetch each image's bytes itself (this module
+ * has no opinion on how) and pass them in as `opts.imageHrefs[imageId]` —
+ * typically a `data:` URI — which this function will use verbatim in place
+ * of the element's own `url`. This is the seam a later PNG/PDF export task
+ * can build an async, byte-fetching wrapper on top of without this function
+ * itself ever becoming async.
+ */
+
+export type SvgExportElement =
+  | { kind: "path"; data: DrawPath }
+  | { kind: "shape"; data: ShapeElement }
+  | { kind: "text"; data: TextElement }
+  | { kind: "note"; data: TextNote }
+  | { kind: "image"; data: ImageElement }
+  | { kind: "audio"; data: AudioElement }
+  | { kind: "math"; data: MathElement }
+  | { kind: "code"; data: CodeElement };
+
+/** The board's per-kind element arrays — exactly `useBoardElements`'s own
+ *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/
+ *  `audioNotes` fields, typed independently here so this module doesn't
+ *  import a hook. Deliberately the FULL arrays, not `.visible` (the
+ *  viewport-culled subset the canvas actually renders) — an export must
+ *  cover the whole board, not just what's on screen right now. */
+export interface BoardElementSets {
+  paths: DrawPath[];
+  shapes: ShapeElement[];
+  texts: TextElement[];
+  notes: TextNote[];
+  images: ImageElement[];
+  audioNotes: AudioElement[];
+  mathElements: MathElement[];
+  codeElements: CodeElement[];
+}
+
+/**
+ * Flattens the board's per-kind arrays into one `SvgExportElement[]`, in
+ * back-to-front paint order — later entries land on top, matching the live
+ * canvas's own stacking: `images`, `paths`, `shapes` are the SVG tree order
+ * `DrawingCanvas.tsx` renders them in; `notes` then `texts` are the RN
+ * overlay order `BoardOverlayLayer.tsx` mounts `TextNoteOverlay` then
+ * `TextElementView` in (see also `useBoardElements.ts#hitTestAny`'s reverse
+ * of this same ordering, topmost-first, for hit-testing). `audioNotes`'
+ * position doesn't matter — `toSvgDocument` draws no node for it either way.
+ * A caller building `SvgExportElement[]` by hand (as this module's own tests
+ * do) doesn't need this; it exists for a caller exporting the WHOLE board
+ * from live element state (`recapExport.ts#exportBoardPdf`'s UI callers).
+ */
+export function toSvgExportElements(elements: BoardElementSets): SvgExportElement[] {
+  return [
+    ...elements.images.map((data): SvgExportElement => ({ kind: "image", data })),
+    ...elements.paths.map((data): SvgExportElement => ({ kind: "path", data })),
+    ...elements.shapes.map((data): SvgExportElement => ({ kind: "shape", data })),
+    // Math sits directly above shapes, matching DrawingCanvas's own SVG tree
+    // order (and so the reverse of useBoardElements#hitTestAny's walk).
+    // `?? []` even though the field is required on the type: this module is
+    // reachable from untyped JS call sites, and a board that predates math
+    // must still export rather than throw on a missing array.
+    ...(elements.mathElements ?? []).map((data): SvgExportElement => ({ kind: "math", data })),
+    // Code sits directly above math, matching DrawingCanvas's own SVG tree
+    // order — both are content rendered inside the SVG tree (unlike text,
+    // which is an RN overlay layered above the whole canvas). Same `?? []`
+    // tolerance as `mathElements` above, for a board that predates code.
+    ...(elements.codeElements ?? []).map((data): SvgExportElement => ({ kind: "code", data })),
+    ...elements.notes.map((data): SvgExportElement => ({ kind: "note", data })),
+    ...elements.texts.map((data): SvgExportElement => ({ kind: "text", data })),
+    ...elements.audioNotes.map((data): SvgExportElement => ({ kind: "audio", data })),
+  ];
+}
+
+/**
+ * The export viewBox, as a plain rectangle. Deliberately NOT the app's own
+ * `Bounds` (`./viewport` — `{minX, minY, maxX, maxY}`, used everywhere else
+ * on the board for content/selection/culling boxes): an SVG `viewBox` wants
+ * "min-x min-y width height", and a caller passing this in (e.g. from
+ * `useBoardElements#contentBounds()`) must convert — `{ x: b.minX, y:
+ * b.minY, width: b.maxX - b.minX, height: b.maxY - b.minY }` — rather than
+ * pass a `Bounds` through directly.
+ */
+export interface SvgExportBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * A `viewBox`/`width`/`height` of exactly zero disables rendering of the
+ * whole element per the SVG spec ("a value of zero disables rendering of
+ * the element") — it isn't merely a tiny image, it's a document every
+ * consumer renders as nothing. `useBoardElements.ts#contentBounds()` can
+ * hand this function exactly that today: a board whose only content is one
+ * legacy sticky note computes a zero-width/zero-height point bbox for it
+ * (`TextNote` carries no persisted width/height — see
+ * `lib/stickyNotes.ts#stickySizeMetrics` for the same gap on this module's
+ * own note rendering, resolved from the note's own `size` field). `toSvgDocument`
+ * clamps to this floor on every call rather than
+ * trusting every present and future caller to pass a non-degenerate box —
+ * it does not attempt to recover the "true" extent of whatever produced a
+ * degenerate box, which is that caller's bbox math to get right, not this
+ * serializer's; it only guarantees the document handed back is renderable.
+ */
+const MIN_EXPORT_DIMENSION = 1;
+
+export interface SvgExportOptions {
+  /** Per-image-id override for the exported `<image>`'s `href`/`xlink:href`
+   *  — e.g. a `data:` URI a caller has already fetched, so that image is
+   *  self-contained in the export. Falls back to the element's own (Storage-
+   *  hosted, not-guaranteed-permanent) `url` when an id has no entry here.
+   *  See this module's header for why the fetch itself can't happen in here. */
+  imageHrefs?: Record<string, string>;
+}
+
+/** Escapes text destined for XML *element content* (between two tags). */
+export function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Escapes text destined for an XML *attribute value*. A superset of
+ * `escapeXmlText`: `<`/`&` are still invalid there, but `"`/`'` additionally
+ * terminate the attribute early (this function always uses `"` to quote, so
+ * only `"` is strictly required, but `'` is escaped too since a value is
+ * never re-quoted with `'` here and callers may reuse this for other
+ * contexts).
+ */
+export function escapeXmlAttr(value: string): string {
+  return escapeXmlText(value).replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+/** `M x y L x y L x y …` — mirrors `DrawingCanvas.tsx`'s (unexported)
+ *  `pointsToSvgPath`, kept as a small local copy rather than importing a
+ *  component module into this lib. A single point still draws a visible dot
+ *  (a stationary pen tap), same as the canvas. Deliberately uses the raw
+ *  stored points, not `DrawingCanvas.tsx`'s `simplifyPoints` (a display-only
+ *  perf optimization at render time) — invisible for ordinary strokes, and
+ *  an export should be faithful to the persisted data, not to a rendering
+ *  shortcut. Considered, not applied here. */
+function pointsToPathD(points: { x: number; y: number }[]): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    return `M ${points[0].x} ${points[0].y} L ${points[0].x + 0.5} ${points[0].y + 0.5}`;
+  }
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 1; i < points.length; i++) d += ` L ${points[i].x} ${points[i].y}`;
+  return d;
+}
+
+/** Mirrors `DrawingCanvas.tsx`'s (unexported) `dashArray`. */
+function dashArrayFor(strokeWidth: number): string {
+  const d = Math.max(2, strokeWidth * 2);
+  return `${d},${d}`;
+}
+
+/** Renders pre-split `lines` as `<tspan>`s stacked under `x`, `fontSize *
+ *  1.2` apart (a standard single-line-height multiplier). A single line
+ *  skips the `<tspan>` wrapper entirely — plain text content is enough and
+ *  keeps the common case's output simple. */
+function tspansFor(lines: string[], x: number, fontSize: number): string {
+  if (lines.length <= 1) return escapeXmlText(lines[0] ?? "");
+  const lineHeight = fontSize * 1.2;
+  return lines
+    .map((line, i) => `<tspan x="${x}" dy="${i === 0 ? 0 : lineHeight}">${escapeXmlText(line)}</tspan>`)
+    .join("");
+}
+
+/** Average glyph-advance-width estimate used to word-wrap a sticky note (see
+ *  `noteNode`) without a real text-measurement pass — this module's stated
+ *  limitation for text generally (this module's header). 0.6 is a plain
+ *  sans-serif rule-of-thumb (roughly what this board's own UI faces average
+ *  out to), not a font-table lookup, so the wrap point is an estimate, not a
+ *  pixel-accurate match for `TextNoteOverlay.tsx`'s real (native) text
+ *  layout — it exists so realistic note content wraps at ROUGHLY the right
+ *  point instead of always rendering as one line spilling past the
+ *  coloured rect. */
+const AVG_CHAR_WIDTH_RATIO = 0.6;
+
+/** Word-wraps `text` to fit within `maxWidth` at `fontSize`, honoring
+ *  explicit `\n` breaks first. A single word longer than the estimated
+ *  per-line character budget is left unbroken on its own line (no
+ *  character-level hyphenation) rather than silently dropped. */
+function wrapByEstimatedWidth(text: string, maxWidth: number, fontSize: number): string[] {
+  const maxChars = Math.max(1, Math.floor(maxWidth / (fontSize * AVG_CHAR_WIDTH_RATIO)));
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    if (paragraph.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of paragraph.split(" ")) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length > maxChars && current) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    }
+    lines.push(current);
+  }
+  return lines;
+}
+
+function pathNode(p: DrawPath): string {
+  // Tolerant-reader default (Global Constraint): a color is a plain string
+  // field, not a required-by-schema one at the Firestore layer, so a
+  // partially-written doc missing it must fall back rather than throwing
+  // inside the escaper below.
+  const color = p.color ?? "#000000";
+  if (p.tool === "eraser") {
+    // Unchanged from the canvas's own eraser look (DrawingCanvas.tsx
+    // `strokeVisualFor`): an opaque white stroke, inflated past the pen's
+    // own width, painted over whatever it "erases".
+    const d = pointsToPathD(p.points ?? []);
+    if (!d) return "";
+    return `<path d="${escapeXmlAttr(d)}" stroke="#FFFFFF" stroke-opacity="1" stroke-width="${p.strokeWidth + 10}" fill="none" stroke-linecap="round" stroke-linejoin="round" />`;
+  }
+  if (p.penStyle === "calligraphy") {
+    const [minW, maxW] = calligraphyWidthRange(p.strokeWidth);
+    const d = calligraphyPathD(p.points ?? [], minW, maxW);
+    if (!d) return "";
+    return `<path d="${escapeXmlAttr(d)}" fill="${escapeXmlAttr(color)}" fill-opacity="${p.opacity ?? 1}" stroke="none" />`;
+  }
+  const d = pointsToPathD(p.points ?? []);
+  if (!d) return "";
+  const params = renderParamsFor(p.penStyle, p.strokeWidth, p.opacity);
+  // `params.multiplyBlend` (highlighter only) is deliberately not applied:
+  // it's DrawingCanvas.tsx's web-only CSS `mix-blend-mode`, with no SVG
+  // document equivalent to fall back to on other consumers, so overlapping
+  // highlighter strokes render flatter here than on the web canvas. Narrow
+  // and considered, not fixed here.
+  return `<path d="${escapeXmlAttr(d)}" stroke="${escapeXmlAttr(color)}" stroke-opacity="${params.opacity}" stroke-width="${params.strokeWidth}" fill="none" stroke-linecap="${params.linecap}" stroke-linejoin="${params.linejoin}" />`;
+}
+
+function arrowheadNode(style: ArrowheadStyle, tip: Point, angle: number, strokeWidth: number, color: string): string {
+  if (style === "none") return "";
+  const size = arrowheadSize(strokeWidth);
+  if (style === "dot" || style === "circle") {
+    const fill = style === "dot" ? escapeXmlAttr(color) : "none";
+    return `<circle cx="${tip.x}" cy="${tip.y}" r="${size / 2}" fill="${fill}" stroke="${escapeXmlAttr(color)}" stroke-width="${strokeWidth}" />`;
+  }
+  const [t, b1, b2] = arrowheadPoints(tip, angle, size);
+  if (style === "open") {
+    return (
+      `<line x1="${t.x}" y1="${t.y}" x2="${b1.x}" y2="${b1.y}" stroke="${escapeXmlAttr(color)}" stroke-width="${strokeWidth}" stroke-linecap="round" />` +
+      `<line x1="${t.x}" y1="${t.y}" x2="${b2.x}" y2="${b2.y}" stroke="${escapeXmlAttr(color)}" stroke-width="${strokeWidth}" stroke-linecap="round" />`
+    );
+  }
+  // classic — filled triangle
+  return `<polygon points="${t.x},${t.y} ${b1.x},${b1.y} ${b2.x},${b2.y}" fill="${escapeXmlAttr(color)}" />`;
+}
+
+function shapeNode(s: ShapeElement): string {
+  // Tolerant-reader defaults (Global Constraint) — see pathNode's `color`.
+  const fill = s.fill ?? "none";
+  const stroke = s.stroke ?? "#000000";
+  const dash = s.dashed ? dashArrayFor(s.strokeWidth) : undefined;
+  const dashAttr = dash ? ` stroke-dasharray="${dash}"` : "";
+  const fillAttr = `fill="${escapeXmlAttr(fill)}"`;
+  const strokeAttrs = `stroke="${escapeXmlAttr(stroke)}" stroke-width="${s.strokeWidth}"${dashAttr}`;
+
+  let body: string;
+  if (s.shape === "rect") {
+    body = `<rect x="${s.x}" y="${s.y}" width="${Math.abs(s.width)}" height="${Math.abs(s.height)}" ${fillAttr} ${strokeAttrs} />`;
+  } else if (s.shape === "ellipse") {
+    const cx = s.x + s.width / 2;
+    const cy = s.y + s.height / 2;
+    body = `<ellipse cx="${cx}" cy="${cy}" rx="${Math.abs(s.width) / 2}" ry="${Math.abs(s.height) / 2}" ${fillAttr} ${strokeAttrs} />`;
+  } else if (s.shape === "triangle") {
+    const pts = trianglePoints(s.x, s.y, s.width, s.height)
+      .map((p) => `${p.x},${p.y}`)
+      .join(" ");
+    body = `<polygon points="${pts}" ${fillAttr} ${strokeAttrs} />`;
+  } else {
+    // line / arrow
+    const end = { x: s.x + s.width, y: s.y + s.height };
+    const line = `<line x1="${s.x}" y1="${s.y}" x2="${end.x}" y2="${end.y}" stroke="${escapeXmlAttr(stroke)}" stroke-width="${s.strokeWidth}"${dashAttr} stroke-linecap="round" />`;
+    let heads = "";
+    if (s.shape === "arrow") {
+      const angleEnd = Math.atan2(s.height, s.width);
+      const angleStart = Math.atan2(-s.height, -s.width);
+      heads += arrowheadNode(s.arrowheadEnd, end, angleEnd, s.strokeWidth, stroke);
+      heads += arrowheadNode(s.arrowheadStart, { x: s.x, y: s.y }, angleStart, s.strokeWidth, stroke);
+    }
+    body = line + heads;
+  }
+
+  if (s.rotation) {
+    const cx = s.x + s.width / 2;
+    const cy = s.y + s.height / 2;
+    return `<g transform="rotate(${s.rotation}, ${cx}, ${cy})">${body}</g>`;
+  }
+  return body;
+}
+
+function textNode(t: TextElement): string {
+  const text = t.text ?? "";
+  // Tolerant-reader default (Global Constraint) — see pathNode's `color`.
+  const color = t.color ?? "#000000";
+  const x = t.position.x;
+  // Approximate the top-left placement TextElementView.tsx's padded RN Text
+  // renders with — there's no shared layout engine between an RN Text box
+  // and an SVG <text> baseline, so this is a reasonable approximation, not a
+  // pixel match.
+  const y = t.position.y + t.fontSize;
+  const content = tspansFor(text.split("\n"), x, t.fontSize);
+  const rotationAttr = t.rotation
+    ? ` transform="rotate(${t.rotation}, ${t.position.x + t.width / 2}, ${t.position.y + t.height / 2})"`
+    : "";
+  return `<text x="${x}" y="${y}" font-size="${t.fontSize}" fill="${escapeXmlAttr(color)}" aria-label="${escapeXmlAttr(text)}"${rotationAttr}>${content}</text>`;
+}
+
+// TextNote (the legacy sticky note) carries no persisted width/height or
+// rotation — TextNoteOverlay.tsx sizes it from its RN layout instead, driven
+// by the note's own `color`/`size` fields through the SAME `lib/stickyNotes.ts`
+// helpers used here (`STICKY_COLORS`/`sanitizeStickyColor`, `stickySizeMetrics`),
+// so the exporter and the live overlay cannot drift onto two different looks
+// for the same note. A corrupt or absent stored `color`/`size` degrades to
+// the pre-Month-6 default (yellow, 14px/200-wide) — the same tolerant-reader
+// guarantee those helpers already provide the overlay, not a second
+// implementation of it here.
+//
+// FIXED WAVE F4 (this note replaces an earlier "KNOWN DIVERGENCE" comment
+// that accurately described three real bugs — colour, size, and left-offset
+// position — now corrected):
+//   - Colour and width/font-size now come from the note's own fields, not a
+//     fixed yellow/200px/14px triple.
+//   - `NOTE_LEFT_OFFSET_ADJUST` mirrors `TextNoteOverlay.tsx`'s own
+//     `metrics.width / 2 - 40` exactly (see that file's `leftOffset`): a
+//     non-default-size note's real on-board left offset is size-dependent
+//     (35 at size 12, 60 at the 14px default, 90 at size 18) — it was never
+//     the fixed 60 this function used to hardcode regardless of size.
+//     `NOTE_TOP_OFFSET` stays a plain constant: the overlay's own
+//     `top: y - 20` genuinely does not scale with size, so one number is
+//     correct for every size there.
+//
+// MARKDOWN STAYS UNRENDERED HERE, DELIBERATELY — this part of the old
+// comment is still true and is NOT this fix's job. `content` is written out
+// AS TYPED — `**bold**`, `- list`, `[text](url)` and friends appear as
+// literal characters in the exported text, not as bold/italic `<tspan>`s,
+// bullets, or links. `content` is passed through
+// `wrapByEstimatedWidth`/`tspansFor` completely unaware that
+// `lib/markdown.ts` exists. Rendering markdown in SVG (bold/italic
+// `<tspan>`s, list bullets, tappable links) is real additional work,
+// deliberately not taken on here. Anyone teaching this module to do so
+// should decide the supported subset deliberately (partial support — e.g.
+// bold/italic only — is fine as long as the limit is stated here, the same
+// way this comment states the current, still-smaller, feature set).
+const NOTE_LEFT_OFFSET_ADJUST = 40;
+const NOTE_TOP_OFFSET = 20;
+const NOTE_TEXT_COLOR = "#333333";
+const NOTE_PADDING = 10;
+
+function noteNode(n: TextNote): string {
+  const content = n.content ?? "";
+  const color = STICKY_COLORS[sanitizeStickyColor(n.color)];
+  const metrics = stickySizeMetrics(n.size);
+  const leftOffset = metrics.width / 2 - NOTE_LEFT_OFFSET_ADJUST;
+  const x = n.position.x - leftOffset;
+  const y = n.position.y - NOTE_TOP_OFFSET;
+  const textX = x + NOTE_PADDING;
+  const textY = y + NOTE_PADDING + metrics.fontSize;
+  const lineHeight = metrics.fontSize * 1.2;
+  const lines = wrapByEstimatedWidth(content, metrics.width - NOTE_PADDING * 2, metrics.fontSize);
+  const height = Math.max(metrics.minHeight, NOTE_PADDING * 2 + lines.length * lineHeight);
+  return (
+    `<g aria-label="${escapeXmlAttr(content)}">` +
+    `<rect x="${x}" y="${y}" width="${metrics.width}" height="${height}" rx="6" fill="${escapeXmlAttr(color)}" stroke="none" />` +
+    `<text x="${textX}" y="${textY}" font-size="${metrics.fontSize}" fill="${NOTE_TEXT_COLOR}">${tspansFor(lines, textX, metrics.fontSize)}</text>` +
+    `</g>`
+  );
+}
+
+function imageNode(img: ImageElement, opts: SvgExportOptions | undefined): string {
+  const w = Math.abs(img.width);
+  const h = Math.abs(img.height);
+  const x = Math.min(img.x, img.x + img.width);
+  const y = Math.min(img.y, img.y + img.height);
+  // See this module's header (IMAGE PORTABILITY) — a caller-supplied
+  // override takes priority; absent one, this falls back to the element's
+  // own live (non-permanent, access-gated) Storage URL, exactly what the
+  // canvas itself renders. The final `?? ""` is the tolerant-reader default
+  // (Global Constraint) for a doc partial enough to be missing `url` too.
+  const href = opts?.imageHrefs?.[img.id] ?? img.url ?? "";
+  const hrefAttr = escapeXmlAttr(href);
+  const label = img.alt ? ` aria-label="${escapeXmlAttr(img.alt)}"` : "";
+  // Both `href` and the legacy `xlink:href` are emitted: this document may
+  // be opened by tools (older rasterizers/converters — relevant to a later
+  // PDF/PNG export task) that don't resolve the bare SVG2 `href` on <image>.
+  const body = `<image x="${x}" y="${y}" width="${w}" height="${h}" href="${hrefAttr}" xlink:href="${hrefAttr}" preserveAspectRatio="xMidYMid slice"${label} />`;
+  if (img.rotation) {
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    return `<g transform="rotate(${img.rotation}, ${cx}, ${cy})">${body}</g>`;
+  }
+  return body;
+}
+
+/** A math element (Month 6) — the equation's already-typeset outline, placed
+ *  with the SAME transform the live canvas uses (`mathInk.mathTransform`), so
+ *  a printed equation sits exactly where the screen showed it. Nonzero fill
+ *  rule is stated explicitly: one `d` carries every glyph of the expression
+ *  as subpaths, and font counters (the hole in an "a") are wound against
+ *  their outer contour. */
+function mathNode(m: MathElement): string {
+  const d = m.svgPath;
+  if (!d) return "";
+  return (
+    `<g transform="${escapeXmlAttr(mathTransform(m))}">` +
+    `<path d="${escapeXmlAttr(d)}" fill="${MATH_DEFAULT_COLOR}" fill-rule="nonzero" stroke="none" />` +
+    `</g>`
+  );
+}
+
+/** A code element (Month 6) — the SAME tokenize-then-lay-out pure functions
+ *  the live canvas uses (`lib/codeRender.ts`), so an exported snippet is
+ *  colored identically to the one on screen. `escapeXmlText` runs on every
+ *  token's content (unlike `mathNode`'s single opaque path datum, this is
+ *  real user text and could contain `<`/`&`); `layoutCodeBox` here supplies
+ *  line metrics ONLY (padding/lineHeight), not the box — `width`/`height`
+ *  come from the element itself, same split `CodeElementView` makes and for
+ *  the same reason (a resize can leave the two disagreeing). */
+function codeNode(c: CodeElement): string {
+  const width = Number.isFinite(c.width) && c.width > 0 ? c.width : 1;
+  const height = Number.isFinite(c.height) && c.height > 0 ? c.height : 1;
+  const x = Number.isFinite(c.x) ? c.x : 0;
+  const y = Number.isFinite(c.y) ? c.y : 0;
+  const fontSize = Number.isFinite(c.fontSize) && c.fontSize > 0 ? c.fontSize : 14;
+  const layout = layoutCodeBox(c.code ?? "", fontSize);
+  const lines = tokenizeCode(c.code ?? "", c.language);
+  const textX = x + layout.padding;
+  const firstY = y + layout.padding + layout.lineHeight * 0.8;
+  const lineTspans = lines
+    .map((line, i) => {
+      const dy = i === 0 ? 0 : layout.lineHeight;
+      const runs = line
+        .map(
+          (run) =>
+            `<tspan fill="${escapeXmlAttr(run.color || CODE_DEFAULT_FOREGROUND)}">${escapeXmlText(run.content)}</tspan>`
+        )
+        .join("");
+      return `<tspan x="${textX}" dy="${dy}">${runs || " "}</tspan>`;
+    })
+    .join("");
+  const body =
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="${CODE_BACKGROUND_COLOR}" stroke="${CODE_BORDER_COLOR}" stroke-width="1" />` +
+    `<text x="${textX}" y="${firstY}" font-family="monospace" font-size="${fontSize}">${lineTspans}</text>`;
+  const transform = codeTransform(c);
+  return transform ? `<g transform="${escapeXmlAttr(transform)}">${body}</g>` : body;
+}
+
+function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): string {
+  switch (el.kind) {
+    case "path":
+      return pathNode(el.data);
+    case "shape":
+      return shapeNode(el.data);
+    case "text":
+      return textNode(el.data);
+    case "note":
+      return noteNode(el.data);
+    case "image":
+      return imageNode(el.data, opts);
+    case "math":
+      return mathNode(el.data);
+    case "code":
+      return codeNode(el.data);
+    case "audio":
+      // A voice-note badge is a canvas affordance, not drawable board
+      // content — see this module's header. Deliberately no node.
+      return "";
+    default: {
+      // Exhaustiveness guard for this file's own union. At runtime this also
+      // catches any element kind this module hasn't been taught about yet
+      // (a future poll kind reaching here before its own case is added) —
+      // skipped the same way `audio` is, never thrown on, so one
+      // unrecognized element never makes an otherwise-exportable board fail
+      // to export at all. That leniency is a TRAP for a visual kind: `math`
+      // and `code` (Month 6) would have exported as nothing at all,
+      // silently, if their cases above had been left out. Add the case when
+      // the kind draws.
+      const _exhaustive: never = el;
+      void _exhaustive;
+      return "";
+    }
+  }
+}
+
+/**
+ * Serializes `elements` into a standalone SVG document string, viewBox'd to
+ * `bounds`. Never throws: an element kind this module doesn't draw (today,
+ * only `audio` — see this module's header) contributes nothing rather than
+ * failing the whole export, and every reader here tolerates a partially
+ * written or older-shape element the same way the rest of the board does
+ * (`data?.field ?? default`). A zero (or negative) `bounds.width`/`height`
+ * is clamped up to `MIN_EXPORT_DIMENSION` rather than passed through, so the
+ * result is always a renderable document, never one the SVG spec's
+ * zero-disables-rendering rule turns into nothing.
+ *
+ * IMAGE ELEMENTS ARE NOT SELF-CONTAINED BY DEFAULT: an `image` element
+ * serializes as a REFERENCE to its live Firebase Storage URL unless the
+ * caller supplies `opts.imageHrefs`. See this module's header (IMAGE
+ * PORTABILITY) before treating this function's output as a portable,
+ * standalone file.
+ */
+export function toSvgDocument(
+  elements: SvgExportElement[],
+  bounds: SvgExportBounds,
+  opts?: SvgExportOptions
+): string {
+  const width = Math.max(bounds.width, MIN_EXPORT_DIMENSION);
+  const height = Math.max(bounds.height, MIN_EXPORT_DIMENSION);
+  const inner = elements.map((el) => nodeFor(el, opts)).join("");
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+    `viewBox="${bounds.x} ${bounds.y} ${width} ${height}" width="${width}" height="${height}">` +
+    `${inner}</svg>`
+  );
+}
