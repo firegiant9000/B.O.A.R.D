@@ -1961,22 +1961,42 @@ export function useBoardElements(
       const codeIds = visibleCodeElementsRef.current
         .filter((cEl) => idSet.has(cEl.id))
         .map((cEl) => cEl.id);
+      // Sticky notes, from the UNFILTERED `notesRef` rather than a
+      // blocked-user-filtered mirror — the same choice `audioNotesRef` makes
+      // and for the same reason: a delete must not silently skip a document
+      // because its author is blocked, which would leave the note in
+      // Firestore while removing it from this client's view.
+      const noteIds = notesRef.current.filter((n) => idSet.has(n.id)).map((n) => n.id);
       // Whatever is left over is a stroke. Month 6: `mathIds`/`codeIds` have
       // to be subtracted here as well, or every deleted equation/snippet
       // would ALSO be issued as a delete against the `paths` collection.
+      //
+      // `noteIds` belongs in that list for the same reason, and its ABSENCE
+      // was a real defect rather than a theoretical one: a sticky note is
+      // selectable (board Q&A citations include `"note"` —
+      // `boardQaService.ts`'s `CANVAS_CITATION_KINDS` — and clicking one
+      // selects the element), so a selected note's id fell through to
+      // `pathIds` and was issued against `paths`, where no such document
+      // exists. That delete was a silent no-op, `notes` state was never
+      // filtered, and the note survived on screen and in Firestore. The
+      // anchor cascade below does NOT cover this: it matches on
+      // `anchorElementId`, i.e. notes attached to a deleted element, never a
+      // note deleted directly.
       const pathIds = ids.filter(
         (i) =>
           !shapeIds.includes(i) &&
           !textIds.includes(i) &&
           !imageIds.includes(i) &&
           !mathIds.includes(i) &&
-          !codeIds.includes(i)
+          !codeIds.includes(i) &&
+          !noteIds.includes(i)
       );
       setShapes((prev) => prev.filter((s) => !idSet.has(s.id)));
       setTextElements((prev) => prev.filter((el) => !idSet.has(el.id)));
       setImages((prev) => prev.filter((img) => !idSet.has(img.id)));
       setMathElements((prev) => prev.filter((mEl) => !idSet.has(mEl.id)));
       setCodeElements((prev) => prev.filter((cEl) => !idSet.has(cEl.id)));
+      setNotes((prev) => prev.filter((n) => !idSet.has(n.id)));
       setPaths((prev) => prev.filter((p) => !idSet.has(p.id)));
       try {
         await Promise.all([
@@ -1986,6 +2006,7 @@ export function useBoardElements(
           imageService.batchDeleteImages(boardId, imageIds),
           mathService.batchDeleteMathElements(boardId, mathIds),
           codeService.batchDeleteCodeElements(boardId, codeIds),
+          pathService.batchDeleteTextNotes(boardId, noteIds),
         ]);
         onScheduleSave();
         // Month 5 — anchor cascade (the other half of the orphan fix): any

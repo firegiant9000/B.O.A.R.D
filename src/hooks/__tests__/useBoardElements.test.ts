@@ -833,27 +833,25 @@ describe("useBoardElements — deleteSelected id routing", () => {
   });
 
   /**
-   * SUSPECTED DEFECT — documented, NOT fixed.
+   * REGRESSION — this harness found the defect this test now guards.
    *
-   * `deleteSelected` classifies an id against shapes / text elements / images /
-   * math / code and treats everything left over as a stroke
-   * (`useBoardElements.ts:1967`). Sticky notes (`TextNote`) live in their own
-   * collection and are absent from that classification, so a selected note's id
-   * is issued as a delete against `paths` — where no such document exists — and
-   * the note itself is never deleted. The local `notes` array is not filtered
-   * either, so the note stays on screen.
+   * `deleteSelected` classified an id against shapes / text elements / images /
+   * math / code and treated everything left over as a stroke. Sticky notes
+   * (`TextNote`) live in their own collection and were absent from that
+   * classification, so a selected note's id was issued as a delete against
+   * `paths` — where no such document exists, making it a silent no-op — while
+   * the local `notes` array was never filtered, so the note stayed on screen
+   * and in Firestore.
    *
-   * A note id genuinely reaches the selection in production: "note" is in
-   * `CANVAS_CITATION_KINDS` (src/services/boardQaService.ts:78) and
-   * `handleSelectCitation` (app/board/[id].tsx:535) calls
-   * `elements.selection.select(elementId)` for it, after which the screen's
-   * `handleDeleteSelected` (app/board/[id].tsx:582-586) passes that id straight
-   * here. The hook's own `selectionText()` (useBoardElements.ts:1284) likewise
-   * assumes notes can be selected.
-   *
-   * This test pins TODAY'S behaviour so a fix has something to flip.
+   * It was reachable, not theoretical: "note" is in `CANVAS_CITATION_KINDS`
+   * (src/services/boardQaService.ts:78), `handleSelectCitation`
+   * (app/board/[id].tsx:535) selects the cited element, and the screen's
+   * `handleDeleteSelected` (app/board/[id].tsx:582-586) passes that id
+   * straight here. The anchor cascade does not cover it — that matches on
+   * `anchorElementId`, i.e. notes attached to a deleted element, never a note
+   * deleted directly.
    */
-  it("SUSPECTED DEFECT: issues a selected sticky note's id against the paths collection and never deletes the note", async () => {
+  it("routes a selected sticky note to the notes collection, not to paths, and drops it locally", async () => {
     const { result } = renderElements();
     seedBoardAndSelect(result, []);
 
@@ -861,14 +859,12 @@ describe("useBoardElements — deleteSelected id routing", () => {
       await result.current.deleteSelected(["note-1"]);
     });
 
-    // The misrouted delete.
-    expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, ["note-1"]);
-    // No note delete is issued on any path (`batchDeleteTextNotes` is only ever
-    // reached by the anchor cascade, which matches on `anchorElementId`, not id).
-    expect(batchDeleteTextNotes).not.toHaveBeenCalled();
-    expect(pathService.deleteTextNote).not.toHaveBeenCalled();
-    // And the note survives locally.
-    expect(result.current.notes.map((n) => n.id)).toEqual(["note-1"]);
+    expect(batchDeleteTextNotes).toHaveBeenCalledWith(BOARD, ["note-1"]);
+    // The note id must NOT also be issued against `paths` — the whole defect
+    // was it falling through to the leftover-is-a-stroke branch.
+    expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, []);
+    // And it is gone locally.
+    expect(result.current.notes.map((n) => n.id)).toEqual([]);
   });
 });
 
