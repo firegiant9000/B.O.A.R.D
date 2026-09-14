@@ -21,6 +21,10 @@ import * as aiService from "../../src/services/aiService";
 import { isQuotaDenial } from "../../src/services/quotaService";
 import { getWorkspace } from "../../src/services/workspaceService";
 import { getUsersByIds } from "../../src/services/friendService";
+import {
+  trackSessionCompleted,
+  trackAiSummaryGenerated,
+} from "../../src/services/sessionAnalytics";
 import { exportRecapPdf } from "../../src/utils/recapExport";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 import SessionLobby from "../../src/components/session/SessionLobby";
@@ -148,6 +152,11 @@ export default function SessionDetailScreen() {
             participantCount: session.participantIds.length,
             title: session.title,
           });
+          // Month 6 — ROADMAP.md:685's `session_completed`, recap-screen half
+          // (the third and last end path). Same `false` for snapshotCaptured,
+          // and for the same reason as the schedule screen: no canvas ref
+          // here, which is why the endSession call above passes no snapshot.
+          trackSessionCompleted(session, "session-detail", false);
           setSession((prev) =>
             prev ? { ...prev, status: "ended", endedAt: new Date(), participants: frozen } : prev
           );
@@ -180,6 +189,10 @@ export default function SessionDetailScreen() {
         session.canvasSnapshot
       );
       await sessionService.updateSessionSummary(session.id, summary);
+      // Month 6 — ROADMAP.md:685's `ai_summary_generated`, recap-screen half.
+      // See the schedule screen's twin for why this is after the store and
+      // never inside `sessionService.updateSessionSummary`.
+      trackAiSummaryGenerated(session, summary, "session-detail");
       setSession((prev) => (prev ? { ...prev, summary } : prev));
     } catch (error: any) {
       // checkAiQuota's resource-exhausted covers BOTH the per-workspace AI

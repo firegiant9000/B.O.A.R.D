@@ -18,6 +18,7 @@ import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as notificationService from "../services/notificationService";
 import { isQuotaDenial } from "../services/quotaService";
+import { track } from "../services/analyticsService";
 import { showAlert } from "../utils/alerts";
 
 interface StartSessionModalProps {
@@ -158,6 +159,28 @@ export default function StartSessionModal({
         },
         { plan }
       );
+
+      // Month 6 — ROADMAP.md:685's `session_scheduled`. One of two genuine
+      // user paths (the other is app/session/create.tsx); neither is
+      // `sessionService.createSession`, which onboardingService's sample seed
+      // calls directly for every new account — see
+      // src/services/__tests__/analyticsBoundary.test.ts.
+      //
+      // `status` is the session's own closed union and is the useful
+      // distinction between the two paths: this modal starts a session NOW
+      // ("active"), while the schedule screen books one for later
+      // ("scheduled"). Both are "scheduled" as far as the funnel's event name
+      // goes — the event counts sessions a user set up — so recording which
+      // kind is what keeps that name from hiding the difference.
+      //
+      // After the await: a session denied by the plan cap (handled below) is
+      // not a scheduled session. No title, no board title, no participant ids
+      // — only the count.
+      track("session_scheduled", {
+        status: "active",
+        participantCount: participantIds.length,
+        durationMinutes: durationNum,
+      });
 
       // Send push notifications to participants who have tokens
       if (participantIds.length > 0) {

@@ -5,6 +5,7 @@ import * as friendService from "../services/friendService";
 import * as sessionService from "../services/sessionService";
 import * as activityService from "../services/activityService";
 import { getWorkspace } from "../services/workspaceService";
+import { trackSessionCompleted } from "../services/sessionAnalytics";
 import { MentionMember } from "../lib/mentions";
 import { captureException } from "../lib/errorReporting";
 import {
@@ -318,6 +319,18 @@ export function useBoardDocument(
         participantCount: activeSession.participantIds.length,
         title: activeSession.title,
       });
+      // Month 6 — ROADMAP.md:685's `session_completed`, board-screen half.
+      // One of three end-a-session surfaces; the shared helper is what keeps
+      // them from drifting into three different property bags, and is
+      // deliberately not reachable from `sessionService.endSession` (which
+      // onboardingService's sample seed calls directly for every new account
+      // — see src/services/__tests__/analyticsBoundary.test.ts).
+      //
+      // `snapshotCaptured` is passed rather than read off `activeSession`:
+      // this is the only surface holding the canvas ref, and the snapshot was
+      // written by the endSession call two lines above, so the local session
+      // object still predates it.
+      trackSessionCompleted(activeSession, "board", !!snapshot);
       setActiveSession(null);
       showSaveToast();
     } catch {

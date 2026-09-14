@@ -36,6 +36,7 @@ import { subscribeToNotifications } from "../../src/services/notificationService
 import { getPinnedBoardIds, setPinnedBoardIds } from "../../src/lib/pinnedBoards";
 import { JoinBoardResult } from "../../src/services/boardService";
 import { isQuotaDenial } from "../../src/services/quotaService";
+import { track } from "../../src/services/analyticsService";
 import BoardCard from "../../src/components/BoardCard";
 import ActivityFeed from "../../src/components/ActivityFeed";
 import JoinBoardModal from "../../src/components/JoinBoardModal";
@@ -291,6 +292,20 @@ export default function DashboardScreen() {
         actorName: user.displayName ?? user.email ?? "Someone",
         title,
       });
+      // Month 6 — ROADMAP.md:685's `board_created`, blank-board half. The
+      // template half already emits from templateService.createBoardFromTemplate
+      // and is deliberately left alone; between them they cover both ways a
+      // user makes a board, and neither is `boardService.createBoard` itself,
+      // which onboardingService's sample seed calls directly for every new
+      // account (see src/services/__tests__/analyticsBoundary.test.ts).
+      //
+      // The template path sends `{ templateId }`, so the two are already
+      // separable downstream — `source: "blank"` names this one explicitly
+      // rather than leaving it as "the one with no templateId", which would
+      // make a future third create path indistinguishable from this one.
+      // Never the board's `title`: it is free text the user typed one line
+      // above, and the seam's scrub does not strip it.
+      track("board_created", { source: "blank" });
       setNewBoardTitle("");
       setCreateModalVisible(false);
       fetchBoards();

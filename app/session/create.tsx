@@ -21,6 +21,7 @@ import { Board } from "../../src/types";
 import * as boardService from "../../src/services/boardService";
 import * as sessionService from "../../src/services/sessionService";
 import { isQuotaDenial } from "../../src/services/quotaService";
+import { track } from "../../src/services/analyticsService";
 import UpsellModal from "../../src/components/UpsellModal";
 
 const DURATION_OPTIONS = [
@@ -134,6 +135,23 @@ export default function CreateSessionScreen() {
           createdByName: userProfile?.displayName ?? user.displayName ?? "",
           participantIds: [],
           status: "scheduled",
+        });
+        // Month 6 — ROADMAP.md:685's `session_scheduled`, booked-for-later
+        // half (StartSessionModal.tsx covers start-now). Inside the `else`,
+        // not after the `if`: `isEdit` re-saves an EXISTING session through
+        // `updateSession`, and counting an edit as a new scheduled session
+        // would let one user inflate this by repeatedly renaming a session
+        // they already have. The comment on the catch below already relies on
+        // exactly that "only the create path" distinction for the upsell.
+        //
+        // `participantCount` is 0 by construction here — this screen creates
+        // with an empty `participantIds` and invites happen later — and is
+        // sent anyway so the two `session_scheduled` paths have the same shape
+        // downstream rather than one of them being a missing key.
+        track("session_scheduled", {
+          status: "scheduled",
+          participantCount: 0,
+          durationMinutes: finalDuration,
         });
       }
       router.back();

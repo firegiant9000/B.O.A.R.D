@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Modal,
   View,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { startCheckout, openBillingPortal, BillingCallableError } from "../services/billingService";
+import { track } from "../services/analyticsService";
 import {
   limitMessage,
   isPlanCapped,
@@ -75,6 +76,54 @@ export default function UpsellModal({
 
   const [busy, setBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<CheckoutError | null>(null);
+
+  // Month 6 — ROADMAP.md:685's `upgrade_viewed`.
+  //
+  // WHAT COUNTS AS AN UPGRADE VIEW, decided rather than defaulted. `selling`
+  // (above) is exactly "this render makes an offer": a plan-cap denial AND the
+  // hard variant. The two cases it excludes are excluded on purpose:
+  //
+  //  - The SOFT variant deliberately renders no price and no checkout
+  //    affordance at all (see the comment around the `selling &&` block
+  //    below). Counting it would fill the top of this funnel with impressions
+  //    that made no offer — and since the cadence shows soft on a user's FIRST
+  //    hit of each gate, those impressions would be the majority, making the
+  //    view-to-conversion rate read far worse than the offer actually
+  //    performs.
+  //  - The transient-throttle body is not a paywall at all; it is shown to
+  //    people whose plan already grants the resource (`isPlanCapped` false),
+  //    i.e. mostly existing Pro customers. Counting it would put paying users
+  //    into a metric about acquiring them.
+  //
+  // `variant` is sent as a property anyway, per the taxonomy's intent that the
+  // two be separable downstream. It is constant ("hard") by construction
+  // today, which is the point: the value is explicit in the stream, so if this
+  // gate is ever widened to include soft impressions, the older and newer
+  // events remain distinguishable without a taxonomy change or a guess about
+  // when the behaviour shifted.
+  //
+  // WEB ONLY, and not a gap. UpsellModal.native.tsx never renders a price or
+  // any purchase affordance under any variant — that is its store-compliance
+  // invariant, not an omission — so on native there is no offer for an
+  // "upgrade viewed" to refer to. Emitting there would report an offer the
+  // build is forbidden to make.
+  //
+  // ONCE PER APPEARANCE. Keyed off the false -> true edge of `offered` via a
+  // ref, not off render: this component re-renders on `busy` and
+  // `checkoutError`, so a bare call in the body would emit again every time
+  // the user pressed the CTA or a checkout error arrived — turning one offer
+  // into several and biasing the count toward exactly the users who engaged
+  // with it most.
+  const offered = visible && selling;
+  const wasOffered = useRef(false);
+  useEffect(() => {
+    if (offered && !wasOffered.current) {
+      // Closed, developer-authored unions only — no workspace id (the modal
+      // holds one, and it is deliberately not sent), no uid, no free text.
+      track("upgrade_viewed", { resource, plan: effectivePlan, variant });
+    }
+    wasOffered.current = offered;
+  }, [offered, resource, effectivePlan, variant]);
 
   // Fix Wave F3 — this button used to ignore BILLING_LIVE entirely: pressing
   // it while checkout genuinely isn't reachable (G3 — no live Stripe account

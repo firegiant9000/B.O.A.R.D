@@ -18,6 +18,11 @@ jest.mock("../workspaceService", () => ({
 jest.mock("../onboardingService", () => ({
   seedSampleWorkspace: jest.fn(async () => undefined),
 }));
+// Month 6 — this module now emits `signup`. Mocked rather than left real:
+// with no PostHog key configured the real seam no-ops silently, so the
+// fire-once assertions at the bottom of this file would pass without ever
+// observing an emit.
+jest.mock("../analyticsService");
 
 import * as fbAuth from "firebase/auth";
 import * as fs from "firebase/firestore";
@@ -26,6 +31,7 @@ import { auth } from "../../config/firebase";
 import * as authService from "../authService";
 import { ensurePersonalWorkspace } from "../workspaceService";
 import { seedSampleWorkspace } from "../onboardingService";
+import { track } from "../analyticsService";
 
 const createUser = fbAuth.createUserWithEmailAndPassword as jest.Mock;
 const signInFb = fbAuth.signInWithEmailAndPassword as jest.Mock;
@@ -248,5 +254,65 @@ describe("signOut", () => {
   it("delegates to firebase signOut", async () => {
     await authService.signOut();
     expect(fbAuth.signOut).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Month 6 — ROADMAP.md:685's `signup`, the top of the funnel. Emitted inside
+// `ensureUserProvisioned`'s `isNewAccount` branch rather than in `signUp`,
+// because `signUp` is only the email path — social first-sign-in reaches this
+// function with no signup step of its own (see authService.ts's header). These
+// pin both halves of "once per new account, never per sign-in".
+describe("signup analytics", () => {
+  const mockTrack = track as jest.Mock;
+  const signups = () => mockTrack.mock.calls.filter(([event]) => event === "signup");
+
+  it("emits signup when the profile doc is created", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+
+    await authService.ensureUserProvisioned({ uid: "u1", email: "g@x.z" } as any);
+
+    expect(signups()).toHaveLength(1);
+  });
+
+  // THE test. `ensureUserProvisioned` runs on EVERY returning Google sign-in
+  // (authProviders.ts), so an emit outside the isNewAccount branch would count
+  // every sign-in as an acquisition and make the funnel's first number a
+  // measure of engagement instead.
+  it("does NOT emit on a later sign-in, when the profile doc already exists", async () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", { email: "g@x.z" }));
+
+    await authService.ensureUserProvisioned({ uid: "u1", email: "g@x.z" } as any);
+
+    expect(signups()).toHaveLength(0);
+  });
+
+  it("emits exactly once for an email signup, not once per provisioning step", async () => {
+    const user = { uid: "u1", email: "a@x.z" };
+    createUser.mockResolvedValueOnce({ user });
+
+    await authService.signUp("a@x.z", "pw", "Arlo");
+
+    expect(signups()).toHaveLength(1);
+  });
+
+  it("still emits when the personal workspace or the sample seed fails — an account that exists is a signup", async () => {
+    // Both of those steps are explicitly best-effort (see the comments around
+    // them), so a signup must not be reported only when they happen to work.
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+    ensurePersonalWorkspaceMock.mockRejectedValueOnce(new Error("offline"));
+
+    await authService.ensureUserProvisioned({ uid: "u1", email: "g@x.z" } as any);
+
+    expect(signups()).toHaveLength(1);
+    expect(seedSampleWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it("carries no properties at all — uid, email and display name are the only facts in hand, and all three are forbidden", () => {
+    getDoc.mockResolvedValueOnce(makeDocSnap("u1", null));
+    return authService
+      .ensureUserProvisioned({ uid: "u1", email: "g@x.z", displayName: "Gina" } as any)
+      .then(() => {
+        expect(signups()[0]).toEqual(["signup"]);
+      });
   });
 });

@@ -189,7 +189,20 @@ describe("with a configured PostHog key", () => {
     expect(capture).toHaveBeenCalledWith("signup", undefined);
   });
 
-  it("does not yet include an install event for the not-yet-built browser extension", () => {
+  // REPLACES "does not yet include an install event for the not-yet-built
+  // browser extension", whose premise stopped being true: web/extension/
+  // {manifest.json,background.js,sidepanel.js,shared.js,content.js} all ship
+  // in this repo, and ROADMAP.md:685 requires an install event per
+  // integration surface. The name is `extension_installed`; the old test's
+  // `browser_extension_installed` was never the name, so it still throws —
+  // asserted below so this reads as a rename of a real event rather than a
+  // guess at one.
+  it("includes an install event for the browser extension, which does now ship in this repo", () => {
+    expect(() => track("extension_installed")).not.toThrow();
+    expect(capture).toHaveBeenCalledWith("extension_installed", undefined);
+  });
+
+  it("still rejects an install event that is not in the list, however plausible the name", () => {
     expect(() => track("browser_extension_installed" as never)).toThrow();
   });
 
@@ -203,6 +216,7 @@ describe("with a configured PostHog key", () => {
     "upgrade_viewed",
     "upgrade_completed",
     "meet_addon_installed",
+    "extension_installed",
   ] as const)("accepts the documented event %s without throwing", (event) => {
     expect(() => track(event)).not.toThrow();
   });
@@ -260,5 +274,48 @@ describe("when the vendor client fails to construct", () => {
   it("degrades to a no-op rather than crashing the caller — a key is configured, but the vendor threw on init", () => {
     expect(() => track("signup")).not.toThrow();
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+// The sibling failure to the construction one above, and the one that
+// actually matters now that this seam is called from eleven user-critical
+// paths (ROADMAP.md:685's funnel instrumentation) rather than one: the client
+// constructs fine and then the vendor throws mid-call. Before the funnel work
+// this was unguarded, so "analytics never breaks a user action" held only
+// because no environment has a PostHog key configured yet (Gate G5) — i.e.
+// only because nothing ever reached the vendor at all.
+describe("when the vendor client itself throws mid-call", () => {
+  let track: typeof import("../analyticsService").track;
+  let identifyWorkspace: typeof import("../analyticsService").identifyWorkspace;
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    process.env[KEY_VAR] = "phc_test_key";
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockCapture.mockImplementation(() => {
+      throw new Error("vendor exploded");
+    });
+    ({ track, identifyWorkspace } = loadAnalytics());
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    mockCapture.mockReset();
+  });
+
+  it("never lets a capture failure reach the user action that reported the event", () => {
+    expect(() => track("signup")).not.toThrow();
+    expect(capture).toHaveBeenCalled(); // premise: the vendor really was reached
+  });
+
+  it("never lets an identify failure reach the caller either", () => {
+    expect(() => identifyWorkspace("ws-1", "owner")).not.toThrow();
+  });
+
+  it("still throws for an undocumented event — a programmer error is not a vendor failure and must stay loud", () => {
+    // The guard is deliberately scoped to the vendor call, not wrapped around
+    // the taxonomy check: swallowing that too would turn a typo'd event name
+    // into silence.
+    expect(() => track("made_up_event" as never)).toThrow();
   });
 });

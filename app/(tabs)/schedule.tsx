@@ -23,6 +23,10 @@ import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
 import { isQuotaDenial } from "../../src/services/quotaService";
 import { getWorkspace } from "../../src/services/workspaceService";
+import {
+  trackSessionCompleted,
+  trackAiSummaryGenerated,
+} from "../../src/services/sessionAnalytics";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 import UpsellModal from "../../src/components/UpsellModal";
 
@@ -175,6 +179,11 @@ export default function ScheduleScreen() {
             participantCount: session.participantIds.length,
             title: session.title,
           });
+          // Month 6 — ROADMAP.md:685's `session_completed`, schedule-screen
+          // half. `false` for snapshotCaptured is literal, not a placeholder:
+          // this surface has no canvas ref, which is exactly why the
+          // endSession call above passes no snapshot either.
+          trackSessionCompleted(session, "schedule", false);
           setSessions((prev) =>
             prev.map((s) =>
               s.id === session.id
@@ -240,6 +249,14 @@ export default function ScheduleScreen() {
         session.canvasSnapshot
       );
       await sessionService.updateSessionSummary(session.id, summary);
+      // Month 6 — ROADMAP.md:685's `ai_summary_generated`. After the store,
+      // not after the model call: a summary the user never actually got is not
+      // one that was generated as far as this funnel is concerned. Never
+      // inside `sessionService.updateSessionSummary` — onboardingService's
+      // sample seed calls it directly with a CANNED summary
+      // (`SAMPLE_SESSION_SUMMARY`), so an emit there would report an AI call
+      // no model ever made, for every new account.
+      trackAiSummaryGenerated(session, summary, "schedule");
       setSessions((prev) =>
         prev.map((s) => (s.id === session.id ? { ...s, summary } : s))
       );

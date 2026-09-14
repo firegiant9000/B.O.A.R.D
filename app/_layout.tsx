@@ -15,6 +15,7 @@ import ErrorBoundary from "../src/components/ErrorBoundary";
 import PWAInstallPrompt from "../src/components/PWAInstallPrompt";
 import { initErrorReporting, captureException } from "../src/lib/errorReporting";
 import { identifyWorkspace } from "../src/services/analyticsService";
+import { observeWorkspacePlan } from "../src/services/planObservation";
 import { initConnectivity } from "../src/lib/connectivity";
 import { classifyShare, handleSharedItem } from "../src/lib/shareIntake";
 import { setPendingShare } from "../src/lib/pendingShare";
@@ -109,6 +110,31 @@ function RootNavigator() {
     if (!user || inEmbed || !activeWorkspace) return;
     const role = activeWorkspace.members[user.uid];
     if (role) identifyWorkspace(activeWorkspace.id, role);
+  }, [user?.uid, inEmbed, activeWorkspace]);
+
+  // Month 6 — ROADMAP.md:685's `upgrade_completed`. There is no client-side
+  // completion signal to subscribe to: the plan is written server-side by the
+  // Stripe webhook, and per
+  // functions/src/callable/createCheckoutSession.ts:16-17 there is no Stripe
+  // account behind any of it yet, so nothing completes anywhere today. The
+  // only available seam is OBSERVING a workspace's plan change, and all of the
+  // judgement that makes that honest rather than an app-start counter — never
+  // on first sight of a workspace, at most once per workspace ever, a durable
+  // marker written before the emit — lives in planObservation.ts. This is just
+  // the observation point, and it makes no analytics decision itself.
+  //
+  // Placed beside the identity effect rather than in WorkspaceContext, whose
+  // `activeWorkspace` it reads: this file already owns the app-level analytics
+  // wiring and already computes the `inEmbed` exclusion, which applies here
+  // for the same reason (an embed identity has no workspace of its own to
+  // observe). Putting it in the context would duplicate that guard and hand a
+  // provider a second job.
+  //
+  // Deliberately not awaited and deliberately unguarded: `observeWorkspacePlan`
+  // never rejects, by construction and by test.
+  useEffect(() => {
+    if (!user || inEmbed || !activeWorkspace) return;
+    observeWorkspacePlan(activeWorkspace.id, activeWorkspace.plan);
   }, [user?.uid, inEmbed, activeWorkspace]);
 
   // Deep-link a tapped session notification straight to that session.

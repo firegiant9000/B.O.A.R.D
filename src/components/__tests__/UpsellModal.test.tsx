@@ -15,6 +15,13 @@ jest.mock("../../services/billingService", () => ({
   startCheckout: jest.fn(),
 }));
 
+// Month 6 — the web body now emits `upgrade_viewed`. Mocked rather than left
+// real: with no PostHog key configured the real seam would no-op silently and
+// the fire-once tests at the bottom of this file would pass without observing
+// anything. Only the web variant imports it; the native variant imports no
+// service of any kind, which is its own invariant (scanned above).
+jest.mock("../../services/analyticsService");
+
 import fs from "fs";
 import path from "path";
 import React from "react";
@@ -24,6 +31,7 @@ import { isPlanCapped, limitMessage, unlockPhrase } from "../upsellCopy";
 import { limitFor } from "../../lib/planLimits";
 import { BILLING_LIVE, PENDING_PRO_PRICE_LABEL } from "../../lib/pricingCopy";
 import { startCheckout } from "../../services/billingService";
+import { track } from "../../services/analyticsService";
 
 // The load-bearing part of this file: two SEPARATE physical modules, not one
 // module switched by a runtime Platform.OS check.
@@ -562,5 +570,117 @@ describe("UpsellModal.native.tsx — the cadence prop changes nothing it was alr
     );
     expect(getByText(/5 boards/i)).toBeTruthy();
     expect(getAllByRole("button")).toHaveLength(1);
+  });
+});
+
+// Month 6 — ROADMAP.md:685's `upgrade_viewed`. Web only and hard-variant only:
+// see UpsellModal.tsx's own comment for why the soft body and the throttle body
+// are excluded (neither makes an offer) and why the native body cannot make one
+// at all.
+describe("UpsellModal.tsx (web) — upgrade_viewed fires once per offer, and only for an offer", () => {
+  const mockTrack = track as jest.Mock;
+
+  beforeEach(() => mockTrack.mockClear());
+
+  const views = () => mockTrack.mock.calls.filter(([event]) => event === "upgrade_viewed");
+
+  it("emits once when a hard plan-cap offer becomes visible", () => {
+    render(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    expect(views()).toHaveLength(1);
+    expect(views()[0][1]).toEqual({ resource: "board", plan: "free", variant: "hard" });
+  });
+
+  // THE test. A bare `track()` in the component body passes every other case
+  // here and fails only this one — and the count it produces would be biased
+  // toward the users who interacted with the offer most, since `busy` and
+  // `checkoutError` are what re-render this component.
+  it("does NOT emit again on a re-render of the same visible offer", () => {
+    const { rerender } = render(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    expect(views()).toHaveLength(1);
+
+    // Same appearance, three more renders — one of them changing a prop that
+    // is not part of the offer's identity.
+    rerender(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    rerender(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-2" />
+    );
+    rerender(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    expect(views()).toHaveLength(1);
+  });
+
+  it("emits again only once the modal has actually been dismissed and shown again", () => {
+    const { rerender } = render(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    rerender(
+      <WebUpsellModal
+        visible={false}
+        resource="board"
+        plan="free"
+        onDismiss={() => {}}
+        workspaceId="ws-1"
+      />
+    );
+    rerender(
+      <WebUpsellModal visible resource="board" plan="free" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    expect(views()).toHaveLength(2);
+  });
+
+  it("emits nothing while hidden, even for a capped resource on the hard variant", () => {
+    render(
+      <WebUpsellModal
+        visible={false}
+        resource="board"
+        plan="free"
+        onDismiss={() => {}}
+        workspaceId="ws-1"
+      />
+    );
+    expect(views()).toHaveLength(0);
+  });
+
+  it("emits nothing for the soft variant, which renders no price and no checkout affordance", () => {
+    render(
+      <WebUpsellModal
+        visible
+        resource="board"
+        plan="free"
+        variant="soft"
+        onDismiss={() => {}}
+        workspaceId="ws-1"
+      />
+    );
+    expect(views()).toHaveLength(0);
+  });
+
+  it("emits nothing for the transient-throttle body, which is shown to customers who already pay", () => {
+    // `aiCall` on pro cannot be a plan cap (isPlanCapped is false), so this
+    // renders the "one moment" note rather than a paywall.
+    render(
+      <WebUpsellModal visible resource="aiCall" plan="pro" onDismiss={() => {}} workspaceId="ws-1" />
+    );
+    expect(views()).toHaveLength(0);
+  });
+
+  it("sends no workspace id, even though the modal holds one in order to place its billing calls", () => {
+    render(
+      <WebUpsellModal
+        visible
+        resource="board"
+        plan="free"
+        onDismiss={() => {}}
+        workspaceId="ws-secret-id"
+      />
+    );
+    expect(JSON.stringify(views())).not.toContain("ws-secret-id");
   });
 });

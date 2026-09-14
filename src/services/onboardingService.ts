@@ -119,6 +119,16 @@ import type { SessionSummary } from "../types";
  * `createBoardFromTemplate`, so don't "simplify" this function back onto it
  * without re-checking that call site's `track()` call first.
  *
+ * As of ROADMAP.md:685's funnel instrumentation, the half of that guarantee a
+ * comment cannot defend is enforced:
+ * `src/services/__tests__/analyticsBoundary.test.ts` scans this file,
+ * boardService.ts, sessionService.ts and workspaceService.ts as source text
+ * and fails the build if any of them gains a `track(` call or an import of the
+ * analytics seam. The funnel is instrumented at the point of USER INTENT
+ * instead — the screens and components where a person pressed the button —
+ * which is the convention templateService's own `track("board_created")`
+ * already set and which this seed depends on.
+ *
  * Known gaps, disclosed rather than fixed:
  *  - If a first seeding attempt fails AND its own rollback also fails (a true
  *    double failure), the account is left permanently unseeded: seeding is

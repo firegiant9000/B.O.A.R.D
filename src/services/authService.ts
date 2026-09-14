@@ -10,6 +10,7 @@ import {
 } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../config/firebase";
+import { track } from "./analyticsService";
 import { ensurePersonalWorkspace } from "./workspaceService";
 import { seedSampleWorkspace } from "./onboardingService";
 
@@ -34,6 +35,34 @@ export async function ensureUserProvisioned(
       displayName: displayName ?? user.displayName ?? "",
       createdAt: serverTimestamp(),
     });
+
+    // Month 6 — the top of ROADMAP.md:685's funnel. Emitted HERE, inside the
+    // `isNewAccount` branch, rather than in `signUp` below, for two reasons:
+    //
+    //  - `signUp` is only the EMAIL path. Social first-sign-in has no separate
+    //    signup step at all — that's this function's whole reason for existing
+    //    (see its header) — so instrumenting `signUp` would silently report
+    //    zero for every Google signup, and the funnel's very first number
+    //    would undercount by an entire acquisition channel.
+    //  - `isNewAccount` is already this codebase's own once-per-uid gate: it
+    //    is true exactly at the instant the `users/{uid}` profile doc is
+    //    created and can never be true again for that uid (the seeding comment
+    //    below, and onboardingService.ts's header, both depend on precisely
+    //    that). So "fire once per new account, never per sign-in" is not a new
+    //    rule this emit has to invent and get right on its own — it inherits a
+    //    property the surrounding code already guarantees and is already
+    //    tested for.
+    //
+    // Placed immediately after the profile write and before the personal
+    // workspace and sample seeding below, both of which are explicitly
+    // best-effort: an account that exists but whose workspace write lagged is
+    // still a signup, and must not be reported as one only sometimes.
+    //
+    // No properties. There is nothing about a brand-new account that is both
+    // useful and non-identifying — uid, email and display name are the only
+    // facts in hand, and all three are exactly what the Global Constraint in
+    // analyticsService.ts forbids. A bare count is the honest event.
+    track("signup");
   }
 
   // Resilient: a lagging or failed workspace write must not block sign-in — the

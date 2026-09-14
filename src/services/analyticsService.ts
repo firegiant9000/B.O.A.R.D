@@ -7,9 +7,27 @@
  * platform (`posthog-js` on web, `posthog-react-native` on native), so its
  * construction is split beside this file — see posthogClient.ts /
  * posthogClient.native.ts — but the taxonomy, the PII scrub, and the
- * hashed-identifier rule below live once, here. Tasks that ship after this
- * one (Month 6 — monetization/growth) import `track`/`identifyWorkspace`
- * from here; none of them import posthog-js / posthog-react-native directly.
+ * hashed-identifier rule below live once, here. Every emitter in the app
+ * imports `track`/`identifyWorkspace` from this module, and nothing anywhere
+ * imports posthog-js / posthog-react-native directly. As of ROADMAP.md:685's
+ * funnel instrumentation those emitters span app screens (app/(tabs)/index,
+ * app/(tabs)/schedule, app/session/create, app/session/[id]), components
+ * (WorkspaceSwitcher, StartSessionModal, UpsellModal), a hook
+ * (useBoardDocument) and four services (authService, templateService,
+ * sessionAnalytics, planObservation), plus one `identifyWorkspace` call in
+ * app/_layout.tsx.
+ *
+ * WHERE EMITTERS MAY LIVE. The funnel is instrumented at the point of USER
+ * INTENT — the screen or component where a person pressed the button — and
+ * never inside a shared service primitive. `boardService.createBoard`,
+ * `sessionService.createSession`/`endSession`/`updateSessionSummary` and
+ * `workspaceService.createWorkspace` are all called directly by
+ * `onboardingService.seedSampleWorkspace`, which hands every brand-new
+ * account a demo board and a finished demo session nobody asked for; an emit
+ * pushed down into any of them would report that demo as a real
+ * board/session for every signup and corrupt the pre-launch baseline
+ * ROADMAP.md:750 makes a launch gate. That negative is enforced, not merely
+ * documented — see src/services/__tests__/analyticsBoundary.test.ts.
  *
  * The PostHog key comes from `EXPO_PUBLIC_POSTHOG_KEY`, a PostHog *project*
  * key — publishable by design (it identifies a project, not a person; the
@@ -62,11 +80,45 @@ const CORE_EVENTS = [
 
 /** One `"<surface>_installed"` event per integration surface that actually
  *  ships in this repo today — not one per surface that is merely planned.
- *  Add a line here (nothing else in this file needs to change) the day a new
- *  surface ships. Month 6's browser extension is planned but not built yet,
- *  so it has no entry here. */
+ *  ROADMAP.md:685 requires "an install event per integration surface", and
+ *  both surfaces below exist in this repo.
+ *
+ *  ⚠ NEITHER OF THESE HAS AN EMITTER. Both entries are taxonomy ahead of
+ *  instrumentation, and saying so here is the point — a name in this list is
+ *  not evidence that anything sends it. The reason is the same for both, and
+ *  it is structural rather than an oversight:
+ *
+ *  `web/extension/` and `web/meet-addon/` are separate surfaces with no build
+ *  step of their own — hand-written plain JS in the extension, inline script
+ *  in the add-on's panel.html. Neither can import this module, or anything
+ *  else under `src/`; that is why `web/extension/shared.js` exists at all as a
+ *  hand-maintained twin of `src/lib/extension/`, kept honest by
+ *  `src/lib/extension/__tests__/sharedMirror.test.ts`. The genuine install
+ *  signal — the extension's `chrome.runtime.onInstalled` in background.js —
+ *  is therefore only reachable from code that cannot call `track()`.
+ *
+ *  The two ways to close that, and why neither is taken here:
+ *   - Post to PostHog's HTTP capture endpoint directly from background.js.
+ *     That means a project key baked into an unbundled extension, a new host
+ *     in `manifest.json`, and a third-party network call from a surface whose
+ *     README states it "sends tab title/URL/og:image to the side panel only —
+ *     never to a third party". That is a privacy-posture change for a
+ *     to-be-submitted Web Store listing, not an instrumentation detail, and
+ *     it is not mine to make unilaterally.
+ *   - Have the app infer the extension from the embed page it iframes. That
+ *     observes a PANEL OPEN, not an install: it would fire on every open, for
+ *     every reopen, from an anonymous view-scope embed identity with no
+ *     workspace — the same over-count `upgrade_completed` exists to avoid
+ *     (see src/services/planObservation.ts), under a name that claims
+ *     otherwise.
+ *
+ *  So the names are reserved and the gap is stated. The runtime guard below
+ *  still accepts them, which is what lets an emitter be added later without
+ *  touching this file; until one is, read the absence of these events as "not
+ *  instrumented", never as "nobody installed it". */
 const INSTALL_EVENTS = [
   "meet_addon_installed", // web/meet-addon/ (Month 6 — Google Meet add-on shell)
+  "extension_installed", // web/extension/ (Month 6 — Chrome/Edge MV3 side panel)
 ] as const;
 
 const ALL_EVENTS = [...CORE_EVENTS, ...INSTALL_EVENTS] as const;
@@ -174,12 +226,44 @@ function getClient(): AnalyticsClient | null {
   return client;
 }
 
+/** Swallows a vendor-side throw so a reporting failure can never break the
+ *  user action that reported it.
+ *
+ *  Added with ROADMAP.md:685's funnel instrumentation, which took this seam
+ *  from a single call site to a dozen — and put them on paths where a throw
+ *  is genuinely destructive: `authService.ensureUserProvisioned` (a thrown
+ *  emit there fails a signup), the board/session create handlers, and the
+ *  three end-session handlers. `getClient()` already degrades a construction
+ *  failure to a permanent no-op, but `capture`/`identify` themselves were
+ *  unguarded, so "analytics never breaks a user action" was true only for an
+ *  unconfigured key — the state every environment happens to be in today
+ *  (Gate G5), and therefore the state in which nobody would ever have
+ *  noticed. Guarding once here beats every call site remembering its own
+ *  try/catch, and beats every one of them having to know whether the vendor
+ *  SDK throws synchronously.
+ *
+ *  Deliberately NOT wrapped around the taxonomy check in `track()` below: an
+ *  undocumented event is a programmer error and must keep throwing loudly at
+ *  the developer who wrote it, which is a different failure from the vendor
+ *  misbehaving in a user's hands. */
+function emitSafely(emit: () => void): void {
+  try {
+    emit();
+  } catch (error) {
+    console.warn("[analyticsService] vendor call failed; event dropped:", error);
+  }
+}
+
 /**
  * Emit a product event. Throws for any event outside the documented
  * taxonomy (a programmer error) and no-ops — never throws — when no
- * PostHog key is configured (an expected deployment state). `props` is
- * scrubbed of anything email-shaped, recursively, before it reaches the
- * vendor.
+ * PostHog key is configured (an expected deployment state) or when the
+ * vendor itself fails. `props` is scrubbed of anything email-shaped,
+ * recursively, before it reaches the vendor.
+ *
+ * Synchronous and fire-and-forget by design: a caller on a user's critical
+ * path calls this without `await`ing anything (there is nothing to await) and
+ * without wrapping it.
  */
 export function track(
   event: AnalyticsEvent,
@@ -192,9 +276,11 @@ export function track(
   }
   const posthogClient = getClient();
   if (!posthogClient) return;
-  posthogClient.capture(
-    event,
-    props ? (scrub(props, 0) as Record<string, unknown>) : undefined
+  emitSafely(() =>
+    posthogClient.capture(
+      event,
+      props ? (scrub(props, 0) as Record<string, unknown>) : undefined
+    )
   );
 }
 
@@ -213,8 +299,10 @@ export function identifyWorkspace(
   // `{ role }` can't actually carry PII today — WorkspaceRole is a closed
   // union — but routing it through the same scrub() as track() costs nothing
   // and removes any "why does this one path skip the guard?" question.
-  posthogClient.identify(
-    hashWorkspaceId(workspaceId),
-    scrub({ role }, 0) as Record<string, unknown>
+  emitSafely(() =>
+    posthogClient.identify(
+      hashWorkspaceId(workspaceId),
+      scrub({ role }, 0) as Record<string, unknown>
+    )
   );
 }
