@@ -456,6 +456,18 @@ beforeEach(async () => {
       rotation: 0,
     });
 
+    // User profile documents. Seeded for the directory tests below: the
+    // collection carries `email` (src/services/authService.ts writes it), which
+    // is precisely why it must stay get-by-id and never be listable.
+    await setDoc(doc(db, "users/alice"), {
+      displayName: "Alice",
+      email: "alice@example.com",
+    });
+    await setDoc(doc(db, "users/bob"), {
+      displayName: "Bob",
+      email: "bob@example.com",
+    });
+
     // Phase 10 — a seeded in-app notification for alice, authored by dave.
     await setDoc(doc(db, "users/alice/notifications/n1"), {
       recipientId: ALICE,
@@ -2836,16 +2848,45 @@ describe("workspace create", () => {
     await assertSucceeds(deleteDoc(doc(db(ALICE), "workspaces/wsA")));
   });
 
-  it("DISCLOSED GAP: the update rule does not pin ownerId, so an owner can hide a workspace from the cap", async () => {
-    // Not a test of a fix — a test of a known hole, so it is visible rather
-    // than folklore. `countOwnedWorkspaces` filters on `ownerId`, and this rule
-    // restricts only `plan`, so alice can hand wsA's `ownerId` to someone else,
-    // stay its `'owner'` member (full access, still listed by her `memberIds`
-    // query), and free a slot against her cap. Closing it needs an
-    // `ownerId`-unchanged predicate on the workspace update rule — see
-    // functions/src/billing/usage.ts#countOwnedWorkspaces.
-    await assertSucceeds(
+  it("denies rewriting ownerId — the pin the workspace cap depends on", async () => {
+    // This test used to assert the opposite, as a disclosed gap. The route it
+    // documented: `countOwnedWorkspaces` filters on `ownerId`, and this rule
+    // restricted only `plan`, so alice could hand wsA's `ownerId` to someone
+    // else, stay its `'owner'` member (full access, still listed by her
+    // `memberIds array-contains` query), and free a slot against her cap —
+    // one client write for a fresh allowance. The `ownerId`-unchanged
+    // predicate on the update rule is the workspace counterpart of the
+    // `workspaceIdUnchanged` pin the board cap already depends on.
+    await assertFails(
       updateDoc(doc(db(ALICE), "workspaces/wsA"), { ownerId: BOB })
+    );
+  });
+
+  it("denies an ownerId rewrite smuggled in alongside a permitted field", async () => {
+    // The deny is on the FIELD CHANGING, not on the write's headline intent.
+    // Bundling `ownerId` into an otherwise ordinary rename must not launder
+    // it — this is the shape a patched client would actually send, since a
+    // bare `{ ownerId }` write looks like what it is.
+    await assertFails(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { name: "Innocent", ownerId: BOB })
+    );
+  });
+
+  it("still lets an owner rename a workspace — the ownerId pin is not over-tight", async () => {
+    // Positive control for the deny above: ordinary updates that leave
+    // `ownerId` alone must keep working, or the pin would have cost more than
+    // the gap it closed. (`allow delete` still frees a slot, and the deletion
+    // test above proves it.)
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { name: "Renamed after the pin" })
+    );
+  });
+
+  it("still lets an owner/admin update membership — the ownerId pin is not over-tight", async () => {
+    // The other write this rule exists to permit: `addMemberByEmail` /
+    // `updateMemberRole` touch `members` + `memberIds`, never `ownerId`.
+    await assertSucceeds(
+      updateDoc(doc(db(ALICE), "workspaces/wsA"), { "members.bob": "member" })
     );
   });
 });
@@ -3352,5 +3393,60 @@ describe("fix round 1, I4: joinCodes collection", () => {
   // closes it.
   it("denies listing the joinCodes collection — get-by-id only, never enumerable", async () => {
     await assertFails(getDocs(collection(db(STUDENT_C), "joinCodes")));
+  });
+});
+
+// ── the user directory: get-by-id only, never enumerable ─────────────────────
+// `users/{uid}` carries `email` (src/services/authService.ts writes it on
+// signup), and its read rule is a bare `isSignedIn()` with no `resource`
+// reference — which is trivially list-provable, exactly like `joinCodes` was.
+// The actor that makes this a disclosure rather than a theoretical one is an
+// EMBED identity: `exchangeEmbedToken` signs the holder of a public read-only
+// embed link into a real Firebase Auth session, so `request.auth != null` is
+// satisfied by anyone who was ever handed such a link. One
+// `getDocs(collection(db, "users"))` would then dump every user's email.
+//
+// Until this block there was NO test covering `users/{uid}` document reads at
+// all — every other `users` test in this file targets a subcollection
+// (private / notifications / decks), each of which has its own stricter rule.
+describe("users directory", () => {
+  it("denies listing the users collection — the collection carries email addresses", async () => {
+    await assertFails(getDocs(collection(db(EVIL), "users")));
+  });
+
+  it("denies listing users even for a member in good standing", async () => {
+    // Not a privilege question: nothing in this app ever enumerates the
+    // directory, so `list` is denied for everyone rather than for strangers.
+    await assertFails(getDocs(collection(db(ALICE), "users")));
+  });
+
+  it("still lets any signed-in user read ONE profile by id — profile lookup must keep working", async () => {
+    // The positive control for the deny above. Profile display (a comment
+    // author's name, a friend row) is a get-by-id, and over-tightening this to
+    // owner-only would break every one of those surfaces.
+    const snap = await assertSucceeds(getDoc(doc(db(BOB), "users/alice")));
+    expect(snap.data().displayName).toBe("Alice");
+  });
+
+  it("still lets a user read their OWN profile by id", async () => {
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice")));
+  });
+
+  it("still lets a user write their own profile, and no one else's", async () => {
+    // Second positive control: the get/list split must not disturb the
+    // owner-only write gate either.
+    await assertSucceeds(updateDoc(doc(db(ALICE), "users/alice"), { displayName: "Alice A." }));
+    await assertFails(updateDoc(doc(db(BOB), "users/alice"), { displayName: "Pwned" }));
+  });
+
+  it("denies a filtered email query too — the callable is now the only lookup path", async () => {
+    // The email lookup invite-by-email and friend search used to run
+    // client-side. Firestore rules cannot see a query's `where` clauses (only
+    // `limit`/`offset`/`orderBy`), so there is no rule that could admit this
+    // one shape and refuse an unfiltered dump — which is why the lookup moved
+    // server-side to functions/src/callable/lookupUserByEmail.ts.
+    await assertFails(
+      getDocs(query(collection(db(EVIL), "users"), where("email", "==", "alice@example.com")))
+    );
   });
 });

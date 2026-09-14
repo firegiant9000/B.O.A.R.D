@@ -44,14 +44,15 @@
 // resolves the caller's entitlement as the best plan across the workspaces they
 // already own; there is no user-level plan field to consult instead.
 //
-// Remaining caveat, and this one is a live route rather than stale data:
-// firestore.rules does not pin `ownerId` on a workspace update, so an owner can
-// rewrite that field while keeping their `members` entry — the workspace stays
-// fully usable and stops being counted, which earns a fresh allowance. Closing
-// it needs an `ownerId`-unchanged predicate on the workspace update rule, the
-// counterpart of the `workspaceId` pin the board cap already depends on. Treat
-// the workspace cap as enforced against a patched client, not as airtight
-// against a determined one.
+// Like the board cap, it rests on a second rule: firestore.rules pins `ownerId`
+// on a workspace update. Since the count filters on `ownerId`, an owner able to
+// rewrite that field could keep their `members` entry, keep using the
+// workspace, drop out of the count and earn a fresh allowance — the exact
+// counterpart of the `workspaceId` pin the board cap depends on.
+//
+// Remaining caveat, by design rather than by omission: deleting a workspace
+// frees a slot. The cap is on how many a user holds at once, not on how many
+// they have ever created.
 //
 // Note there is no `QuotaResource` entry for workspaces below, deliberately:
 // this module's advisory pre-flight needs a workspace id to check against, and

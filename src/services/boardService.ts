@@ -18,6 +18,7 @@ import { db, auth, functions } from "../config/firebase";
 import { Board, BoardRole, Plan, Workspace, WorkspaceRole } from "../types";
 import { isBackgroundTemplate } from "../lib/backgrounds";
 import { assertQuota } from "./quotaService";
+import { lookupUserByEmail } from "./userService";
 
 const boardsRef = collection(db, "boards");
 
@@ -275,16 +276,22 @@ export async function removeMemberById(boardId: string, uid: string): Promise<vo
 
 export type AddByEmailResult = "added" | "not_found" | "already_member";
 
-/** Looks up a user by email and adds them to the board. Returns the outcome. */
+/** Looks up a user by email and adds them to the board. Returns the outcome.
+ *
+ *  The lookup is a Cloud Function call, not a Firestore query: firestore.rules
+ *  denies `list` on `/users` because that collection carries email addresses
+ *  (see src/services/userService.ts). The lowercase/trim that used to happen on
+ *  this line now happens server-side, so the same normalization applies to all
+ *  three email lookups in this app instead of two of the three. Signature and
+ *  return shape are unchanged. */
 export async function addMemberByEmail(
   boardId: string,
   email: string
 ): Promise<{ result: AddByEmailResult; uid?: string }> {
-  const q = query(collection(db, "users"), where("email", "==", email.toLowerCase().trim()));
-  const snap = await getDocs(q);
-  if (snap.empty) return { result: "not_found" };
+  const target = await lookupUserByEmail(email);
+  if (!target) return { result: "not_found" };
 
-  const uid = snap.docs[0].id;
+  const uid = target.uid;
   const boardSnap = await getDoc(doc(db, "boards", boardId));
   if (!boardSnap.exists()) throw new Error("Board not found");
 

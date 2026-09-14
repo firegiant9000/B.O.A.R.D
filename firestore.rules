@@ -19,6 +19,15 @@ rules_version = '2';
 // deploying this file ahead of that function does not merely disable a feature
 // — it breaks account creation for every new user.
 //
+// ⚠️ A FOURTH callable is deploy-ordered here, and it is not a create. This
+// file denies `list` on /users, so the email lookup behind invite-by-email
+// (boards and workspaces) and friend search can no longer run as a client
+// query; `lookupUserByEmail` is its only replacement. Deploying this file
+// first breaks all three: the denied query rejects, and none of those call
+// sites catches it, so adding a collaborator or sending a friend request
+// throws a permissions error in the user's face. Deploy `functions` first
+// here as well.
+//
 // Rolling back is the mirror image: roll rules back BEFORE removing the
 // functions, never after.
 //
@@ -483,8 +492,34 @@ service cloud.firestore {
     }
 
     // ── users ─────────────────────────────────────────────────────────────────
+    // `get`/`list` split, for the same reason as `joinCodes` below and with a
+    // worse payload. A bare `allow read: if isSignedIn()` covers BOTH verbs,
+    // and with no `resource` reference it is trivially list-provable: one
+    // `getDocs(collection(db, 'users'))` returns the whole directory. These
+    // documents carry `email` (src/services/authService.ts writes it on
+    // signup), so that query is a bulk address-book dump.
+    //
+    // What makes it a live disclosure rather than a theoretical one is WHO
+    // counts as signed in. An embed identity is a real Firebase Auth session:
+    // `exchangeEmbedToken` (functions/src/callable/exchangeEmbedToken.ts) signs
+    // the bearer of a PUBLIC read-only embed link into one, so `request.auth !=
+    // null` is satisfied by anyone who has ever been handed such a link — not
+    // just by account holders.
+    //
+    // `get` stays open to any signed-in user because profile lookup by id is
+    // load-bearing everywhere a display name is rendered beside someone else's
+    // content. Denying `list` costs no feature: email lookup — invite-by-email
+    // on boards and workspaces, and friend search — moved to the
+    // `lookupUserByEmail` callable (functions/src/callable/lookupUserByEmail.ts),
+    // which returns only `{ uid, displayName, email }` for one exact address.
+    // It could NOT stay client-side under a narrower rule: Firestore exposes
+    // only `request.query.limit`, `.offset` and `.orderBy` to rules, never the
+    // `where` clauses, so no predicate can admit "the email-equality query" and
+    // refuse an unfiltered dump. The lookup has to move, or `list` has to stay
+    // open. See the deploy-order warning at the top of this file.
     match /users/{uid} {
-      allow read: if isSignedIn();          // any signed-in user can look up profiles (friend search)
+      allow get:  if isSignedIn();          // profile lookup by id (display names, friend rows)
+      allow list: if false;                 // never enumerable — these documents carry `email`
       allow create: if isOwner(uid);
       allow update: if isOwner(uid);
       allow delete: if false;               // accounts are not deleted client-side
@@ -523,8 +558,8 @@ service cloud.firestore {
       // Gated strictly on isOwner(uid) for BOTH read and write, on both the
       // deck and the card — as private as the `private` API-key subcollection
       // above, deliberately NOT as permissive as the parent `users/{uid}`
-      // document itself (whose `allow read: if isSignedIn()` exists only for
-      // profile lookup/friend search). A person's study decks are theirs
+      // document itself (whose `allow get: if isSignedIn()` exists only for
+      // profile lookup by id). A person's study decks are theirs
       // alone; nothing about "what I'm studying" is meant to be as
       // discoverable as a display name, so that looser parent rule is not
       // inherited here — it never would be automatically (Firestore rules
@@ -592,17 +627,33 @@ service cloud.firestore {
       // ensurePersonalWorkspace), not just the workspace-switcher button. See
       // the deploy-order warning at the top of this file.
       //
-      // Honest caveat the callable cannot close alone: the `update` rule below
-      // restricts `plan` but does NOT pin `ownerId`, so an owner can rewrite
-      // that field, keep their own `members` entry, and hide the workspace from
-      // the function's per-owner count — freeing a slot and earning a fresh
-      // allowance. That is the same route `workspaceIdUnchanged` closes for
-      // boards, and its workspace equivalent does not exist yet; closing it
-      // means adding an `ownerId`-unchanged predicate to that update rule. The
-      // rules tests assert this gap explicitly rather than leaving it folklore.
+      // The cap rests on the `update` rule below as well as on the callable,
+      // exactly as the board cap rests on `workspaceIdUnchanged`. That rule
+      // pins `ownerId` alongside `plan`: `countOwnedWorkspaces` filters on
+      // `ownerId`, so an owner who could rewrite it would keep their `members`
+      // entry (the workspace stays fully usable, and still appears in their
+      // `memberIds array-contains` listing), vanish from the count, and earn a
+      // fresh allowance for one client write. Do not relax either predicate in
+      // isolation.
+      //
+      // Pinning `ownerId` breaks nothing, and that was checked rather than
+      // assumed: nothing writes the field after create. The only writers in the
+      // repo are `createWorkspace` (functions/src/callable/createWorkspace.ts)
+      // and the one-off backfill (scripts/migrate-workspaces.js), both Admin
+      // SDK — which bypasses these rules — and both only on the create itself.
+      // Every client-side occurrence is a read: `mapWorkspace`'s default in
+      // src/services/workspaceService.ts and the ownership comparisons in the
+      // UI. There is no ownership-transfer flow to break, and if one is ever
+      // built it belongs server-side anyway, where the Admin SDK bypasses this
+      // rule exactly as the Stripe webhook already does for `plan`.
+      //
+      // Remaining honest caveat, unchanged by the pin and not closable here:
+      // `allow delete` below lets an owner delete a workspace, which FREES a
+      // slot. That is intended — the cap is on how many you hold at once, not
+      // on how many you have ever made.
       allow create: if false;
       allow update: if isSignedIn() &&
-                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan']) && (
+                    !request.resource.data.diff(resource.data).affectedKeys().hasAny(['plan', 'ownerId']) && (
                       resource.data.members[request.auth.uid] in ['owner', 'admin'] ||
                       (request.auth.uid in resource.data.members &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']))

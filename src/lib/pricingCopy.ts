@@ -86,16 +86,19 @@ function describeCount(value: number, singular: string, plural: string): string 
 /**
  * One plan's feature list, built ENTIRELY from `PLAN_LIMITS[plan]` — no
  * figure here is a retyped literal, so this can never quietly drift from
- * what the plan table actually says (which is as far as "agreement" can
- * go for `workspaces`; see the omission below).
+ * what the plan table actually says.
  *
  * Two deliberate choices, both required reading before touching this list:
- *  - `workspaces` is NOT rendered anywhere. `PLAN_LIMITS[plan].workspaces`
- *    exists as a number, but nothing enforces it: firestore.rules permits
- *    unlimited workspace creation, and rules have no way to count a user's
- *    existing workspaces to deny a create. Listing "1 workspace" here would
- *    be a claim this app does not back up — the same omission already made
- *    in app/ai-usage.tsx's usage dashboard.
+ *  - `workspaces` is NOT rendered anywhere. The cap itself is real and
+ *    server-enforced (the `createWorkspace` callable counts the workspaces
+ *    the caller owns and denies past the plan's number; firestore.rules
+ *    denies client creates outright and pins `ownerId` so a workspace can't
+ *    be hidden from that count). It is left off this list because a pricing
+ *    card's one-liners are all per-workspace entitlements and this one is
+ *    per-OWNER, which no phrasing short of a sentence disambiguates — the
+ *    same call app/ai-usage.tsx makes, where it is prose beside the metered
+ *    rows rather than a row of its own. If it is ever listed here, it needs
+ *    wording that says "you own", not a bare "1 workspace".
  *  - `collaboratorsPerBoard` is phrased "per board", never "per workspace"
  *    or bare "collaborators" — the cap genuinely applies board-by-board
  *    (each board's own `roles` map), not to a workspace's total membership.

@@ -188,11 +188,13 @@ export interface WorkspaceUsage {
  *  — so this always reads the doc the Functions side is writing this month
  *  (Global Constraint: monthly buckets have exactly one implementation).
  *
- *  Does NOT cover `workspaces` (the 5th `LimitedResource`): that limit is
- *  enforced nowhere in this app (see quotaService.ts's module header) and a
- *  Headroom here — "used X of Y" with a bar — would visually claim a cap
- *  that does not exist. `app/ai-usage.tsx` shows that plan value as a plain,
- *  explicitly-not-enforced note instead of a metered row. */
+ *  Does NOT cover `workspaces` (the 5th `LimitedResource`), and the reason is
+ *  scope rather than enforcement — that cap IS enforced now, by the
+ *  `createWorkspace` callable (see quotaService.ts's module header). It counts
+ *  workspaces the CALLER OWNS, so it is not a property of `workspaceId` at
+ *  all, and there is no honest place for it in a function whose entire
+ *  contract is "these resources, for this one workspace." `app/ai-usage.tsx`
+ *  shows it as a plain note beside the metered rows instead. */
 export async function getWorkspaceUsage(workspaceId: string, plan: Plan): Promise<WorkspaceUsage> {
   const period = periodFor();
   const [boardsUsed, sessionsUsed, aiUsage, membersUsed] = await Promise.all([

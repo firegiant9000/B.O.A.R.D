@@ -65,6 +65,19 @@ export { createSession } from "./callable/createSession";
 // firestore.rules.
 export { createWorkspace } from "./callable/createWorkspace";
 
+// Month 6 — email → user lookup, the replacement for a client-side query on
+// `users`. firestore.rules now denies `list` on that collection: its `read`
+// rule covered `list` as well as `get`, so one `getDocs(collection(db,
+// "users"))` dumped every registered email address — and an embed identity
+// (exchangeEmbedToken) is a real signed-in session, so a public read-only embed
+// link was enough to run it. No narrower rule was possible: rules cannot see a
+// query's `where` clauses, only its limit/offset/orderBy. This callable returns
+// exactly `{ uid, displayName, email }` for one exact address, or null.
+// Deploy-ordered like the three create callables above — invite-by-email
+// (boards and workspaces) and friend search all route through it, so the rule
+// must not go live first. See the warning at the top of firestore.rules.
+export { lookupUserByEmail } from "./callable/lookupUserByEmail";
+
 // Month 5 — starts a Stripe Checkout session for a workspace's Pro upgrade.
 // The Pro price is resolved server-side from the STRIPE_PRO_PRICE_ID secret;
 // the request carries no price field, so a client can't choose what it pays.

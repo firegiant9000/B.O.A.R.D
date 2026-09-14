@@ -74,7 +74,13 @@ describe("planFeatures — driven by PLAN_LIMITS, never retyped", () => {
     }
   });
 
-  it("never renders the `workspaces` limit — PLAN_LIMITS lists a number for it, but nothing enforces it (firestore.rules permits unlimited workspace creation and cannot count a user's existing ones)", () => {
+  // The `workspaces` cap IS enforced (the createWorkspace callable counts the
+  // caller's owned workspaces; firestore.rules denies client creates and pins
+  // `ownerId`). It is omitted from this list for a scope reason, not an
+  // enforcement one: every other line on a pricing card is a per-workspace
+  // entitlement and this one is per-OWNER — see pricingCopy.ts's own comment.
+  // This pins the omission, not a claim about whether the cap exists.
+  it("never renders the `workspaces` limit, whose cap is per-owner rather than per-workspace", () => {
     for (const plan of ["free", "pro", "edu"] as const) {
       expect(planFeatures(plan).join(" | ")).not.toMatch(/workspace/i);
     }

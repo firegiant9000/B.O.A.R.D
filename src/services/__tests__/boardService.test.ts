@@ -5,10 +5,15 @@ const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
 jest.mock("firebase/functions", () => ({
   httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
 }));
+// The email lookup behind `addMemberByEmail` is a Cloud Function call now, not
+// a `users` query — firestore.rules denies `list` on that collection. Mocked at
+// the service seam; the callable binding itself is pinned in userService.test.ts.
+jest.mock("../userService", () => ({ lookupUserByEmail: jest.fn() }));
 
 import * as fs from "firebase/firestore";
 import { auth } from "../../config/firebase";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
+import { lookupUserByEmail } from "../userService";
 import * as boardService from "../boardService";
 import * as quotaService from "../quotaService";
 
@@ -16,6 +21,7 @@ const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
+const lookup = lookupUserByEmail as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -212,14 +218,14 @@ describe("leaveBoard", () => {
 
 describe("addMemberByEmail", () => {
   it("returns not_found when no user has that email", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    lookup.mockResolvedValueOnce(null);
     expect(await boardService.addMemberByEmail("board-1", "x@y.z")).toEqual({
       result: "not_found",
     });
   });
 
   it("returns already_member when the user is already on the board", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "x@y.z" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "x@y.z" });
     getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { members: ["u2"] }));
 
     expect(await boardService.addMemberByEmail("board-1", "x@y.z")).toEqual({
@@ -230,13 +236,28 @@ describe("addMemberByEmail", () => {
   });
 
   it("adds the user and returns added otherwise", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "x@y.z" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "x@y.z" });
     getDoc.mockResolvedValueOnce(makeDocSnap("board-1", { members: ["u1"] }));
 
     const res = await boardService.addMemberByEmail("board-1", "X@Y.Z");
 
     expect(res).toEqual({ result: "added", uid: "u2" });
     expect(updateDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves the email through the callable, never through a users query", async () => {
+    // firestore.rules denies `list` on /users (it carries email addresses), so
+    // the old `getDocs(query(collection(db,"users"), where("email","==",…)))`
+    // would now be rejected outright — and before that it was the query that
+    // made the whole directory dumpable. The raw address goes over the wire:
+    // the callable owns the lowercase/trim this line used to do, so that all
+    // three email lookups in the app normalize identically.
+    lookup.mockResolvedValueOnce(null);
+
+    await boardService.addMemberByEmail("board-1", "  X@Y.Z ");
+
+    expect(lookup).toHaveBeenCalledWith("  X@Y.Z ");
+    expect(getDocs).not.toHaveBeenCalled();
   });
 });
 

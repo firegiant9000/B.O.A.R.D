@@ -5,15 +5,22 @@ const mockHttpsCallable = jest.fn((..._args: unknown[]) => mockCallable);
 jest.mock("firebase/functions", () => ({
   httpsCallable: (...args: unknown[]) => mockHttpsCallable(...args),
 }));
+// The email lookup behind `addMemberByEmail` is a Cloud Function call now, not
+// a `users` query — firestore.rules denies `list` on that collection. Mocked at
+// the service seam so these tests stay about membership branching; the callable
+// binding itself is pinned in userService.test.ts.
+jest.mock("../userService", () => ({ lookupUserByEmail: jest.fn() }));
 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
+import { lookupUserByEmail } from "../userService";
 import * as workspaceService from "../workspaceService";
 
 const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;
+const lookup = lookupUserByEmail as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -185,32 +192,39 @@ describe("removeMember", () => {
 
 describe("addMemberByEmail", () => {
   it("returns not_found when no user matches the email (no write)", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+    lookup.mockResolvedValueOnce(null);
 
     const res = await workspaceService.addMemberByEmail("ws-1", "nobody@x.com");
 
     expect(res).toEqual({ result: "not_found" });
     expect(updateDoc).not.toHaveBeenCalled();
-    // email is normalized (lowercased + trimmed) before lookup
-    expect((fs.where as jest.Mock).mock.calls.at(-1)).toEqual([
-      "email",
-      "==",
-      "nobody@x.com",
-    ]);
   });
 
-  it("normalizes the email before lookup", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([]));
+  it("resolves the email through the callable, never through a users query", async () => {
+    // This used to be `getDocs(query(collection(db,"users"), where("email",…)))`.
+    // firestore.rules now denies `list` on /users — the collection carries
+    // email addresses, and `allow read` covered `list`, so one unfiltered
+    // query dumped the whole directory. No rule could have admitted the
+    // filtered shape alone: rules never see a query's `where` clauses.
+    lookup.mockResolvedValueOnce(null);
+
+    await workspaceService.addMemberByEmail("ws-1", "nobody@x.com");
+
+    expect(lookup).toHaveBeenCalledWith("nobody@x.com");
+    expect(getDocs).not.toHaveBeenCalled();
+  });
+
+  it("sends the address unnormalized — the callable owns the lowercase/trim now", async () => {
+    // The lowercase/trim moved server-side so that all three email lookups
+    // share it; friendService never applied it, which made the same address
+    // resolve differently depending on which feature asked.
+    lookup.mockResolvedValueOnce(null);
     await workspaceService.addMemberByEmail("ws-1", "  Foo@Bar.COM ");
-    expect((fs.where as jest.Mock).mock.calls.at(-1)).toEqual([
-      "email",
-      "==",
-      "foo@bar.com",
-    ]);
+    expect(lookup).toHaveBeenCalledWith("  Foo@Bar.COM ");
   });
 
   it("returns already_member without writing when the uid is in the role map", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u2", { email: "u2@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "U2", email: "u2@x.com" });
     getDoc.mockResolvedValueOnce(
       makeDocSnap("ws-1", { members: { owner: "owner", u2: "member" } })
     );
@@ -222,7 +236,7 @@ describe("addMemberByEmail", () => {
   });
 
   it("adds the user with the given role and unions the parallel array", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u3", { email: "u3@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u3", displayName: "U3", email: "u3@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: { owner: "owner" } }));
 
     const res = await workspaceService.addMemberByEmail("ws-1", "u3@x.com", "admin");
@@ -233,8 +247,21 @@ describe("addMemberByEmail", () => {
     expect(update.memberIds).toEqual({ __type: "arrayUnion", values: ["u3"] });
   });
 
+  it("never touches ownerId when adding a member — the rules pin would deny the write", async () => {
+    // firestore.rules refuses any workspace update whose affected keys include
+    // `ownerId` (the pin the per-owner workspace cap depends on). This is the
+    // positive control on the client side: the invite path's write is
+    // `members`/`memberIds` only, so the pin costs it nothing.
+    lookup.mockResolvedValueOnce({ uid: "u3", displayName: "U3", email: "u3@x.com" });
+    getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: { owner: "owner" } }));
+
+    await workspaceService.addMemberByEmail("ws-1", "u3@x.com");
+
+    expect(Object.keys(updateDoc.mock.calls[0][1])).not.toContain("ownerId");
+  });
+
   it("defaults the role to member", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u4", { email: "u4@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u4", displayName: "U4", email: "u4@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", { members: {} }));
 
     await workspaceService.addMemberByEmail("ws-1", "u4@x.com");
@@ -243,7 +270,7 @@ describe("addMemberByEmail", () => {
   });
 
   it("throws when the workspace does not exist", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u5", { email: "u5@x.com" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u5", displayName: "U5", email: "u5@x.com" });
     getDoc.mockResolvedValueOnce(makeDocSnap("ws-1", null));
 
     await expect(

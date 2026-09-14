@@ -89,16 +89,18 @@ export interface OwnedWorkspaces {
  *  your own allowance, and the roadmap cap is on what a user CREATES. A
  *  workspace you were merely added to is invisible here by design.
  *
- *  Honest caveat, and it is a live one rather than a data-migration one:
- *  nothing pins `ownerId`. firestore.rules' `workspaces/{id}` update rule
- *  restricts only `plan`, so an owner can rewrite `ownerId` to some other value
- *  while keeping their own `members` entry — the workspace stays fully theirs
- *  to use, disappears from this count, and earns them a fresh allowance. That
- *  is exactly the route `workspaceIdUnchanged` closes for boards, and its
- *  equivalent for workspaces does not exist yet. Closing it needs an
- *  `ownerId`-unchanged predicate on that update rule; this function cannot
- *  close it alone, so nothing around this cap should be written as if the cap
- *  were airtight. */
+ *  Because the filter is on `ownerId`, this count is only as trustworthy as
+ *  that field, and the field is pinned in rules: firestore.rules' `workspaces/
+ *  {id}` update rule refuses any write whose affected keys include `ownerId`
+ *  (alongside `plan`). Without that pin an owner could rewrite `ownerId` while
+ *  keeping their own `members` entry — the workspace would stay fully theirs to
+ *  use, vanish from this count, and earn them a fresh allowance for one client
+ *  write. It is the exact counterpart of the `workspaceIdUnchanged` pin the
+ *  board cap depends on, and the two halves must not be relaxed in isolation.
+ *
+ *  What the pin does NOT cover, deliberately: deleting a workspace frees a slot
+ *  (`allow delete` stays open to the owner). The cap is on how many workspaces
+ *  a user holds at once, not on how many they have ever created. */
 export async function countOwnedWorkspaces(
   db: Firestore,
   ownerId: string

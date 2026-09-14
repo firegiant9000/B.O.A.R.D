@@ -61,9 +61,9 @@ function headroomValueText(h: Headroom): string {
   return h.unlimited ? `${h.used} · Unlimited` : `${h.used} of ${h.limit}`;
 }
 
-/** Plain-language text for the (unenforced) `workspaces` plan limit — never
- *  a raw `Infinity`. `limitFor` is a pure function, safe to call directly
- *  from the UI; it isn't a Firestore/network call. */
+/** Plain-language text for the `workspaces` plan limit — never a raw
+ *  `Infinity`. `limitFor` is a pure function, safe to call directly from the
+ *  UI; it isn't a Firestore/network call. */
 function workspacesLimitText(plan: Parameters<typeof limitFor>[0]): string {
   const n = limitFor(plan, "workspaces");
   return n === UNLIMITED ? "unlimited workspaces" : `${n} workspace${n === 1 ? "" : "s"}`;
@@ -274,15 +274,24 @@ export default function AiUsageScreen() {
               </Text>
             </View>
 
-            {/* Workspaces (brief requirement): PLAN_LIMITS lists a number for
-                this, but nothing enforces it — firestore.rules lets a client
-                create workspaces with no count check, and rules have no way
-                to add one. This is deliberately NOT a HeadroomRow: a bar
-                would visually claim a cap that does not exist. */}
+            {/* Workspaces. This IS enforced now — the `createWorkspace`
+                callable counts the workspaces the caller owns and denies past
+                the plan's cap, firestore.rules denies client creates outright,
+                and it pins `ownerId` so a workspace can't be hidden from that
+                count. It stays prose rather than becoming a HeadroomRow all
+                the same, and for a different reason than before: this cap is
+                scoped PER OWNER, while every metered row above it (and the
+                whole `getWorkspaceUsage` contract behind them) is scoped to
+                the workspace this page is looking at. A bar sitting in that
+                column would read as "this workspace's" meter no matter how it
+                were labelled — and the viewer is often not the owner at all,
+                since the page admits owner AND admin (`canViewUsage`), so the
+                number under the bar would belong to someone else. Same choice,
+                same reason, as the Collaborators row above. */}
             <Text style={styles.workspacesNote}>
-              Workspaces: the {plan} plan lists{" "}
-              {workspacesLimitText(plan)}. Not enforced — creating another workspace isn't
-              currently blocked.
+              Workspaces: the {plan} plan includes {workspacesLimitText(plan)}. The limit
+              counts workspaces you own, so ones you've been invited to don't use it up,
+              and deleting a workspace frees its slot.
             </Text>
           </>
         )}

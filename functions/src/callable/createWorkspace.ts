@@ -40,10 +40,16 @@ import { limitFor, type Plan } from "../billing/limits";
 // instead — inventing one would create a second source of truth for billing
 // state that the Stripe webhook does not write.
 //
-// Honest caveat this function cannot close on its own: nothing pins `ownerId`
-// on a workspace, so an owner can rewrite the field, keep their `members` entry
-// and hide a workspace from the count — see `countOwnedWorkspaces` in
-// functions/src/billing/usage.ts for the full route and what closing it needs.
+// The cap rests on a second rule as well, exactly as the board cap rests on
+// `workspaceIdUnchanged`: firestore.rules pins `ownerId` on a workspace update.
+// `countOwnedWorkspaces` filters on that field, so an owner able to rewrite it
+// could keep their `members` entry, keep using the workspace, disappear from
+// the count and earn a fresh allowance for one client write. Do not relax
+// either half in isolation — see `countOwnedWorkspaces` in
+// functions/src/billing/usage.ts.
+//
+// Remaining honest caveat, not closable here or in rules: deleting a workspace
+// frees a slot, by design. The cap is on how many a user holds at once.
 
 export interface CreateWorkspaceRequest {
   name: string;

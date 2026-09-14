@@ -1,13 +1,21 @@
 jest.mock("firebase/firestore", () => require("../../test-utils/firestoreMock"));
-jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null } }));
+jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null }, functions: {} }));
+// The recipient lookup is a Cloud Function call now, not a `users` query:
+// firestore.rules denies `list` on that collection (it carries email
+// addresses). Mocking the service seam rather than `firebase/functions` keeps
+// these tests about `sendFriendRequest`'s own branching; the callable binding
+// itself is pinned in userService.test.ts.
+jest.mock("../userService", () => ({ lookupUserByEmail: jest.fn() }));
 
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, makeDocSnap, ts } from "../../test-utils/firestoreMock";
+import { lookupUserByEmail } from "../userService";
 import * as friendService from "../friendService";
 
 const addDoc = fs.addDoc as jest.Mock;
 const getDocs = fs.getDocs as jest.Mock;
 const getDoc = fs.getDoc as jest.Mock;
+const lookup = lookupUserByEmail as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -15,22 +23,22 @@ beforeEach(() => {
 
 describe("sendFriendRequest", () => {
   it("returns not_found when the recipient email has no user", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([])); // getUserByEmail
+    lookup.mockResolvedValueOnce(null);
     expect(
       await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "nobody@x.z")
     ).toBe("not_found");
   });
 
   it("returns self when targeting your own account", async () => {
-    getDocs.mockResolvedValueOnce(makeQuerySnap([["u1", { email: "a@x.z" }]]));
+    lookup.mockResolvedValueOnce({ uid: "u1", displayName: "Arlo", email: "a@x.z" });
     expect(await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "a@x.z")).toBe(
       "self"
     );
   });
 
   it("returns already_friends when a forward accepted request exists", async () => {
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "Bo", email: "b@x.z" });
     getDocs
-      .mockResolvedValueOnce(makeQuerySnap([["u2", { email: "b@x.z" }]])) // lookup
       .mockResolvedValueOnce(makeQuerySnap([["r1", { status: "accepted" }]])) // fwd
       .mockResolvedValueOnce(makeQuerySnap([])); // rev
     expect(await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "b@x.z")).toBe(
@@ -39,8 +47,8 @@ describe("sendFriendRequest", () => {
   });
 
   it("returns pending when a reverse pending request exists", async () => {
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "Bo", email: "b@x.z" });
     getDocs
-      .mockResolvedValueOnce(makeQuerySnap([["u2", { email: "b@x.z" }]]))
       .mockResolvedValueOnce(makeQuerySnap([])) // fwd
       .mockResolvedValueOnce(makeQuerySnap([["r1", { status: "pending" }]])); // rev
     expect(await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "b@x.z")).toBe(
@@ -49,10 +57,8 @@ describe("sendFriendRequest", () => {
   });
 
   it("creates the request and returns sent when none exists", async () => {
-    getDocs
-      .mockResolvedValueOnce(makeQuerySnap([["u2", { email: "b@x.z", displayName: "Bo" }]]))
-      .mockResolvedValueOnce(makeQuerySnap([]))
-      .mockResolvedValueOnce(makeQuerySnap([]));
+    lookup.mockResolvedValueOnce({ uid: "u2", displayName: "Bo", email: "b@x.z" });
+    getDocs.mockResolvedValueOnce(makeQuerySnap([])).mockResolvedValueOnce(makeQuerySnap([]));
 
     const res = await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "b@x.z");
 
@@ -61,8 +67,34 @@ describe("sendFriendRequest", () => {
     expect(addDoc.mock.calls[0][1]).toMatchObject({
       fromId: "u1",
       toId: "u2",
+      toDisplayName: "Bo",
+      toEmail: "b@x.z",
       status: "pending",
     });
+  });
+
+  it("looks the recipient up through the callable, never through a users query", async () => {
+    // The regression guard for the disclosure this replaced: a `users` query
+    // here would be denied outright now that firestore.rules refuses `list` on
+    // that collection, and would have dumped every registered email before it.
+    lookup.mockResolvedValueOnce(null);
+
+    await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "nobody@x.z");
+
+    expect(lookup).toHaveBeenCalledWith("nobody@x.z");
+    expect(getDocs).not.toHaveBeenCalled();
+  });
+
+  it("passes the address through unnormalized — friend search used to skip the lowercase/trim", async () => {
+    // This call site was the odd one out: boardService and workspaceService
+    // lowercased and trimmed, friendService did neither, so `Bob@X.Z` found
+    // nobody here and found Bob through a board invite. Normalization now
+    // happens once, server-side, which is why the raw string goes over.
+    lookup.mockResolvedValueOnce(null);
+
+    await friendService.sendFriendRequest("u1", "Arlo", "a@x.z", "  BoB@X.Z ");
+
+    expect(lookup).toHaveBeenCalledWith("  BoB@X.Z ");
   });
 });
 

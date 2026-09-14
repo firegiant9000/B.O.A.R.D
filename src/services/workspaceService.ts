@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../config/firebase";
+import { lookupUserByEmail } from "./userService";
 import { Plan, Workspace, WorkspaceRole } from "../types";
 
 const workspacesRef = collection(db, "workspaces");
@@ -161,20 +162,22 @@ export type AddByEmailResult = "added" | "not_found" | "already_member";
  * to the workspace at `role`. Mirrors `boardService.addMemberByEmail`. The write
  * is gated by the workspace `update` rule to owner/admin, so call sites must
  * restrict the action to managers (see `canManageMembers`).
+ *
+ * The lookup is a Cloud Function call, not a Firestore query: firestore.rules
+ * denies `list` on `/users` because that collection carries email addresses
+ * (see src/services/userService.ts). The lowercase/trim this function used to
+ * apply now happens server-side, in the one place all three email lookups
+ * share. Signature and return shape are unchanged.
  */
 export async function addMemberByEmail(
   workspaceId: string,
   email: string,
   role: WorkspaceRole = "member"
 ): Promise<{ result: AddByEmailResult; uid?: string }> {
-  const q = query(
-    collection(db, "users"),
-    where("email", "==", email.toLowerCase().trim())
-  );
-  const snap = await getDocs(q);
-  if (snap.empty) return { result: "not_found" };
+  const target = await lookupUserByEmail(email);
+  if (!target) return { result: "not_found" };
 
-  const uid = snap.docs[0].id;
+  const uid = target.uid;
   const wsSnap = await getDoc(doc(db, "workspaces", workspaceId));
   if (!wsSnap.exists()) throw new Error("Workspace not found");
 
