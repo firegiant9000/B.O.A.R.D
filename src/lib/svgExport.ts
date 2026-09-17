@@ -9,9 +9,9 @@ import {
   CODE_BORDER_COLOR,
   CODE_DEFAULT_FOREGROUND,
   codeTransform,
-  layoutCodeBox,
   tokenizeCode,
 } from "./codeRender";
+import { layoutCodeBox } from "./codeLayout";
 import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyNotes";
 
 /**
@@ -56,8 +56,9 @@ import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyN
  * Cloud Function rather than displayed in a WebView — a WebView would have
  * left this module with nothing exportable at all. `code` (Month 6) reuses
  * the SAME tokenize-then-lay-out pure functions the live canvas does
- * (`lib/codeRender.ts`), so a printed snippet is colored identically to the
- * one on screen with no separate export-only highlighting path to drift.
+ * (`lib/codeRender.ts` for tokens, `lib/codeLayout.ts` for metrics), so a
+ * printed snippet is colored identically to the one on screen with no
+ * separate export-only highlighting path to drift.
  * NOTE for whoever adds the next kind: the `default` branch below SKIPS
  * anything it hasn't been taught, silently, which is right for a non-visual
  * kind and wrong for a visual one. Math and code would have exported as
@@ -500,8 +501,9 @@ function mathNode(m: MathElement): string {
 }
 
 /** A code element (Month 6) — the SAME tokenize-then-lay-out pure functions
- *  the live canvas uses (`lib/codeRender.ts`), so an exported snippet is
- *  colored identically to the one on screen. `escapeXmlText` runs on every
+ *  the live canvas uses (`lib/codeRender.ts` for tokens, `lib/codeLayout.ts`
+ *  for metrics), so an exported snippet is colored identically to the one on
+ *  screen. `escapeXmlText` runs on every
  *  token's content (unlike `mathNode`'s single opaque path datum, this is
  *  real user text and could contain `<`/`&`); `layoutCodeBox` here supplies
  *  line metrics ONLY (padding/lineHeight), not the box — `width`/`height`

@@ -10,10 +10,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-// From `lib/codeRender`, not `services/codeService`: this is a presentational
-// component and must not pull the Firestore SDK in through the service just
-// to read the language list.
-import { CODE_LANGUAGES, CODE_DEFAULT_LANGUAGE } from "../../lib/codeRender";
+// From `lib/codeLayout`, not `services/codeService` and not `lib/codeRender`.
+// Not the service, because this is a presentational component and must not
+// pull the Firestore SDK in just to read the language list. Not the renderer,
+// because that module statically imports `shiki/core` plus nine grammars and
+// a theme — roughly two dozen packages of HTML/HAST serialization this
+// dropdown has no use for, and a load cost that has already timed this
+// component's host out under a cold Jest cache.
+import { CODE_LANGUAGES, CODE_DEFAULT_LANGUAGE } from "../../lib/codeLayout";
 import type { CodeLanguage } from "../../types";
 
 // Month 6 — the code composer. BOTH entry points for a code element live

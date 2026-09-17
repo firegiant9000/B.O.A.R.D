@@ -959,16 +959,18 @@ export interface MathElement {
 // unmetered network round-trip the way `updateMathLatex` is.
 //
 // Bundled grammars are exactly the brief's nine — see
-// `lib/codeRender.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
+// `lib/codeLayout.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
 // grammar Shiki ships," which would pull the full grammar set into the
-// client bundle for no board-content benefit.
+// client bundle for no board-content benefit. That list lives in the
+// dependency-free leaf, not beside the grammars in `lib/codeRender.ts`,
+// precisely so a caller can enumerate the languages without loading one.
 //
 // GEOMETRY. A full canvas primitive — move/resize/rotate/z-order/duplicate/
 // copy-paste all apply, the same as ShapeElement/ImageElement (unlike
 // MathElement, which deliberately opts out of rotation and z — see its own
 // type comment for why that doesn't apply here: a code block has no baked
 // path data to orbit around, it is ordinary positioned text). `width`/
-// `height` start as the box `lib/codeRender.ts`'s pure monospace line-layout
+// `height` start as the box `lib/codeLayout.ts`'s pure monospace line-layout
 // computes for `code` at `fontSize` (see `layoutCodeBox`); a resize then
 // scales them independently, exactly like TextElement, so the box and the
 // text can drift apart under a non-uniform drag the same way a resized text

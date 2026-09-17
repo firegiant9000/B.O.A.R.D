@@ -1,6 +1,6 @@
 import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
 import { mathTransform } from "../mathInk";
-import { layoutCodeBox } from "../codeRender";
+import { layoutCodeBox } from "../codeLayout";
 import { STICKY_COLORS, STICKY_SIZE_METRICS } from "../stickyNotes";
 import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
 
@@ -626,8 +626,10 @@ describe("math elements export (Month 6)", () => {
 
 describe("code elements export (Month 6)", () => {
   // Unlike math, there is nothing cached to emit: the export re-tokenizes
-  // `code`/`language` with the SAME pure `lib/codeRender.ts` functions the
-  // live canvas uses, so the printed snippet is colored identically to the
+  // `code`/`language` with the SAME pure functions the live canvas uses —
+  // `tokenizeCode` from `lib/codeRender.ts` and `layoutCodeBox` from the
+  // dependency-free `lib/codeLayout.ts` — so the printed snippet is colored
+  // identically to the
   // one on screen. `nodeFor`'s default branch SKIPS any kind it hasn't been
   // taught, silently — without a `code` case, an exported board would have
   // no snippets in it and nothing would fail.

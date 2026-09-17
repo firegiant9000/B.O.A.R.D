@@ -70,7 +70,9 @@ import {
   CodeLanguage,
   StickyColor,
 } from "../types";
-import { layoutCodeBox, MIN_CODE_FONT_SIZE } from "../lib/codeRender";
+// The pure leaf, not `lib/codeRender` — this hook re-lays out a code box on
+// resize and never tokenizes, so it has no reason to load Shiki's grammars.
+import { layoutCodeBox, MIN_CODE_FONT_SIZE } from "../lib/codeLayout";
 import { useSelection, SelectionController } from "./useSelection";
 import { useThrottledValue } from "./useThrottledValue";
 
@@ -253,7 +255,7 @@ const codeBox = (c: CodeElement): Bounds => codeService.codeElementBbox(c);
 const codeBoxOf = codeService.codeBoxOf;
 
 // Floor for a code element's `fontSize` under a resize drag — imported from
-// `lib/codeRender` (the single source of truth; see that module's own
+// `lib/codeLayout` (the single source of truth; see that module's own
 // comment on `MIN_CODE_FONT_SIZE`) rather than redeclared here, mirroring
 // MIN_MATH_SCALE's reasoning: a block scaled to an invisible/zero size could
 // never be resized back up or selected to delete.
