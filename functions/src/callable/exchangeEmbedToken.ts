@@ -5,9 +5,15 @@ import {
   isAllowedIssuer,
   normalizeIssuer,
   parseIssuerAllowlist,
+  isEditUnrevocableAcknowledged,
+  EMBED_EDIT_UNREVOCABLE_REFUSAL,
   type EmbedScope,
 } from "../embed/token";
-import { EMBED_JWT_SECRET, EMBED_ALLOWED_ISSUERS } from "../config";
+import {
+  EMBED_JWT_SECRET,
+  EMBED_ALLOWED_ISSUERS,
+  EMBED_EDIT_UNREVOCABLE_ACK,
+} from "../config";
 
 // Exchange a signed embed token for a Firebase custom token (Month 4 — read-only;
 // Month 5 — editable). UNAUTHENTICATED on purpose: this is how a viewer inside a
@@ -22,6 +28,15 @@ import { EMBED_JWT_SECRET, EMBED_ALLOWED_ISSUERS } from "../config";
 // note at the top of ../embed/token.ts before touching the uid derivation below:
 // the namespacing and the issuer allowlist are what keep a host's assertions
 // inside that host's own sandbox instead of landing on real accounts.
+//
+// ⚠️ AND THIS IS WHERE THE UNREVOCABLE SESSION IS ACTUALLY CREATED. The custom
+// token minted below becomes, via `signInWithCustomToken`, an Auth session that
+// outlives the embed token, survives re-minting, and survives rotating
+// EMBED_JWT_SECRET; nothing in this codebase revokes it. For 'view' that is the
+// accepted Month 4 trade. For 'edit' it is board WRITE access with no revocation
+// path, so edit scope is gated on a second deploy-time parameter,
+// `EMBED_EDIT_UNREVOCABLE_ACK`, on top of the issuer allowlist — see config.ts
+// for why there are two, and the `failed-precondition` refusal below.
 
 export interface ExchangeEmbedTokenRequest {
   token: string;
@@ -38,6 +53,13 @@ export interface ExchangeEmbedTokenDeps {
   secret: string;
   /** Hosts whose `iss` we accept, already parsed (see config.EMBED_ALLOWED_ISSUERS). */
   allowedIssuers: readonly string[];
+  /** Whether this deploy has explicitly accepted that an edit-scoped embed
+   *  session cannot be revoked before expiry (config.EMBED_EDIT_UNREVOCABLE_ACK).
+   *  Checked HERE as well as at the mint: this is an independent entry point —
+   *  the mint does not call it and it does not call the mint — so a token minted
+   *  while the acknowledgement was set must not stay redeemable after it is
+   *  withdrawn. See the header. */
+  editUnrevocableAcknowledged: boolean;
   mintCustomToken: (uid: string, claims: object) => Promise<string>;
 }
 
@@ -115,6 +137,24 @@ export async function handleExchangeEmbedToken(
     throw new HttpsError("permission-denied", "Invalid embed link.");
   }
 
+  // The unrevocable-session acknowledgement — the second deploy-time gate on
+  // edit scope, applied here as well as at the mint because the two callables
+  // are independent entry points: neither calls the other, and a token minted
+  // while the acknowledgement was set would otherwise stay redeemable for its
+  // full window after the acknowledgement was withdrawn. THIS is the callable
+  // that actually creates the unrevocable session, so it is the one that must
+  // not be able to create one the deploy has not accepted.
+  //
+  // Placed AFTER signature, version, issuer-allowlist and identity checks, so
+  // this is the only branch in this function that says anything specific and
+  // it is reachable only by someone already holding a validly signed,
+  // allowlisted, identity-bearing edit token — i.e. a legitimate integration
+  // that needs to be told what to configure, never a caller probing with a
+  // forged one, who still gets the flat "Invalid embed link." above.
+  if (scope === "edit" && !deps.editUnrevocableAcknowledged) {
+    throw new HttpsError("failed-precondition", EMBED_EDIT_UNREVOCABLE_REFUSAL);
+  }
+
   const uid = identity ? embedIdentityUid(identity.iss, identity.sub) : embedUid(boardId);
   const claims = identity
     ? {
@@ -141,6 +181,9 @@ export const exchangeEmbedToken_fn = onCall(
       {
         secret: EMBED_JWT_SECRET.value(),
         allowedIssuers: parseIssuerAllowlist(EMBED_ALLOWED_ISSUERS.value()),
+        editUnrevocableAcknowledged: isEditUnrevocableAcknowledged(
+          EMBED_EDIT_UNREVOCABLE_ACK.value()
+        ),
         mintCustomToken: (uid, claims) => getAuth().createCustomToken(uid, claims),
       },
       Date.now()
