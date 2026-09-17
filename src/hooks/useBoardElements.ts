@@ -277,6 +277,29 @@ type DeleteRoute =
   | { deletable: true; ids: string[]; remove: (ids: string[]) => Promise<void> }
   | { deletable: false; why: string };
 
+/**
+ * What `copySelected` and `duplicateSelected` do about one element kind: the
+ * work to run for it, or an explicit statement that the kind has no such route,
+ * with the reason.
+ *
+ * Same discriminated shape as `DeleteRoute` above, for the same reason and one
+ * step further. `deleteSelected` got its `Record<BoardElementKind, …>` first,
+ * which left the compile-time guard exactly ONE function wide: copy and
+ * duplicate stayed hand-written loop sequences with nothing tying them to the
+ * element-kind union. The missing-kind defect then shipped in both of them —
+ * sticky notes produced no clip item, and Ctrl+D on a sticky note did nothing
+ * at all — and the two were found one function apart rather than together.
+ * Keying all three off the union means a new kind fails to compile in every
+ * one of them.
+ *
+ * `run` is synchronous and pushes into the caller's own `tasks`/`items` array
+ * rather than returning work, because that is what the loops it replaced did;
+ * the restructuring deliberately changed no ordering and no await boundary.
+ */
+type SelectionRoute =
+  | { applies: true; run: () => void }
+  | { applies: false; why: string };
+
 // ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
 export interface ElementHit {
@@ -2027,13 +2050,21 @@ export function useBoardElements(
       // kinds already there.
       //
       // `Record<BoardElementKind, …>` is what stops it recurring, and it stops
-      // it at COMPILE time, not in a test: `BoardElementKind` is
-      // `SvgExportElement["kind"]`, the union every element kind already joins
-      // when it is added to the board, so a seventh deletable kind makes `tsc`
-      // refuse to build this object until it is handled here. A route is either
-      // deletable — a source of rows and the batch delete to issue — or
-      // explicitly not, with the reason, so "nothing to do" has to be written
-      // down rather than fallen into.
+      // it at COMPILE time, not in a test. Be precise about how far that
+      // actually reaches: `BoardElementKind` is a HAND-MAINTAINED literal union
+      // declared in src/types/index.ts. Nothing derives it from the board's
+      // real contents and nothing forces a new kind to join it — the dependency
+      // runs the other way, with `lib/svgExport.ts` asserting its own case list
+      // against it. So ADDING A MEMBER to that union is what trips this record
+      // and the export's assertion together; adding an element kind WITHOUT
+      // touching the union trips neither. Treat the union as the thing to
+      // update first, not as a guarantee that catches you if you don't.
+      //
+      // Given that, an eighth deletable kind makes `tsc` refuse to build this
+      // object until it is handled here. A route is either deletable — a source
+      // of rows and the batch delete to issue — or explicitly not, with the
+      // reason, so "nothing to do" has to be written down rather than fallen
+      // into.
       //
       // Every source below is the UNFILTERED ref, never a `visible*` mirror: a
       // delete must not silently skip a document because its author is blocked,
@@ -2139,77 +2170,156 @@ export function useBoardElements(
     const off = DUPLICATE_OFFSET;
     const newIds: string[] = [];
     const tasks: Promise<void>[] = [];
-    for (const p of paths) {
-      if (!ids.has(p.id)) continue;
-      const { id: _i, createdAt: _c, ...rest } = p;
-      tasks.push(
-        pathService
-          .savePath(boardId, { ...rest, points: translatePoints(p.points, off, off) })
-          .then((nid) => {
-            newIds.push(nid);
-          })
-      );
+
+    // EXHAUSTIVE PER-KIND MATCH, same `Record<BoardElementKind, …>` shape as
+    // `deleteSelected` above and `copySelected` below — see `SelectionRoute`
+    // for why all three are keyed off the one union. Key order is the order
+    // the writes are issued in, and is exactly the order the hand-written loop
+    // sequence this replaced already had.
+    const routes: Record<BoardElementKind, SelectionRoute> = {
+      path: {
+        applies: true,
+        run: () => {
+          for (const p of paths) {
+            if (!ids.has(p.id)) continue;
+            const { id: _i, createdAt: _c, ...rest } = p;
+            tasks.push(
+              pathService
+                .savePath(boardId, { ...rest, points: translatePoints(p.points, off, off) })
+                .then((nid) => {
+                  newIds.push(nid);
+                })
+            );
+          }
+        },
+      },
+      shape: {
+        applies: true,
+        run: () => {
+          for (const s of shapes) {
+            if (!ids.has(s.id)) continue;
+            const { id: _i, createdAt: _c, bbox: _b, ...rest } = s;
+            tasks.push(
+              shapeService.saveShape(boardId, { ...rest, x: s.x + off, y: s.y + off }).then((nid) => {
+                newIds.push(nid);
+              })
+            );
+          }
+        },
+      },
+      text: {
+        applies: true,
+        run: () => {
+          for (const el of textElements) {
+            if (!ids.has(el.id)) continue;
+            const { id: _i, createdAt: _c, ...rest } = el;
+            tasks.push(
+              pathService
+                .saveTextElement(boardId, {
+                  ...rest,
+                  position: { x: el.position.x + off, y: el.position.y + off },
+                })
+                .then((nid) => {
+                  newIds.push(nid);
+                })
+            );
+          }
+        },
+      },
+      image: {
+        applies: true,
+        run: () => {
+          for (const img of images) {
+            if (!ids.has(img.id)) continue;
+            const { id: _i, createdAt: _c, bbox: _b, ...rest } = img;
+            tasks.push(
+              imageService.saveImage(boardId, { ...rest, x: img.x + off, y: img.y + off }).then((nid) => {
+                newIds.push(nid);
+              })
+            );
+          }
+        },
+      },
+      // Month 6 — math elements. `saveMathElement`, not `createMathElement`:
+      // the copy already has typeset path data, so duplicating an equation is
+      // one Firestore write with no render call at all.
+      math: {
+        applies: true,
+        run: () => {
+          for (const mEl of mathElements) {
+            if (!ids.has(mEl.id)) continue;
+            const { id: _i, createdAt: _c, bbox: _b, ...rest } = mEl;
+            tasks.push(
+              mathService
+                .saveMathElement(boardId, { ...rest, x: mEl.x + off, y: mEl.y + off })
+                .then((nid) => {
+                  newIds.push(nid);
+                })
+            );
+          }
+        },
+      },
+      // Month 6 — code elements. `saveCodeElement`, not `createCodeElement`:
+      // the copy's width/height are already laid out, so duplicating a
+      // snippet is one Firestore write with no layout call at all.
+      code: {
+        applies: true,
+        run: () => {
+          for (const cEl of codeElements) {
+            if (!ids.has(cEl.id)) continue;
+            const { id: _i, createdAt: _c, bbox: _b, ...rest } = cEl;
+            tasks.push(
+              codeService
+                .saveCodeElement(boardId, { ...rest, x: cEl.x + off, y: cEl.y + off })
+                .then((nid) => {
+                  newIds.push(nid);
+                })
+            );
+          }
+        },
+      },
+      // Month 6 — sticky notes. Their absence here was the DUPLICATE-side half
+      // of the blind spot the delete and copy paths each had: Ctrl+D on a
+      // selected sticky note silently did nothing at all, one function below
+      // the copy-side fix for Ctrl+C.
+      //
+      // `anchorElementId` is dropped, exactly as `copySelected` drops it, but
+      // for a different reason — the anchor resolves perfectly well on THIS
+      // board. An attached note renders at its anchor's current bounds and
+      // ignores `position` entirely (see `TextNote.anchorElementId`), so a copy
+      // that kept the anchor would land exactly on top of the original and the
+      // 16px offset every other kind gets would be invisible. "Duplicate did
+      // nothing" is the failure being fixed here, so reproducing it in a subtler
+      // form would be no fix at all. The copy becomes an ordinary pinned note at
+      // `position` + the offset, matching what paste already produces.
+      note: {
+        applies: true,
+        run: () => {
+          for (const n of notes) {
+            if (!ids.has(n.id)) continue;
+            const { id: _i, createdAt: _c, anchorElementId: _a, ...rest } = n;
+            tasks.push(
+              pathService
+                .saveTextNote(boardId, {
+                  ...rest,
+                  position: { x: n.position.x + off, y: n.position.y + off },
+                })
+                .then((nid) => {
+                  newIds.push(nid);
+                })
+            );
+          }
+        },
+      },
+      // Never selected directly — a voice note is a badge anchored to another
+      // element, so there is nothing for a duplicate to act on. Same reasoning
+      // as `deleteSelected`'s `audio` route.
+      audio: { applies: false, why: "anchored badge, never selected directly" },
+    };
+    for (const route of Object.values(routes)) {
+      if (route.applies) route.run();
     }
-    for (const s of shapes) {
-      if (!ids.has(s.id)) continue;
-      const { id: _i, createdAt: _c, bbox: _b, ...rest } = s;
-      tasks.push(
-        shapeService.saveShape(boardId, { ...rest, x: s.x + off, y: s.y + off }).then((nid) => {
-          newIds.push(nid);
-        })
-      );
-    }
-    for (const el of textElements) {
-      if (!ids.has(el.id)) continue;
-      const { id: _i, createdAt: _c, ...rest } = el;
-      tasks.push(
-        pathService
-          .saveTextElement(boardId, {
-            ...rest,
-            position: { x: el.position.x + off, y: el.position.y + off },
-          })
-          .then((nid) => {
-            newIds.push(nid);
-          })
-      );
-    }
-    for (const img of images) {
-      if (!ids.has(img.id)) continue;
-      const { id: _i, createdAt: _c, bbox: _b, ...rest } = img;
-      tasks.push(
-        imageService.saveImage(boardId, { ...rest, x: img.x + off, y: img.y + off }).then((nid) => {
-          newIds.push(nid);
-        })
-      );
-    }
-    // Month 6 — math elements. `saveMathElement`, not `createMathElement`:
-    // the copy already has typeset path data, so duplicating an equation is
-    // one Firestore write with no render call at all.
-    for (const mEl of mathElements) {
-      if (!ids.has(mEl.id)) continue;
-      const { id: _i, createdAt: _c, bbox: _b, ...rest } = mEl;
-      tasks.push(
-        mathService
-          .saveMathElement(boardId, { ...rest, x: mEl.x + off, y: mEl.y + off })
-          .then((nid) => {
-            newIds.push(nid);
-          })
-      );
-    }
-    // Month 6 — code elements. `saveCodeElement`, not `createCodeElement`:
-    // the copy's width/height are already laid out, so duplicating a
-    // snippet is one Firestore write with no layout call at all.
-    for (const cEl of codeElements) {
-      if (!ids.has(cEl.id)) continue;
-      const { id: _i, createdAt: _c, bbox: _b, ...rest } = cEl;
-      tasks.push(
-        codeService
-          .saveCodeElement(boardId, { ...rest, x: cEl.x + off, y: cEl.y + off })
-          .then((nid) => {
-            newIds.push(nid);
-          })
-      );
-    }
+
     try {
       await Promise.all(tasks);
       selection.setMany(newIds, "elements");
@@ -2236,6 +2346,9 @@ export function useBoardElements(
     // alongside adding `codeElements` for the same, newly-added loop.
     mathElements,
     codeElements,
+    // Added with the note route above, for the same stale-closure reason the
+    // `mathElements` note describes: the note branch reads `notes`.
+    notes,
     onEditText,
     onScheduleSave,
     onError,
@@ -2251,72 +2364,123 @@ export function useBoardElements(
     const ids = selection.selectedIds;
     if (ids.size === 0) return;
     const items: ClipItem[] = [];
-    for (const p of paths) {
-      if (!ids.has(p.id)) continue;
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, ...rest } = p;
-      items.push({ kind: "path", data: rest });
+
+    // EXHAUSTIVE PER-KIND MATCH, the same `Record<BoardElementKind, …>` shape
+    // as `deleteSelected` and `duplicateSelected` — see `SelectionRoute`. Key
+    // order is the order clip items are pushed in, and is exactly the order the
+    // hand-written loop sequence this replaced already had.
+    const routes: Record<BoardElementKind, SelectionRoute> = {
+      path: {
+        applies: true,
+        run: () => {
+          for (const p of paths) {
+            if (!ids.has(p.id)) continue;
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, ...rest } = p;
+            items.push({ kind: "path", data: rest });
+          }
+        },
+      },
+      shape: {
+        applies: true,
+        run: () => {
+          for (const s of shapes) {
+            if (!ids.has(s.id)) continue;
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = s;
+            items.push({ kind: "shape", data: rest });
+          }
+        },
+      },
+      text: {
+        applies: true,
+        run: () => {
+          for (const el of textElements) {
+            if (!ids.has(el.id)) continue;
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, ...rest } = el;
+            items.push({ kind: "text", data: rest });
+          }
+        },
+      },
+      image: {
+        applies: true,
+        run: () => {
+          for (const img of images) {
+            if (!ids.has(img.id)) continue;
+            // Image bytes are NOT re-copied: the payload keeps the source
+            // storage paths + download URLs, so paste reuses them (no
+            // re-upload), matching the duplicate behavior. Cross-board paste
+            // references the source board's Storage object — deleting that
+            // board would orphan the pasted image.
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = img;
+            items.push({ kind: "image", data: rest });
+          }
+        },
+      },
+      // Month 6 — math elements. Stripped the same way as every other kind
+      // (id/createdAt/boardId/userId/bbox); the already-typeset `svgPath`
+      // travels with it, so paste never re-renders — see `pasteClipboard`'s
+      // math branch.
+      math: {
+        applies: true,
+        run: () => {
+          for (const mEl of mathElements) {
+            if (!ids.has(mEl.id)) continue;
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = mEl;
+            items.push({ kind: "math", data: rest });
+          }
+        },
+      },
+      // Month 6 — code elements. Stripped the same way as every other kind;
+      // the already-laid-out width/height travel with it, so paste never
+      // re-lays-out — see `pasteClipboard`'s code branch.
+      code: {
+        applies: true,
+        run: () => {
+          for (const cEl of codeElements) {
+            if (!ids.has(cEl.id)) continue;
+            const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = cEl;
+            items.push({ kind: "code", data: rest });
+          }
+        },
+      },
+      // Month 6 — sticky notes. Their absence here was the copy-side half of
+      // the same blind spot the delete path had: a selected note produced no
+      // clip item at all, so copy-then-paste silently did nothing.
+      //
+      // `anchorElementId` is stripped along with identity. An attached note's
+      // anchor is an id on THIS board, and the clipboard store is module-level
+      // precisely so a payload survives to another one — where that id resolves
+      // to nothing, and `TextNote.anchorElementId`'s own contract says an
+      // unresolvable attached note must be OMITTED from the render rather than
+      // fall back to (0, 0). Pasting one would therefore write a document nobody
+      // could see. Dropping the anchor keeps `position` authoritative (it is
+      // already a write-time snapshot of where the note sat), so the copy lands
+      // as an ordinary pinned note.
+      note: {
+        applies: true,
+        run: () => {
+          for (const n of notes) {
+            if (!ids.has(n.id)) continue;
+            const {
+              id: _i,
+              createdAt: _c,
+              boardId: _b,
+              userId: _u,
+              anchorElementId: _a,
+              ...rest
+            } = n;
+            items.push({ kind: "note", data: rest });
+          }
+        },
+      },
+      // Never selected directly, so there is nothing for a copy to act on —
+      // same reasoning as `deleteSelected`'s and `duplicateSelected`'s `audio`
+      // routes. `ClipItem` has no `audio` member for the same reason.
+      audio: { applies: false, why: "anchored badge, never selected directly" },
+    };
+    for (const route of Object.values(routes)) {
+      if (route.applies) route.run();
     }
-    for (const s of shapes) {
-      if (!ids.has(s.id)) continue;
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = s;
-      items.push({ kind: "shape", data: rest });
-    }
-    for (const el of textElements) {
-      if (!ids.has(el.id)) continue;
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, ...rest } = el;
-      items.push({ kind: "text", data: rest });
-    }
-    for (const img of images) {
-      if (!ids.has(img.id)) continue;
-      // Image bytes are NOT re-copied: the payload keeps the source storage
-      // paths + download URLs, so paste reuses them (no re-upload), matching the
-      // duplicate behavior. Cross-board paste references the source board's
-      // Storage object — deleting that board would orphan the pasted image.
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = img;
-      items.push({ kind: "image", data: rest });
-    }
-    // Month 6 — math elements. Stripped the same way as every other kind
-    // above (id/createdAt/boardId/userId/bbox); the already-typeset `svgPath`
-    // travels with it, so paste never re-renders — see `pasteClipboard`'s
-    // math branch.
-    for (const mEl of mathElements) {
-      if (!ids.has(mEl.id)) continue;
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = mEl;
-      items.push({ kind: "math", data: rest });
-    }
-    // Month 6 — code elements. Stripped the same way as every other kind
-    // above; the already-laid-out width/height travel with it, so paste
-    // never re-lays-out — see `pasteClipboard`'s code branch.
-    for (const cEl of codeElements) {
-      if (!ids.has(cEl.id)) continue;
-      const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = cEl;
-      items.push({ kind: "code", data: rest });
-    }
-    // Month 6 — sticky notes. Their absence here was the copy-side half of the
-    // same blind spot the delete path had: a selected note produced no clip
-    // item at all, so copy-then-paste silently did nothing.
-    //
-    // `anchorElementId` is stripped along with identity. An attached note's
-    // anchor is an id on THIS board, and the clipboard store is module-level
-    // precisely so a payload survives to another one — where that id resolves
-    // to nothing, and `TextNote.anchorElementId`'s own contract says an
-    // unresolvable attached note must be OMITTED from the render rather than
-    // fall back to (0, 0). Pasting one would therefore write a document nobody
-    // could see. Dropping the anchor keeps `position` authoritative (it is
-    // already a write-time snapshot of where the note sat), so the copy lands
-    // as an ordinary pinned note.
-    for (const n of notes) {
-      if (!ids.has(n.id)) continue;
-      const {
-        id: _i,
-        createdAt: _c,
-        boardId: _b,
-        userId: _u,
-        anchorElementId: _a,
-        ...rest
-      } = n;
-      items.push({ kind: "note", data: rest });
-    }
+
     setClipboard(items);
   }, [selection.selectedIds, paths, shapes, textElements, images, mathElements, codeElements, notes]);
 

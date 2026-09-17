@@ -1168,3 +1168,83 @@ describe("useBoardElements — copy/paste round trip", () => {
     expect(payload.position).toEqual({ x: 216, y: 216 });
   });
 });
+
+describe("useBoardElements — duplicateSelected", () => {
+  it("duplicates a selected sticky note into the notes collection", async () => {
+    // REGRESSION. `duplicateSelected` looped paths/shapes/texts/images/math/
+    // code and never `notes`, so Ctrl+D on a selected sticky note wrote
+    // nothing at all — silent, one function below the copy-side fix for
+    // Ctrl+C. The third appearance of the missing-kind defect on this branch.
+    const { result } = renderElements();
+    seedBoardAndSelect(result, ["note-1"]);
+
+    await act(async () => {
+      await result.current.duplicateSelected();
+    });
+
+    expect(pathService.saveTextNote).toHaveBeenCalledTimes(1);
+    const [boardArg, payload] = (pathService.saveTextNote as jest.Mock).mock.calls[0];
+    expect(boardArg).toBe(BOARD);
+    // NOTE_1 sits at (200, 200); DUPLICATE_OFFSET is 16.
+    expect(payload).toMatchObject({
+      content: "a sticky",
+      position: { x: 216, y: 216 },
+      boardId: BOARD,
+      userId: USER,
+    });
+    expect(payload).not.toHaveProperty("id");
+    expect(payload).not.toHaveProperty("createdAt");
+    // And not written as some other kind — the failure a "duplicate it
+    // somehow" fix would produce.
+    expect(savePath).not.toHaveBeenCalled();
+    expect(saveShape).not.toHaveBeenCalled();
+    // The duplicate must actually SUCCEED, not merely reach the service: the
+    // new note becomes the selection, which only happens once `Promise.all`
+    // resolved.
+    expect([...result.current.selection.selectedIds]).toEqual(["new-note"]);
+  });
+
+  it("drops an attached note's anchor on duplicate, so the copy is visibly offset rather than under the original", async () => {
+    // An attached note renders at its ANCHOR's bounds and ignores `position`
+    // (see `TextNote.anchorElementId`). A duplicate that kept the anchor would
+    // land exactly on top of its original and the 16px offset every other kind
+    // gets would be invisible — reproducing "duplicate did nothing" in a
+    // subtler form than the bug above.
+    const { result } = renderElements();
+    seed({
+      shapes: [SHAPE_1],
+      notes: [{ ...NOTE_1, id: "attached-note", anchorElementId: "shape-1" }],
+    });
+    act(() => {
+      result.current.selection.setMany(["attached-note"], "elements");
+    });
+
+    await act(async () => {
+      await result.current.duplicateSelected();
+    });
+
+    const [, payload] = (pathService.saveTextNote as jest.Mock).mock.calls[0];
+    expect(payload).not.toHaveProperty("anchorElementId");
+    expect(payload.position).toEqual({ x: 216, y: 216 });
+  });
+
+  it("still duplicates every other kind through its own save service", async () => {
+    // The positive control for the record-driven restructuring: turning the
+    // hand-written loop sequence into a `Record<BoardElementKind, …>` must not
+    // have dropped a route that used to work.
+    const { result } = renderElements();
+    seedBoardAndSelect(result, ["path-1", "shape-1", "text-1", "image-1", "math-1", "code-1"]);
+
+    await act(async () => {
+      await result.current.duplicateSelected();
+    });
+
+    expect(savePath).toHaveBeenCalledTimes(1);
+    expect(saveShape).toHaveBeenCalledTimes(1);
+    expect(saveTextElement).toHaveBeenCalledTimes(1);
+    expect(saveImage).toHaveBeenCalledTimes(1);
+    expect(saveMathElement).toHaveBeenCalledTimes(1);
+    expect(saveCodeElement).toHaveBeenCalledTimes(1);
+    expect(pathService.saveTextNote).not.toHaveBeenCalled();
+  });
+});

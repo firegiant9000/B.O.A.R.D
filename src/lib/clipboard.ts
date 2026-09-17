@@ -48,8 +48,8 @@ export type ClipItem =
   // all: no clip item, no error, and a paste that wrote no document. The same
   // blind spot as the delete defect, in the other direction.
   //
-  // `anchorElementId` travels with the payload rather than being stripped, and
-  // that is a real decision: a note attached to an element and pasted onto
+  // `anchorElementId` is stripped rather than carried, and that is a real
+  // decision: a note attached to an element and pasted onto
   // ANOTHER board would reference an anchor that does not exist there, and
   // `TextNote.anchorElementId`'s own contract says a render path must OMIT an
   // attached note whose anchor cannot be resolved. So the copy DROPS the
