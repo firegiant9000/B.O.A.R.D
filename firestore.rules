@@ -1378,6 +1378,18 @@ service cloud.firestore {
     // existing ones stay readable.
     // TODO(phase-9-cutover): remove the `workspaceId == null` read tolerance once
     // the migration has stamped every session and the staging soak closes.
+    //
+    // ⚠️ THE READ RULE BELOW IS MIRRORED SERVER-SIDE. Month 6 indexes session
+    // SUMMARIES for board Q&A, and that retrieval path runs on the Admin SDK,
+    // which bypasses this file — so `sessionReadableBy` in
+    // functions/src/callable/askBoard.ts re-derives these four disjuncts by
+    // hand and applies them per candidate. It is NOT enough to be a member of
+    // the session's board: a member of a LEGACY board need be in no workspace
+    // at all, and `isMemberOfWorkspace('')` is false, so board membership and
+    // session readership genuinely diverge. If a disjunct here is narrowed,
+    // narrow it there in the same commit — widening here is safe, narrowing
+    // here alone would leave board Q&A answering from sessions this rule has
+    // started refusing.
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||

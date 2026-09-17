@@ -178,6 +178,16 @@ describe("citationKind", () => {
     expect(citationKind("comment")).toBe("comment");
   });
 
+  it("does not place a session summary — the server never cites one, and a stray one must not be tappable", () => {
+    // Session summaries are indexed and do ground answers (Month 6), but
+    // `askBoard` filters them out of the citation list: a session is not on the
+    // canvas and has nothing to select. If one arrived anyway (a rolled-back
+    // server, a cached response), returning a kind here would hand a session id
+    // to `boxOfElement` and select whatever element happened to share it.
+    expect(citationKind("session")).toBeNull();
+    expect(CANVAS_CITATION_KINDS).not.toContain("session");
+  });
+
   it("returns null for a kind this build can't place", () => {
     // Null means "don't offer this as clickable". Guessing would mean matching
     // the wrong element whenever two kinds happened to share an id.

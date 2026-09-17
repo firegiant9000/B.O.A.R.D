@@ -27,6 +27,7 @@ import {
   handleAskBoard,
   makeAskBoardDeps,
   collectionForElementType,
+  sessionReadableBy,
   qaBucketKey,
   QA_BUCKET,
   BOARD_QA_FEATURE,
@@ -34,6 +35,7 @@ import {
   type AskBoardDeps,
   type AskBoardRequest,
 } from "../callable/askBoard";
+import { SESSION_ELEMENT_TYPE } from "../ai/embeddings";
 import { DEFAULT_BUCKET, consumeToken } from "../ai/rateLimit";
 import { estimateCostUsd, recordAiUsage, checkFeatureQuota } from "../ai/usage";
 import { resolveBoardAccess } from "../lib/board";
@@ -87,8 +89,8 @@ function makeDeps(over: DepsOverrides = {}) {
     consumeToken: jest.fn(async () => over.allowed ?? true),
     checkQuota: jest.fn(async () => over.withinQuota ?? true),
     findNearest: jest.fn(async () => candidates),
-    elementExists: jest.fn(async (_b: string, _t: string, elementId: string) =>
-      liveIds.has(elementId)
+    chunkVisibleTo: jest.fn(
+      async (_uid: string, _b: string, _t: string, elementId: string) => liveIds.has(elementId)
     ),
     embedder: {
       embed: jest.fn(async () => ({
@@ -351,18 +353,22 @@ describe("handleAskBoard — a stale embedding never becomes a citation", () => 
     expect(res.answer).toMatch(/couldn't find anything/i);
   });
 
-  it("names what it cannot see, so a session question isn't a silent dead end", async () => {
+  it("names where the boundary actually is, so a session question isn't a silent dead end", async () => {
     // ROADMAP.md scopes this chat over "board content + session history +
-    // comments"; session history is not indexed (see the callable's header).
-    // Someone who asks about something said in a session and gets a bare
-    // "nothing found" would reasonably conclude the feature is broken, or that
-    // the thing was never discussed.
+    // comments". All three are indexed now, but what is indexed from a session
+    // is its SUMMARY — never the recording or transcript. Someone who asks
+    // about something SAID in a session and gets a bare "nothing found" would
+    // reasonably conclude the feature is broken, or that it was never
+    // discussed.
     const deps = makeDeps({ candidates: [] });
 
     const res = await handleAskBoard(req(), deps, T);
 
     expect(res.answer).toMatch(/session/i);
     expect(res.answer).toMatch(/comment/i);
+    expect(res.answer).toMatch(/summar/i);
+    // And it must not still claim summaries are out of scope.
+    expect(res.answer).not.toMatch(/not session recordings or session summaries/i);
   });
 
   it("still meters the question embedding it already paid for on that path", async () => {
@@ -478,6 +484,108 @@ describe("handleAskBoard — auth, input and access", () => {
     const deps = makeDeps({ isMember: false });
     await expect(handleAskBoard(req(), deps, T)).rejects.toThrow(/not a member/i);
     expect(deps.embedder.embed).not.toHaveBeenCalled();
+  });
+});
+
+// ── session summaries: the readership gate, and why they are not cited ──────
+
+describe("handleAskBoard — session summaries", () => {
+  const SESSION_CHUNK: RetrievedChunk = {
+    elementId: "sess1",
+    elementType: SESSION_ELEMENT_TYPE,
+    text: "We decided to drop the third milestone.",
+  };
+
+  it("drops a session the asker may not read BEFORE it becomes context, not just before it is cited", async () => {
+    // THE correctness question in this feature. The board membership check
+    // above does not imply session readership — a member of a LEGACY board need
+    // be in no workspace at all, while the session's own read rule requires
+    // creator/participant/workspace-member/joinCode. If the two disagree, an
+    // answer written from the summary is a disclosure whether or not a citation
+    // is ever offered, so the drop has to happen before the prompt is built.
+    //
+    // The model is told to cite the session id on purpose: with a fixture that
+    // cited only the note, this would pass whether or not the filter runs.
+    const deps = makeDeps({
+      candidates: [CHUNKS[0], SESSION_CHUNK],
+      liveIds: ["note1"], // the session is NOT visible to this caller
+      answer: "Both [[note1]] and [[sess1]] are relevant.",
+    });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    const sent = (deps.provider.chat as jest.Mock).mock.calls[0][0] as ChatRequest;
+    const prompt = String(sent.messages[sent.messages.length - 1].content);
+    expect(prompt).not.toContain("We decided to drop the third milestone.");
+    expect(prompt).not.toContain("sess1");
+    expect(res.citations.map((c) => c.elementId)).toEqual(["note1"]);
+  });
+
+  it("passes the ASKING uid to the visibility check — a per-caller gate that ignored the caller would be no gate", async () => {
+    const deps = makeDeps({ candidates: [SESSION_CHUNK] });
+
+    await handleAskBoard(req(), deps, T);
+
+    expect(deps.chunkVisibleTo).toHaveBeenCalledWith(
+      "u1",
+      "board-1",
+      SESSION_ELEMENT_TYPE,
+      "sess1"
+    );
+  });
+
+  it("answers from a session the asker MAY read — the gate is readership, not the kind", async () => {
+    // Positive control for the two tests above: identical chunk, visible.
+    const deps = makeDeps({ candidates: [SESSION_CHUNK], answer: "You dropped it [[sess1]]." });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    const sent = (deps.provider.chat as jest.Mock).mock.calls[0][0] as ChatRequest;
+    const prompt = String(sent.messages[sent.messages.length - 1].content);
+    expect(prompt).toContain("We decided to drop the third milestone.");
+    expect(res.answer).toMatch(/dropped it/i);
+  });
+
+  it("never offers a session as a citation, even when it is visible and the model cited it", async () => {
+    // Decided, not overlooked: a session is not on the canvas, so a citation
+    // chip for it has nothing to select. `citationKind` returns null for a kind
+    // the client cannot place and the panel renders "Can't open this element" —
+    // which for a perfectly real citation reads as a bug. See the callable's
+    // own comment for the three options and why this is the chosen one.
+    const deps = makeDeps({
+      candidates: [CHUNKS[0], SESSION_CHUNK],
+      answer: "Both [[note1]] and [[sess1]] are relevant.",
+    });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    expect(res.citations.map((c) => c.elementId)).toEqual(["note1"]);
+    expect(res.citations.some((c) => c.elementType === SESSION_ELEMENT_TYPE)).toBe(false);
+  });
+
+  it("returns a real answer with NO citations when only a session grounded it", async () => {
+    // The honest cost of the decision above, pinned so it is a known outcome
+    // rather than a surprise: there is genuinely nothing on this board to point
+    // at. The client already treats an empty citation list as real.
+    const deps = makeDeps({ candidates: [SESSION_CHUNK], answer: "You dropped it [[sess1]]." });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    expect(res.citations).toEqual([]);
+    expect(res.answer).toMatch(/dropped it/i);
+    expect(deps.provider.chat).toHaveBeenCalled();
+  });
+
+  it("falls back to the no-context answer when the ONLY match was a session the asker cannot read", async () => {
+    // And it must not say anything that distinguishes "nothing exists" from
+    // "nothing you can see" — that would leak the session's existence.
+    const deps = makeDeps({ candidates: [SESSION_CHUNK], liveIds: [] });
+
+    const res = await handleAskBoard(req(), deps, T);
+
+    expect(deps.provider.chat).not.toHaveBeenCalled();
+    expect(res.answer).toMatch(/couldn't find anything/i);
+    expect(res.answer).not.toMatch(/permission|denied|not allowed|access to this session/i);
   });
 });
 
@@ -628,7 +736,7 @@ describe("makeAskBoardDeps — the real path wiring", () => {
     const f = fakeDb({ docs: { "boards/board-1/notes/n1": { content: "hi" } } });
     const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
 
-    await expect(deps.elementExists("board-1", "note", "n1")).resolves.toBe(true);
+    await expect(deps.chunkVisibleTo("u1", "board-1", "note", "n1")).resolves.toBe(true);
     expect(f.docPaths).toEqual(["boards/board-1/notes/n1"]);
   });
 
@@ -636,7 +744,7 @@ describe("makeAskBoardDeps — the real path wiring", () => {
     const f = fakeDb({ docs: { "boards/board-1/comments/c1": { body: "we decided X" } } });
     const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
 
-    await expect(deps.elementExists("board-1", "comment", "c1")).resolves.toBe(true);
+    await expect(deps.chunkVisibleTo("u1", "board-1", "comment", "c1")).resolves.toBe(true);
     expect(f.docPaths).toEqual(["boards/board-1/comments/c1"]);
   });
 
@@ -646,7 +754,7 @@ describe("makeAskBoardDeps — the real path wiring", () => {
     const f = fakeDb({ docs: { "boards/board-1/textElements/t1": { text: "hi" } } });
     const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
 
-    await expect(deps.elementExists("board-1", "textElement", "t1")).resolves.toBe(true);
+    await expect(deps.chunkVisibleTo("u1", "board-1", "textElement", "t1")).resolves.toBe(true);
     expect(f.docPaths).toEqual(["boards/board-1/textElements/t1"]);
   });
 
@@ -654,15 +762,45 @@ describe("makeAskBoardDeps — the real path wiring", () => {
     const f = fakeDb({ docs: {} });
     const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
 
-    await expect(deps.elementExists("board-1", "note", "gone")).resolves.toBe(false);
+    await expect(deps.chunkVisibleTo("u1", "board-1", "note", "gone")).resolves.toBe(false);
   });
 
   it("reads nothing at all for an element type it can't place", async () => {
     const f = fakeDb({ docs: {} });
     const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
 
-    await expect(deps.elementExists("board-1", "audio", "a1")).resolves.toBe(false);
+    await expect(deps.chunkVisibleTo("u1", "board-1", "audio", "a1")).resolves.toBe(false);
     expect(f.docPaths).toEqual([]);
+  });
+
+  it("routes a session chunk to the TOP-LEVEL sessions collection, not under the board", async () => {
+    // A session is not a board subcollection. Resolving it through
+    // ELEMENT_COLLECTIONS would read `boards/board-1/sessions/sess1`, which
+    // never exists — every session chunk would drop and the feature would look
+    // merely broken rather than ungated, which is how it would survive review.
+    const f = fakeDb({ docs: { "sessions/sess1": { createdById: "u1", boardId: "board-1" } } });
+    const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
+
+    await expect(
+      deps.chunkVisibleTo("u1", "board-1", SESSION_ELEMENT_TYPE, "sess1")
+    ).resolves.toBe(true);
+    expect(f.docPaths).toEqual(["sessions/sess1"]);
+    expect(f.docPaths.some((p) => p.startsWith("boards/"))).toBe(false);
+  });
+
+  it("applies the READERSHIP gate to a session chunk, not a bare existence check", async () => {
+    // The session exists and belongs to this board; the asker is simply not
+    // entitled to read it. Board membership was already established by the
+    // handler, so if this returned true on existence alone the whole gate would
+    // be decorative.
+    const f = fakeDb({
+      docs: { "sessions/sess1": { createdById: "someone-else", boardId: "board-1", participantIds: [] } },
+    });
+    const deps = makeAskBoardDeps(f.db, noopProvider, noopEmbedder);
+
+    await expect(
+      deps.chunkVisibleTo("u1", "board-1", SESSION_ELEMENT_TYPE, "sess1")
+    ).resolves.toBe(false);
   });
 
   it("spends a token from the Q&A bucket's config, not the shared default", async () => {
@@ -723,5 +861,105 @@ describe("makeAskBoardDeps — the real path wiring", () => {
     await deps.resolveAccess("board-1", "u1");
 
     expect(resolveBoardAccess).toHaveBeenCalledWith(f.db, "board-1", "u1");
+  });
+});
+
+// ── the session read rule, re-derived server-side ───────────────────────────
+
+describe("sessionReadableBy — mirrors firestore.rules' session read rule", () => {
+  // The Admin SDK bypasses security rules, so this function IS the enforcement
+  // for anything board Q&A surfaces out of a session. Each disjunct of the rule
+  // gets its own test, and each one is written so the OTHER three are false —
+  // otherwise a function that returned `true` unconditionally would pass all
+  // four.
+  const base = { boardId: "board-1", workspaceId: "wsA", participantIds: ["p1"] };
+
+  it("lets the creator read it", async () => {
+    const f = fakeDb({ docs: { "sessions/s1": { ...base, workspaceId: "", participantIds: [], createdById: "u1" } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(true);
+  });
+
+  it("lets a participant read it", async () => {
+    const f = fakeDb({ docs: { "sessions/s1": { ...base, workspaceId: "", createdById: "other", participantIds: ["p1", "u1"] } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(true);
+  });
+
+  it("lets a member of the session's workspace read it", async () => {
+    const f = fakeDb({
+      docs: {
+        "sessions/s1": { ...base, createdById: "other", participantIds: [] },
+        "workspaces/wsA": { members: { u1: "member" } },
+      },
+    });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(true);
+    expect(f.docPaths).toContain("workspaces/wsA");
+  });
+
+  it("lets ANY signed-in caller read a session carrying a joinCode", async () => {
+    // Faithfully mirrored rather than quietly tightened — this disjunct is what
+    // makes join-by-code work, and refusing it here would mean declining to
+    // answer from a summary the asker could read by opening the session.
+    const f = fakeDb({
+      docs: { "sessions/s1": { ...base, workspaceId: "", createdById: "other", participantIds: [], joinCode: "ABC123" } },
+    });
+    await expect(sessionReadableBy(f.db, "stranger", "s1")).resolves.toBe(true);
+  });
+
+  it("refuses a caller who satisfies none of the four disjuncts", async () => {
+    const f = fakeDb({
+      docs: {
+        "sessions/s1": { ...base, createdById: "other", participantIds: ["p1"] },
+        "workspaces/wsA": { members: { someone: "member" } },
+      },
+    });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+  });
+
+  it("refuses on a LEGACY session with no workspace — the divergence this gate exists for", async () => {
+    // `isMemberOfWorkspace` requires a workspace id that is neither null nor
+    // "", so a pre-Phase-4 session is unreadable to anyone but its creator, a
+    // participant or a joinCode holder. A member of the legacy BOARD it belongs
+    // to is none of those — which is exactly why board membership cannot stand
+    // in for session readership. Falling back to the board's workspace here
+    // would grant precisely the access the rules refuse.
+    const f = fakeDb({ docs: { "sessions/s1": { boardId: "board-1", createdById: "other", participantIds: [] } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+    // And it must not go looking for a workspace to fall back to.
+    expect(f.docPaths).toEqual(["sessions/s1"]);
+  });
+
+  it("refuses an empty-string workspaceId the same way as a missing one", async () => {
+    const f = fakeDb({ docs: { "sessions/s1": { ...base, workspaceId: "", createdById: "other", participantIds: [] } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+    expect(f.docPaths).toEqual(["sessions/s1"]);
+  });
+
+  it("refuses a deleted session, so this doubles as the liveness check", async () => {
+    const f = fakeDb({ docs: {} });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+  });
+
+  it("refuses when the session's workspace document is gone", async () => {
+    const f = fakeDb({ docs: { "sessions/s1": { ...base, createdById: "other", participantIds: [] } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+  });
+
+  it("does not treat a workspaceId that is not a string as a workspace", async () => {
+    const f = fakeDb({ docs: { "sessions/s1": { ...base, workspaceId: 42, createdById: "other", participantIds: [] } } });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(false);
+    expect(f.docPaths).toEqual(["sessions/s1"]);
+  });
+
+  it("does not read the workspace at all when a cheaper disjunct already answered", async () => {
+    // Ordered cheapest-first: three checks against the document in hand before
+    // the only extra round trip.
+    const f = fakeDb({
+      docs: {
+        "sessions/s1": { ...base, createdById: "u1" },
+        "workspaces/wsA": { members: {} },
+      },
+    });
+    await expect(sessionReadableBy(f.db, "u1", "s1")).resolves.toBe(true);
+    expect(f.docPaths).toEqual(["sessions/s1"]);
   });
 });
