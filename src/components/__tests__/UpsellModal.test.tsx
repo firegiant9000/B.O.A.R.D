@@ -287,6 +287,26 @@ describe("upsellCopy — board Q&A (Month 6)", () => {
   });
 });
 
+describe("upsellCopy — the workspace cap, the fifth gate to reach this modal", () => {
+  it("is plan-capped on free and uncapped on pro/edu", () => {
+    // Unlike `boardQa`, this row really is UNLIMITED above free — which is why
+    // it needs no `unlockPhrase` branch and why a denial on a paid plan must
+    // fall through to the throttle copy rather than a paywall.
+    expect(isPlanCapped("free", "workspace")).toBe(true);
+    expect(isPlanCapped("pro", "workspace")).toBe(false);
+    expect(isPlanCapped("edu", "workspace")).toBe(false);
+  });
+
+  it("quotes the plan's own workspace number rather than a hardcoded 1", () => {
+    expect(limitMessage("workspace", "free")).toContain(String(limitFor("free", "workspaces")));
+    expect(limitMessage("workspace", "free")).toMatch(/workspaces/i);
+  });
+
+  it("promises unlimited workspaces, which is what pro actually grants", () => {
+    expect(unlockPhrase("workspace")).toMatch(/unlimited workspaces/i);
+  });
+});
+
 describe("UpsellModal.tsx (web, rendered)", () => {
   afterEach(() => {
     jest.clearAllMocks();

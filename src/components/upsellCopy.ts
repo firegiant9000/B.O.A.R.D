@@ -40,8 +40,28 @@ import type { Plan } from "../types";
  * Pro feature-gate (`workspaceService.ts#canUsePresenter`) with no server-side
  * enforcement at all, not a countable quota — ROADMAP.md:615's third named
  * Pro affordance, gated here the same way the other two already were.
+ *
+ * `"workspace"` is the fifth enforced gate, and the last one to reach this
+ * modal — `CreateWorkspaceModal` used to render the callable's raw rejection
+ * string, so the workspace cap was the only gate of the five that never got
+ * the soft-first/hard-second cadence. It IS a real cap with a real mirrored
+ * row (`workspaces`, free: 1) and a real server-side gate
+ * (functions/src/callable/createWorkspace.ts), but it is NOT a
+ * `QuotaResource`: that type is the set of resources `quotaService`'s
+ * advisory pre-flight can check, and a pre-flight needs a workspace id to
+ * check against — which a workspace CREATE does not have. See
+ * `quotaService.ts`'s own note on why there is deliberately no entry for
+ * workspaces there. Like `"boardQa"`, it therefore special-cases in
+ * `isPlanCapped`/`limitMessage` ahead of the `RESOURCE_TO_LIMIT` lookup;
+ * unlike `"boardQa"`, pro/edu really are UNLIMITED, so `unlockPhrase`'s
+ * generic template is a true claim for it and it needs no branch there.
  */
-export type UpsellResource = QuotaResource | "customPalette" | "boardQa" | "presenter";
+export type UpsellResource =
+  | QuotaResource
+  | "customPalette"
+  | "boardQa"
+  | "presenter"
+  | "workspace";
 
 /**
  * How hard this showing of the modal should push — ROADMAP.md:608 (item 14),
@@ -102,12 +122,20 @@ export const RESOURCE_LABEL: Record<UpsellResource, string> = {
   customPalette: "custom colour swatches",
   boardQa: "board questions per month",
   presenter: "presenter mode",
+  workspace: "workspaces",
 };
 
 /** The plan row board Q&A is capped by. Named here rather than inlined at the
  *  three use sites below so the copy and the gate cannot drift onto different
  *  rows — the functions-side callable reads this same key. */
 const BOARD_QA_LIMIT = "boardQaPerPeriod" as const;
+
+/** The plan row the workspace cap is read from, named here for the same reason
+ *  `BOARD_QA_LIMIT` is: neither resource is a `QuotaResource`, so neither can
+ *  go through `RESOURCE_TO_LIMIT`, and inlining the key at each use site would
+ *  let the copy and the gate drift onto different rows. The functions-side cap
+ *  (functions/src/billing/limits.ts) reads the mirror of this same row. */
+const WORKSPACE_LIMIT = "workspaces" as const;
 
 /**
  * Whether `resource` even CAN be a plan-cap denial on `plan`. The four AI
@@ -136,6 +164,11 @@ export function isPlanCapped(plan: Plan, resource: UpsellResource): boolean {
   // changes the copy along with the limit instead of leaving a paywall claim
   // standing for a plan that no longer has a cap.
   if (resource === "boardQa") return limitFor(plan, BOARD_QA_LIMIT) !== UNLIMITED;
+  // Same shape as `boardQa` above — read from the table, not hardcoded — but
+  // the answer differs: `workspaces` is finite on free and UNLIMITED on
+  // pro/edu, so this is the one gate where a denial on a paid plan really
+  // cannot be a plan cap and must fall through to the throttle copy.
+  if (resource === "workspace") return limitFor(plan, WORKSPACE_LIMIT) !== UNLIMITED;
   return limitFor(plan, RESOURCE_TO_LIMIT[resource]) !== UNLIMITED;
 }
 
@@ -152,6 +185,12 @@ export function limitMessage(resource: UpsellResource, plan: Plan): string {
       plan,
       BOARD_QA_LIMIT
     )} ${RESOURCE_LABEL.boardQa}.`;
+  }
+  if (resource === "workspace") {
+    return `You've reached the ${plan} plan's limit of ${limitFor(
+      plan,
+      WORKSPACE_LIMIT
+    )} ${RESOURCE_LABEL.workspace}.`;
   }
   const limit = limitFor(plan, RESOURCE_TO_LIMIT[resource]);
   return `You've reached the ${plan} plan's limit of ${limit} ${RESOURCE_LABEL[resource]}.`;

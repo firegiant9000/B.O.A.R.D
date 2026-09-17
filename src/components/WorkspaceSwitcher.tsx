@@ -19,6 +19,8 @@ import {
 } from "../services/workspaceService";
 import CreateWorkspaceModal from "./CreateWorkspaceModal";
 import InviteMemberModal from "./InviteMemberModal";
+import UpsellModal from "./UpsellModal";
+import { useUpsellCadence } from "../hooks/useUpsellCadence";
 
 /**
  * Phase 3 workspace switcher. Sits in the Boards header as the title. The active
@@ -37,6 +39,15 @@ export default function WorkspaceSwitcher() {
   const [open, setOpen] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
   const [inviteVisible, setInviteVisible] = useState(false);
+
+  // The workspace cap's upsell. Routed through `useUpsellCadence` — not a bare
+  // `useState` — because the cadence is the whole point of the change: this was
+  // the only one of the five enforced gates whose denial never reached
+  // `UpsellModal`, so it was also the only one that gave a user's first
+  // encounter the full sell (ROADMAP.md:608, item 14 requires restraint there).
+  // The board screen is the other caller of this hook; nothing about it is
+  // board-specific, and it takes the uid rather than reading auth itself.
+  const upsell = useUpsellCadence(user?.uid);
 
   const canInvite =
     !!user &&
@@ -165,7 +176,26 @@ export default function WorkspaceSwitcher() {
         onClose={() => setCreateVisible(false)}
         onCreate={handleCreate}
         onCreated={handleCreated}
+        onQuotaDenied={() => {
+          // Close the composer before showing the upsell, the same ordering
+          // `app/(tabs)/index.tsx` uses for the board cap: two stacked RN
+          // `<Modal>`s would leave the user dismissing the sell only to find
+          // the form they were just denied on still open behind it.
+          setCreateVisible(false);
+          upsell.show("workspace");
+        }}
       />
+
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={activeWorkspace?.plan}
+          workspaceId={activeWorkspace?.id}
+          onDismiss={upsell.dismiss}
+        />
+      )}
 
       {activeWorkspace && (
         <InviteMemberModal
