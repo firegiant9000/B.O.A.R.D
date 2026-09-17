@@ -316,6 +316,16 @@ describe("canUseCustomPalette — advisory Pro gate (mirrors canRecordVoiceNotes
     expect(workspaceService.canUseCustomPalette("pro")).toBe(true);
     expect(workspaceService.canUseCustomPalette("edu")).toBe(true);
   });
+
+  // The third Pro affordance to be widened to `Plan | undefined`, for the
+  // reason the other two already carry: `undefined` is "the plan is not known
+  // yet" (workspace unresolved, no workspace at all, or a failed
+  // `getWorkspace`), not "known to be free", and must fail OPEN. Concretely,
+  // coercing it showed a paying workspace the swatch row's "Pro" badge and
+  // routed a tap on it into the upsell for the whole board session.
+  it("is true for an unknown plan (undefined) — fails open, unlike the free plan", () => {
+    expect(workspaceService.canUseCustomPalette(undefined)).toBe(true);
+  });
 });
 
 // Fix Wave F2 — mirrors the sibling test above exactly (same shape as

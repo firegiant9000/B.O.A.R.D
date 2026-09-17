@@ -4,8 +4,8 @@ import {
   normalizeLookupEmail,
 } from "../callable/lookupUserByEmail";
 
-function reqFor(uid: string | undefined, data: unknown) {
-  return { auth: uid ? { uid } : undefined, data } as never;
+function reqFor(uid: string | undefined, data: unknown, token?: Record<string, unknown>) {
+  return { auth: uid ? { uid, token } : undefined, data } as never;
 }
 
 // The directory is modelled as the raw documents Firestore would hand back:
@@ -49,6 +49,38 @@ describe("handleLookupUserByEmail", () => {
       handleLookupUserByEmail(reqFor(undefined, { email: "a@x.z" }), d)
     ).rejects.toMatchObject({ code: "unauthenticated" });
     expect(d.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it("refuses an embed identity with permission-denied, without reading the directory", async () => {
+    // An embed identity passes the `req.auth` check: `exchangeEmbedToken`
+    // mints a real Firebase Auth custom token for the bearer of a PUBLIC
+    // read-only embed link, and both of its claim branches set `embed: true`.
+    // Without this refusal the holder of such a link could probe arbitrary
+    // addresses and get `{uid, displayName, email}` for every hit — the exact
+    // capability the /users `allow list: if false` rule took away from that
+    // population. The uid shape is `embed:${boardId}` for the anonymous
+    // branch; the claim, not the uid, is what is checked.
+    const d = deps({ u1: { email: "a@x.z", displayName: "Ada" } });
+    await expect(
+      handleLookupUserByEmail(
+        reqFor("embed:board-1", { email: "a@x.z" }, { embed: true, embedBoardId: "board-1" }),
+        d
+      )
+    ).rejects.toMatchObject({ code: "permission-denied" });
+    expect(d.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it("positive control — an ordinary signed-in caller with no embed claim still resolves", async () => {
+    // The refusal above must bite ONLY embed identities. Without this control
+    // a mistake that refused every caller would leave the test above green
+    // while invite-by-email and friend search were dead for everyone.
+    const d = deps({ u1: { email: "a@x.z", displayName: "Ada" } });
+    const res = await handleLookupUserByEmail(
+      reqFor("real-account", { email: "a@x.z" }, { email_verified: true }),
+      d
+    );
+    expect(res).toEqual({ uid: "u1", displayName: "Ada", email: "a@x.z" });
+    expect(d.findByEmail).toHaveBeenCalledWith("a@x.z");
   });
 
   it("rejects a missing email with invalid-argument", async () => {

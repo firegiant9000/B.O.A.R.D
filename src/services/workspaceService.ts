@@ -262,7 +262,21 @@ export async function removeWorkspaceSwatch(workspaceId: string, hex: string): P
 // callable). That is tracked separately (owned by a later task that already
 // touches firestore.rules) — do not add a plan predicate to firestore.rules
 // here, and do not treat this function as enforcement anywhere it's called.
-export function canUseCustomPalette(plan: Plan): boolean {
+//
+// `plan` is `Plan | undefined`, and THE NARROW TYPE IS THE TRAP — the same
+// correction `audioService.ts#canRecordVoiceNotes` and `canUsePresenter`
+// below already carry, arrived at the same way. `undefined` means the caller
+// does not yet KNOW the plan (the board's workspace hasn't resolved, the
+// board has no workspace at all, or the `getWorkspace` fetch failed — see
+// `useBoardDocument.ts`'s `boardWorkspace` comment), which is a different
+// fact from "known to be on the free plan". Declaring the parameter as bare
+// `Plan` does not prevent that case; it only forces every call site to write
+// `?? "free"` to satisfy `tsc`, which converts "unknown" into "free" at the
+// boundary and hands a paying customer the locked affordance. `plan !==
+// "free"` already fails open on `undefined`, so widening the signature is the
+// whole fix. Do not collapse the unknown case to `"free"` at any call site —
+// that reintroduces the regression this fixes.
+export function canUseCustomPalette(plan: Plan | undefined): boolean {
   return plan !== "free";
 }
 

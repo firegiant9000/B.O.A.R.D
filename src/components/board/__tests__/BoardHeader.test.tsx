@@ -304,26 +304,29 @@ describe("board Q&A is reachable from the board screen", () => {
     );
   });
 
-  it("leaves the custom-palette plan read on \"?? free\" unchanged (C1 confinement)", () => {
-    // ONE read still coerces, and this pins that it is deliberate rather
-    // than missed. It is ColorPickerModal's `plan` prop, and it is genuinely
-    // unlike the two above: the affordance it feeds is
-    // `canAddSwatch = canUseSwatches && canManageWorkspace && !atSwatchCap`
-    // (ColorPickerModal.tsx), and `canManageWorkspace` is computed on this
-    // same screen from `doc.boardWorkspace ? getWorkspaceRole(...) :
-    // undefined` → `canManageMembers(undefined)` → `false`. So while the
-    // workspace is unresolved the add-swatch button is already disabled by
-    // the ROLE gate, whatever the plan says — the coercion cannot withdraw a
-    // working feature the way the presenter and voice-note ones did.
+  it("passes the custom-palette plan without the \"?? free\" fallback either, so no plan read on this screen coerces", () => {
+    // This test used to pin the OPPOSITE — that this one read kept its
+    // `?? "free"` — and justified it by claiming the only consequence was a
+    // wrong accessibility label on a control the ROLE gate had already
+    // disabled. That justification was incomplete, and re-reading
+    // ColorPickerModal.tsx is what showed it:
     //
-    // What it DOES change is the disabled button's accessibility label:
-    // `!canUseSwatches` wins the ternary, so a Pro admin mid-fetch is told
-    // "Custom swatches are a Pro feature" rather than "Only a workspace
-    // owner or admin can add swatches". A wrong REASON on an
-    // already-disabled control, not a lost capability — which is why it is
-    // out of scope here rather than fine. Do not raise the count back to 2
-    // to "match" the others; the other two are fixed.
-    expect(screen.match(/plan=\{doc\.boardWorkspace\?\.plan \?\? "free"\}/g)).toHaveLength(1);
+    //  - `canUseSwatches` alone (NOT `canAddSwatch`) renders the "Pro" badge
+    //    in the swatch section header. `canManageWorkspace` is nowhere in
+    //    that condition, so the role gate does not hide it. A Pro workspace
+    //    whose `getWorkspace` fetch failed showed a "Pro" upsell badge for a
+    //    feature it pays for, for the whole board session.
+    //  - `handleAddSwatch` branches on `canUseSwatches` FIRST and calls
+    //    `onUpgradeRequested()`, so tapping either the badge or the add
+    //    button routed a paying admin into the upsell modal.
+    //
+    // So it was a lost affordance plus an unwanted sell, not a wrong label.
+    // `canUseCustomPalette` is now `Plan | undefined` like its two siblings
+    // and fails open on the unknown case; the screen passes the plan
+    // verbatim. Inverted rather than deleted so the branch keeps a guard at
+    // this seam.
+    expect(screen).toMatch(/plan=\{doc\.boardWorkspace\?\.plan\}\s*\n\s*canManageWorkspace=/);
+    expect(screen.match(/plan=\{doc\.boardWorkspace\?\.plan \?\? "free"\}/g)).toBeNull();
   });
 
   it("passes the panel's visibility and citation wiring from the screen", () => {

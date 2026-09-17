@@ -60,6 +60,17 @@ import {
 // set it back to `false` and re-claim the grant every month, turning a one-time
 // allowance into an unlimited one — a worse leak than the tax it fixes. Do not
 // relax this branch and that rule in isolation.
+//
+// DEPLOY ORDER FOR THIS PAIR — RULES FIRST (or simultaneously), which is the
+// OPPOSITE of the "deploy `functions` first" instruction at the top of
+// firestore.rules. That instruction is about the create/lookup callables,
+// whose rules deny a client path before its replacement exists; this pair
+// fails the other way. Until the pin ships, the live ruleset leaves
+// `welcomeSessionGrantUsed` client-writable (it pins only `plan`), so this
+// branch going live first lets an owner clear the marker and take the grant
+// again and again. Shipping the pin first is inert: the pre-grant
+// `createSession` never touches the marker. firestore.rules' banner states
+// the same order; keep the two in agreement if either changes.
 
 export interface CreateSessionRequest {
   workspaceId: string;
