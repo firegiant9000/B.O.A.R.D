@@ -109,8 +109,9 @@ export interface UpsellModalProps {
   /** How hard to push (see `UpsellVariant`). Defaults to `"hard"` — the body
    *  that shipped before the cadence existed — so a caller that has not opted
    *  in keeps exactly its current behaviour rather than silently losing it.
-   *  The one production caller (app/board/[id].tsx, via useUpsellCadence)
-   *  always supplies it. */
+   *  Every production caller now supplies it, all of them from
+   *  `useUpsellCadence`; see `UpsellModal.tsx`'s own note on what the default
+   *  is therefore still for. */
   variant?: UpsellVariant;
 }
 

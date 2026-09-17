@@ -2,12 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { UpsellResource, UpsellVariant } from "../components/upsellCopy";
 import { recordUpsellAttempt } from "../services/upsellCadence";
 
-// Owns the plan-limit modal's visibility AND how hard it pushes, for the board
-// screen's six gate hits (two AI-call bridges, presenter, session, custom
-// palette, board Q&A). Before this existed, each of those called
-// `setUpsellResource(...)` directly and every one of them got the full sell,
-// including a user's very first encounter with the gate — ROADMAP.md:608
-// (item 14) requires restraint on that first contact.
+// Owns the plan-limit modal's visibility AND how hard it pushes, for every
+// gate hit in the app. Six of those are on the board screen (two AI-call
+// bridges, presenter, session, custom palette, board Q&A); the rest are on
+// five other surfaces — the workspace cap in `WorkspaceSwitcher`, the board
+// cap on the dashboard, AI summary on the schedule tab and on the session
+// recap screen, and the session cap on session create. Before this existed,
+// each of those set its own `useState` directly and every one of them got the
+// full sell, including a user's very first encounter with the gate —
+// ROADMAP.md:608 (item 14) requires restraint on that first contact.
+//
+// There is no longer a production `UpsellModal` renderer that does NOT go
+// through this hook. That is the property to preserve: a new gate that reaches
+// for a bare boolean silently reintroduces the defect this exists to fix, and
+// `upsellCadenceWiring.test.ts` is what notices.
 //
 // WHY THE CALL SITES GO THROUGH A HOOK RATHER THAN THE MODAL READING STORAGE
 // ITSELF. The attempt count is an async read, and the modal mounts
@@ -40,8 +48,8 @@ export interface UpsellCadenceState {
    *  out of turn gets the restrained answer. */
   variant: UpsellVariant;
   /** Record one encounter with `resource`'s gate and show the modal for it.
-   *  Deliberately returns void, not a promise: the six call sites are event
-   *  handlers on a denial path with nothing to await it. */
+   *  Deliberately returns void, not a promise: every call site is an event
+   *  handler on a denial path with nothing to await it. */
   show: (resource: UpsellResource) => void;
   /** Hide the modal. Clears the variant with it, so the next `show` can never
    *  be rendered against the previous gate's resolved push. */
@@ -70,9 +78,10 @@ export function useUpsellCadence(uid: string | undefined): UpsellCadenceState {
   // the invariant structural instead of incidental.
   const [state, setState] = useState<CadenceState>(HIDDEN);
 
-  // The board screen can be navigated away from between a gate hit and the
-  // stored count coming back (a user who was denied a board and immediately
-  // went back). React 18+ no longer warns about a set-state on an unmounted
+  // Any of the screens that call this can be navigated away from between a
+  // gate hit and the stored count coming back (a user who was denied a board
+  // and immediately went back; a session-create screen dismissed on the
+  // denial). React 18+ no longer warns about a set-state on an unmounted
   // component, so this is not about silencing a warning — it is about not
   // resurrecting a modal onto a screen that is gone.
   const mounted = useRef(true);

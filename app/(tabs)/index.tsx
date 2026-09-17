@@ -45,6 +45,7 @@ import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
 import UpsellModal from "../../src/components/UpsellModal";
 import OnboardingTutorial from "../../src/components/onboarding/OnboardingTutorial";
 import { useOnboardingTutorial } from "../../src/components/onboarding/useOnboardingTutorial";
+import { useUpsellCadence } from "../../src/hooks/useUpsellCadence";
 
 // Phase 10 — the workspace dashboard. Replaces the bare boards list as the default
 // tab landing: pinned boards + upcoming sessions above the fold, then recent boards,
@@ -108,7 +109,15 @@ export default function DashboardScreen() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   // The board-create plan-limit upsell. Shown instead of a generic error
   // when createBoard is denied for being over the board cap.
-  const [upsellVisible, setUpsellVisible] = useState(false);
+  //
+  // Through `useUpsellCadence` rather than a bare `useState`: ROADMAP.md:608
+  // (item 14) asks for restraint on a user's FIRST encounter with a gate, and
+  // a plain boolean gave every encounter the full sell. The hook owns both the
+  // visibility and the variant, resolving them in one state commit so no frame
+  // renders the hard body before the stored attempt count has arrived — see
+  // its own header. Keyed on `user?.uid` (never a shared bucket) so a second
+  // student on the same tablet does not inherit the first one's count.
+  const upsell = useUpsellCadence(user?.uid);
 
   const fetchBoards = useCallback(async () => {
     if (!user || !activeWorkspaceId) return;
@@ -317,7 +326,7 @@ export default function DashboardScreen() {
       // (network, permission, ...) keeps the plain alert.
       if (isQuotaDenial(error)) {
         setCreateModalVisible(false);
-        setUpsellVisible(true);
+        upsell.show("board");
       } else {
         showAlert("Error", error.message ?? "Failed to create board.");
       }
@@ -334,7 +343,7 @@ export default function DashboardScreen() {
 
   const handleTemplateQuotaDenied = () => {
     setTemplateGalleryVisible(false);
-    setUpsellVisible(true);
+    upsell.show("board");
   };
 
   const handleDeleteBoard = (board: Board) => {
@@ -391,13 +400,16 @@ export default function DashboardScreen() {
         onJoined={handleJoined}
       />
 
-      <UpsellModal
-        visible={upsellVisible}
-        resource="board"
-        plan={activeWorkspace?.plan}
-        workspaceId={activeWorkspaceId ?? undefined}
-        onDismiss={() => setUpsellVisible(false)}
-      />
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={activeWorkspace?.plan}
+          workspaceId={activeWorkspaceId ?? undefined}
+          onDismiss={upsell.dismiss}
+        />
+      )}
 
       <TemplateGalleryModal
         visible={templateGalleryVisible}
