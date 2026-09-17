@@ -103,12 +103,29 @@ describe("code elements — the tokenizer stays out of the modules that never to
   });
 
   it("positive control — the walker crosses first-party files, not just the entry", () => {
-    // `codeService.ts` imports firebase/firestore only via its own first line,
-    // but `useBoardElements.ts` reaches react-native through several hops.
-    // Seeing a dependency that only exists deeper in the graph proves the walk
-    // is transitive rather than one level deep.
-    expect(externalDepsFrom("src/services/codeService.ts")).toContain("firebase/firestore");
-    expect(externalDepsFrom("src/components/board/CodeComposer.tsx").size).toBeGreaterThan(1);
+    // WHAT THIS HAS TO PROVE, and what the previous version of it did not.
+    // The main guard above ("`useBoardElements.ts` reaches no shiki") is only
+    // meaningful if the walk is transitive: a one-level-deep walker would
+    // report every entry clean and nothing would notice. This test used to
+    // assert that `codeService.ts` reaches `firebase/firestore` and that
+    // `CodeComposer.tsx` has more than one external dep — but `codeService`
+    // imports `firebase/firestore` on its own first line and `CodeComposer`
+    // imports `react` and `react-native` directly, so BOTH assertions passed
+    // under a one-level-deep walker. The walk was transitive; the control was
+    // worthless.
+    //
+    // `rbush` is the probe instead. `useBoardElements.ts` does not import it;
+    // `src/lib/spatialIndex.ts` (which it does import) does. So this dependency
+    // is reachable ONLY through a hop, and a walker that stopped at the entry's
+    // own import list could not see it.
+    const deep = externalDepsFrom("src/hooks/useBoardElements.ts");
+    expect(deep).toContain("rbush");
+    // The premise, asserted rather than assumed: if a later edit added a direct
+    // `rbush` import to `useBoardElements.ts`, the probe above would start
+    // passing for the wrong reason and this suite would go quiet about the one
+    // property it exists to check.
+    const entrySource = fs.readFileSync(path.resolve(ROOT, "src/hooks/useBoardElements.ts"), "utf8");
+    expect(specifiersIn(entrySource)).not.toContain("rbush");
   });
 
   it("codeLayout imports nothing but a type, which is what makes it a leaf", () => {

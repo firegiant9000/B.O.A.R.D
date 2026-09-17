@@ -75,7 +75,15 @@ describe("CreateWorkspaceModal — over-cap routing", () => {
     expect(screen.queryByText(/Upgrade for more/i)).toBeNull();
   });
 
-  it("routes the client pre-flight's QuotaExceededError the same way (it carries no code)", async () => {
+  it("routes a QuotaExceededError the same way (it carries no code) — defence in depth, not a live path", async () => {
+    // Deliberately a "board" error in a workspace modal, and that mismatch is
+    // the honest part: `quotaService.ts` states that there is NO
+    // `QuotaResource` entry for workspaces, so no pre-flight can throw a
+    // workspace one and this exact object cannot arise here. What is pinned is
+    // that the component branches on `isQuotaDenial` — the function every
+    // create site is supposed to call — rather than on the narrower
+    // `isResourceExhausted`, so it needs no revisiting if workspaces ever do
+    // get a pre-flight. See `CreateWorkspaceModal.tsx`'s own note.
     const props = renderModal({
       onCreate: jest.fn(async () => {
         throw new QuotaExceededError("board", "ws-1");

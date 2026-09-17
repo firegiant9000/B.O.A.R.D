@@ -298,7 +298,19 @@ describe("upsellCopy — the workspace cap, the fifth gate to reach this modal",
   });
 
   it("quotes the plan's own workspace number rather than a hardcoded 1", () => {
-    expect(limitMessage("workspace", "free")).toContain(String(limitFor("free", "workspaces")));
+    // The free row's value IS 1, so asserting only against `free` proves
+    // nothing: a `limitMessage` that hardcoded "1" would pass it. The name
+    // claimed a property the assertion could not falsify. Driving it across
+    // every plan fixes that — pro/edu read UNLIMITED from the same table, so a
+    // hardcoded number is wrong for them and the test fails.
+    for (const plan of ["free", "pro", "edu"] as const) {
+      expect(limitMessage("workspace", plan)).toContain(String(limitFor(plan, "workspaces")));
+    }
+    // And the two really do differ, so the loop above is not three copies of
+    // one comparison. (`limitMessage` on a paid plan is only meaningful when
+    // `isPlanCapped` — it is exercised here as the pure table-reading function
+    // it is, not as copy anyone will see.)
+    expect(limitMessage("workspace", "free")).not.toEqual(limitMessage("workspace", "pro"));
     expect(limitMessage("workspace", "free")).toMatch(/workspaces/i);
   });
 

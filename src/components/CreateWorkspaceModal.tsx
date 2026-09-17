@@ -72,11 +72,20 @@ export default function CreateWorkspaceModal({
       onCreated(id);
     } catch (err: any) {
       // `isQuotaDenial` rather than a string match on the message: the cap is
-      // enforced in `createWorkspace`, which rejects with `resource-exhausted`
-      // (it also covers the client pre-flight's `QuotaExceededError`, which
-      // carries no code). Matching on the copy would break the moment that
-      // sentence is reworded, and it is a sentence the caller is about to stop
-      // showing anyway. Everything else still surfaces inline here.
+      // enforced in `createWorkspace`, which rejects with `resource-exhausted`.
+      // Matching on the copy would break the moment that sentence is reworded,
+      // and it is a sentence the caller is about to stop showing anyway.
+      // Everything else still surfaces inline here.
+      //
+      // `isQuotaDenial` also matches the client pre-flight's
+      // `QuotaExceededError`, and that half is DEFENCE IN DEPTH rather than a
+      // live path: `quotaService.ts` deliberately has no `QuotaResource` entry
+      // for workspaces (a pre-flight needs a workspace id to check against, and
+      // a workspace create has none), so nothing in this flow can throw one
+      // today. It is used anyway because `isQuotaDenial` is the function every
+      // create site is supposed to call — reaching for the narrower
+      // `isResourceExhausted` here would make this the one site that has to be
+      // revisited if workspaces ever do get a pre-flight.
       if (isQuotaDenial(err)) {
         reset();
         onQuotaDenied();
