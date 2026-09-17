@@ -23,11 +23,12 @@ import type { UpsellResource, UpsellVariant } from "../components/upsellCopy";
 // than on the user's Firestore document because it is cosmetic. A Firestore
 // read plus a write on every gate hit would buy cross-device consistency for a
 // decision about tone, at the cost of billable operations and a network round
-// trip on a path the user is already annoyed to be on. The honest costs of
-// that choice, both of which are accepted rather than unnoticed:
-//
-//   1. A user on two devices gets the soft notice once on each, so their
-//      genuine second encounter with a gate is presented as their first.
+// trip on a path the user is already annoyed to be on. The honest cost of that
+// choice, accepted rather than unnoticed: a user on two devices gets the soft
+// notice once on each, so their genuine second encounter with a gate is
+// presented as their first. That is the only one; the shared-device cost this
+// paragraph used to list beside it is no longer a cost, because the key is
+// scoped by uid — see the next paragraph.
 //
 // PER-DEVICE, BUT STILL PER-UID. "Device-local" does not mean "shared by
 // everyone who uses the device". This key is scoped by uid for the same reason
