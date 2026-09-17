@@ -101,6 +101,20 @@ const codeItem: ClipItem = {
   },
 };
 
+// Month 6 — sticky notes. Note the SHAPE: `position`, like a text element, not
+// the `x`/`y` every other kind here carries. That is why it needs a case of its
+// own in `offsetClipItem` rather than joining the x/y group, and it is the
+// thing a "just add note to the list" fix would get wrong.
+const noteItem: ClipItem = {
+  kind: "note",
+  data: {
+    content: "a sticky",
+    position: { x: 20, y: 30 },
+    color: "yellow",
+    size: 14,
+  },
+};
+
 describe("clipboard store", () => {
   beforeEach(() => clearClipboard());
 
@@ -175,6 +189,20 @@ describe("offsetClipItem", () => {
     if (out.kind === "text") {
       expect(out.data.position).toEqual({ x: 36, y: 46 });
     }
+  });
+
+  it("offsets a sticky note's position, not an x/y it does not have", () => {
+    const out = offsetClipItem(noteItem, 16);
+    expect(out.kind).toBe("note");
+    if (out.kind === "note") {
+      expect(out.data.position).toEqual({ x: 36, y: 46 });
+      // The polish fields travel with it — a pasted note must not silently
+      // revert to the default colour/size.
+      expect(out.data.color).toBe("yellow");
+      expect(out.data.size).toBe(14);
+    }
+    // original untouched
+    expect(noteItem.data.position).toEqual({ x: 20, y: 30 });
   });
 
   it("offsets an image's top-left and preserves storage refs", () => {

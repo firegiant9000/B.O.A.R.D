@@ -1,5 +1,5 @@
 import { Point } from "./viewport";
-import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
+import { ArrowheadStyle, AudioElement, BoardElementKind, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
 import { renderParamsFor, calligraphyWidthRange } from "./penStyles";
 import { calligraphyPathD } from "./calligraphy";
 import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
@@ -102,6 +102,20 @@ export type SvgExportElement =
   | { kind: "audio"; data: AudioElement }
   | { kind: "math"; data: MathElement }
   | { kind: "code"; data: CodeElement };
+
+/** Compile-time roll-call against `BoardElementKind` (src/types), and the only
+ *  thing standing between "someone added an element kind" and an export that
+ *  silently omits it. `nodeFor`'s `default` branch SKIPS a kind it was never
+ *  taught — correct for a non-visual kind, invisible data loss for a visual
+ *  one, and nothing at runtime would fail either way. This alias resolves only
+ *  while every member of that union has a case above; a new kind there makes
+ *  `tsc` reject this file until it gets one. Type-only, so it costs nothing at
+ *  runtime and cannot be "cleaned up" as an unused binding. */
+type AssertCovered<Covered extends Cases, Cases> = Covered;
+export type SvgExportCoversEveryBoardKind = AssertCovered<
+  BoardElementKind,
+  SvgExportElement["kind"]
+>;
 
 /** The board's per-kind element arrays — exactly `useBoardElements`'s own
  *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/

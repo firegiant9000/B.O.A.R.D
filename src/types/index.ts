@@ -1013,3 +1013,36 @@ export interface CodeElement {
   z?: number;
   createdAt: Date;
 }
+
+// ── the board's element-kind roll-call ──────────────────────────────────────
+//
+// Every kind of thing that can exist on a board, as one union. This is not
+// documentation: two places key an EXHAUSTIVE structure off it, so adding a
+// member here is what makes `tsc` refuse to build until the new kind has been
+// thought about in both.
+//
+//  1. `useBoardElements.ts#deleteSelected` builds a
+//     `Record<BoardElementKind, DeleteRoute>`. A kind added here with no route
+//     there fails to compile. That check exists because the delete path used to
+//     classify by subtraction — "whatever is left over is a stroke" — and
+//     nothing enforced that a new kind got subtracted. Sticky notes were missed
+//     that way and were silently undeletable; math and code only escaped it
+//     because someone remembered. Do not reintroduce a leftover rule.
+//  2. `lib/svgExport.ts`'s `SvgExportElement` must gain a matching case, tied
+//     to this union by a type-level assertion in that file. Its serializer
+//     SKIPS an unknown kind silently, which is right for a non-visual kind and
+//     invisible data loss for a visual one — so the assertion is what turns
+//     "someone forgot" into a build failure instead of an empty export.
+//
+// A kind that genuinely needs no handling in one of those is still declared
+// there explicitly, with the reason (see `audio`, which is anchored to another
+// element and cascaded rather than selected or drawn).
+export type BoardElementKind =
+  | "path"
+  | "shape"
+  | "text"
+  | "note"
+  | "image"
+  | "audio"
+  | "math"
+  | "code";

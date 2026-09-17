@@ -1,8 +1,14 @@
 /**
- * Characterisation harness for `useBoardElements` (3,109 lines, previously
- * untested). It documents what the hook does TODAY — it is not a spec, and one
- * test below deliberately pins behaviour that looks like a defect (see
- * "SUSPECTED DEFECT").
+ * Characterisation harness for `useBoardElements` (previously untested). It
+ * documents what the hook does TODAY.
+ *
+ * It began as pure characterisation, including one test that pinned a
+ * suspected defect as current behaviour — `copySelected` silently copying
+ * nothing for a sticky note. That defect and its five delete-side siblings are
+ * fixed, so the suite is now part characterisation and part regression guard:
+ * the tests marked REGRESSION assert corrected behaviour and were each
+ * verified red against the code they replaced. Nothing here pins a known
+ * defect any more; if a test looks like it is documenting one, it is stale.
  *
  * Follows `useBoardCollab.test.ts`: `jest.mock` each service namespace at the
  * top, `renderHook`/`act` from `@testing-library/react-native`, stable
@@ -82,7 +88,7 @@ jest.mock("../../services/mathService", () => ({
   batchUpdateMathElements: jest.fn().mockResolvedValue(undefined),
   batchDeleteMathElements: jest.fn().mockResolvedValue(undefined),
   clearBoardMathElements: jest.fn().mockResolvedValue(undefined),
-  // NOT stubs. `useBoardElements.ts:235-240` captures `mathBoxOf` into a
+  // NOT stubs. `useBoardElements.ts:239-243` captures `mathBoxOf` into a
   // module-scope const at import time and calls `mathElementBbox` from its own
   // `mathBox` helper, so a `jest.fn()` here would be `undefined` at call time.
   // Both are reproduced verbatim from `src/services/mathService.ts` (pure
@@ -121,7 +127,7 @@ jest.mock("../../services/codeService", () => ({
   batchDeleteCodeElements: jest.fn().mockResolvedValue(undefined),
   clearBoardCodeElements: jest.fn().mockResolvedValue(undefined),
   // Real bodies, for exactly the reason mathBoxOf/mathElementBbox above have
-  // them (see src/services/codeService.ts:51 / :284).
+  // them (see src/services/codeService.ts:55 / :288).
   codeBoxOf: (el: { x: number; y: number; width: number; height: number }) => ({
     minX: el.x,
     minY: el.y,
@@ -356,6 +362,30 @@ const NOTE_1: TextNote = {
 /** Ids of the five elements whose boxes union to { 0, 0, 100, 100 }. */
 const RESIZE_SELECTION = ["path-1", "shape-1", "text-1", "math-1", "code-1"];
 
+// ── blocked-author fixtures ─────────────────────────────────────────────
+// One element per citable kind, authored by a user this client has blocked.
+// They are absent from every `visible*` memo (and so from the `visible*Ref`
+// mirrors the delete path used to classify against) while still being present
+// in the raw state the subscriptions deliver.
+//
+// This is reachable rather than theoretical: `boardQaService` does no
+// blocked-author filtering of any kind (grep it — zero hits for "blocked"),
+// and its `CANVAS_CITATION_KINDS` is ["path", "shape", "text", "image",
+// "note"], so board Q&A can cite a blocked author's shape, text element or
+// image and tapping the citation selects it. `math` and `code` are not citable
+// today; they sat on the same broken line and are covered here too so they
+// cannot become a live defect the day they are.
+const BLOCKED_AUTHOR = "blocked-user";
+const BLOCKED_IDS = [BLOCKED_AUTHOR];
+
+const BLOCKED_SHAPE: ShapeElement = { ...SHAPE_1, id: "blocked-shape", userId: BLOCKED_AUTHOR };
+const BLOCKED_TEXT: TextElement = { ...TEXT_1, id: "blocked-text", userId: BLOCKED_AUTHOR };
+const BLOCKED_IMAGE: ImageElement = { ...IMAGE_1, id: "blocked-image", userId: BLOCKED_AUTHOR };
+const BLOCKED_MATH: MathElement = { ...MATH_1, id: "blocked-math", userId: BLOCKED_AUTHOR };
+const BLOCKED_CODE: CodeElement = { ...CODE_1, id: "blocked-code", userId: BLOCKED_AUTHOR };
+const BLOCKED_PATH: DrawPath = { ...PATH_1, id: "blocked-path", userId: BLOCKED_AUTHOR };
+const BLOCKED_NOTE: TextNote = { ...NOTE_1, id: "blocked-note", userId: BLOCKED_AUTHOR };
+
 // ────────── HARNESS ─────────────────────────────────────────────────────
 
 /** The `(incoming) => void` callback a mocked subscription most recently registered. */
@@ -399,7 +429,7 @@ interface Seed {
 /**
  * Push one realistic snapshot per collection through the captured subscription
  * callbacks. `canvasReady` only flips on the PATHS listener (see
- * `useBoardElements.ts:711-719`), so the paths callback always fires — with an
+ * `useBoardElements.ts:748-760`), so the paths callback always fires — with an
  * empty array when the seed has no strokes — or the harness could only ever
  * exercise the loading state.
  */
@@ -433,6 +463,31 @@ function seedBoardAndSelect(
   act(() => {
     result.current.selection.setMany(ids, "elements");
   });
+}
+
+/** The ordinary board plus one blocked-author element of every kind. Nothing is
+ *  selected: the delete tests below pass ids directly, exactly as the screen's
+ *  `handleDeleteSelected` does after a Q&A citation tap. */
+function seedWithBlockedAuthorContent(result: {
+  current: ReturnType<typeof useBoardElements>;
+}) {
+  seed({
+    paths: [PATH_1, BLOCKED_PATH],
+    shapes: [SHAPE_1, SHAPE_2, BLOCKED_SHAPE],
+    texts: [TEXT_1, BLOCKED_TEXT],
+    images: [IMAGE_1, BLOCKED_IMAGE],
+    math: [MATH_1, BLOCKED_MATH],
+    code: [CODE_1, BLOCKED_CODE],
+    notes: [NOTE_1, BLOCKED_NOTE],
+  });
+  // Guard: if the blocked content were not actually being filtered out of the
+  // visible layers, every assertion below would pass for the wrong reason —
+  // the old classification would have found these elements too.
+  expect(result.current.visible.shapes.map((s) => s.id)).not.toContain("blocked-shape");
+  expect(result.current.visible.texts.map((t) => t.id)).not.toContain("blocked-text");
+  expect(result.current.visible.images.map((i) => i.id)).not.toContain("blocked-image");
+  // …and present in the raw arrays, so the delete path has something to find.
+  expect(result.current.shapes.map((s) => s.id)).toContain("blocked-shape");
 }
 
 /** Drive one complete resize drag: grab `handle`, move by (dx, dy), release. */
@@ -500,6 +555,7 @@ beforeEach(() => {
   saveImage.mockImplementation(async () => "new-image");
   saveMathElement.mockImplementation(async () => "new-math");
   saveCodeElement.mockImplementation(async () => "new-code");
+  (pathService.saveTextNote as jest.Mock).mockImplementation(async () => "new-note");
 });
 
 // ────────── HARNESS SANITY ──────────────────────────────────────────────
@@ -792,6 +848,68 @@ describe("useBoardElements — deleteSelected id routing", () => {
     expect(everyId).not.toContain("image-1");
   });
 
+  /**
+   * REGRESSION — the sticky-note delete defect had five siblings.
+   *
+   * `8eae3b3` fixed notes two ways: it subtracted `noteIds` from the
+   * leftover-is-a-stroke filter AND classified notes from the UNFILTERED
+   * `notesRef`. Only the first half was applied to the kinds already present —
+   * shapes, text, images, math and code all classified from the
+   * blocked-user-filtered `visible*Ref` mirrors.
+   *
+   * Traced end to end: a blocked author's shape is absent from
+   * `visibleShapesRef`, so its id never reached `shapeIds`; it fell through to
+   * the leftover bucket and was issued against `paths`, where no such document
+   * exists — a silent no-op. Meanwhile `setShapes` filtered local state by the
+   * UNFILTERED id set, so it vanished from this client anyway. The document
+   * survived in Firestore and came back the moment its author was unblocked.
+   */
+  it.each([
+    ["shape", "blocked-shape", () => batchDeleteShapes],
+    ["text element", "blocked-text", () => batchDeleteTextElements],
+    ["image", "blocked-image", () => batchDeleteImages],
+    ["equation", "blocked-math", () => batchDeleteMathElements],
+    ["code block", "blocked-code", () => batchDeleteCodeElements],
+  ])(
+    "routes a blocked author's %s to its own collection, never to paths",
+    async (_label, id, mockFor) => {
+      const { result } = renderElements(makeOpts({ blockedIds: BLOCKED_IDS }));
+      seedWithBlockedAuthorContent(result);
+
+      await act(async () => {
+        await result.current.deleteSelected([id]);
+      });
+
+      expect(mockFor()).toHaveBeenCalledWith(BOARD, [id]);
+      // The whole defect was this id reaching `paths` instead, where the
+      // delete is a silent no-op against a collection it was never in.
+      expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, []);
+    }
+  );
+
+  it("still routes a blocked author's sticky note to the notes collection, the kind that was already correct", async () => {
+    // The control for the kind `8eae3b3` already fixed: this change must not
+    // have been a swap that broke notes while fixing the other five.
+    //
+    // Deliberately NOT named for paths as well, though the delete below covers
+    // one. A blocked author's PATH is indistinguishable between the two
+    // classifications — filtered or unfiltered, it ends up in exactly the same
+    // `batchDeletePaths` call, because the residual bucket's destination IS the
+    // paths collection. No assertion here can tell those apart, so the path
+    // expectation below is a sanity check, not a discriminator, and the path
+    // route reads the unfiltered ref for correctness by construction rather
+    // than because a test could see the difference.
+    const { result } = renderElements(makeOpts({ blockedIds: BLOCKED_IDS }));
+    seedWithBlockedAuthorContent(result);
+
+    await act(async () => {
+      await result.current.deleteSelected(["blocked-path", "blocked-note"]);
+    });
+
+    expect(batchDeleteTextNotes).toHaveBeenCalledWith(BOARD, ["blocked-note"]);
+    expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, ["blocked-path"]);
+  });
+
   it("sends an id that matches no element on the board to the paths collection (the documented leftover rule)", async () => {
     const { result } = renderElements();
     seedBoardAndSelect(result, []);
@@ -800,7 +918,13 @@ describe("useBoardElements — deleteSelected id routing", () => {
       await result.current.deleteSelected(["ghost-1"]);
     });
 
-    // `pathIds` is "whatever is left over" — see useBoardElements.ts:1964.
+    // No longer the old leftover-is-a-stroke rule, and the distinction is the
+    // point: every kind in `BoardElementKind` now claims its own ids by
+    // identity (useBoardElements.ts:2045, the exhaustive `routes` record), so
+    // the residual bucket (:2101) can only ever hold an id that matches no
+    // in-memory element of ANY kind. Those still go to `paths`, which is the
+    // one case that rule was ever worth anything for — a stroke that exists in
+    // Firestore but has not reached local state yet.
     expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, ["ghost-1"]);
   });
 
@@ -845,8 +969,8 @@ describe("useBoardElements — deleteSelected id routing", () => {
    *
    * It was reachable, not theoretical: "note" is in `CANVAS_CITATION_KINDS`
    * (src/services/boardQaService.ts:78), `handleSelectCitation`
-   * (app/board/[id].tsx:535) selects the cited element, and the screen's
-   * `handleDeleteSelected` (app/board/[id].tsx:582-586) passes that id
+   * (app/board/[id].tsx:541) selects the cited element, and the screen's
+   * `handleDeleteSelected` (app/board/[id].tsx:594) passes that id
    * straight here. The anchor cascade does not cover it — that matches on
    * `anchorElementId`, i.e. notes attached to a deleted element, never a note
    * deleted directly.
@@ -980,9 +1104,12 @@ describe("useBoardElements — copy/paste round trip", () => {
     expect([...result.current.selection.selectedIds]).toEqual(["shape-1"]);
   });
 
-  it("copies nothing for a selected sticky note, so pasting a note-only selection writes nothing", async () => {
-    // The same gap the delete defect above documents: `copySelected` iterates
-    // paths/shapes/texts/images/math/code and never `notes`.
+  it("copies a selected sticky note and pastes it into the notes collection", async () => {
+    // REGRESSION — this test used to pin the OPPOSITE as current behaviour:
+    // `copySelected` iterated paths/shapes/texts/images/math/code and never
+    // `notes`, so copying a selected note produced no clip item, and pasting
+    // wrote nothing at all. Silent in both directions — no error, no element.
+    // The copy-side half of the delete path's blind spot.
     const { result } = renderElements();
     seedBoardAndSelect(result, ["note-1"]);
 
@@ -993,8 +1120,51 @@ describe("useBoardElements — copy/paste round trip", () => {
       await result.current.pasteClipboard();
     });
 
-    expect(pathService.saveTextNote).not.toHaveBeenCalled();
+    expect(pathService.saveTextNote).toHaveBeenCalledTimes(1);
+    const [boardArg, payload] = (pathService.saveTextNote as jest.Mock).mock.calls[0];
+    expect(boardArg).toBe(BOARD);
+    // NOTE_1 sits at (200, 200); DUPLICATE_OFFSET is 16, and this is the first
+    // paste of this payload.
+    expect(payload).toMatchObject({
+      content: "a sticky",
+      position: { x: 216, y: 216 },
+      boardId: BOARD,
+      userId: USER,
+    });
+    // Identity stripped, exactly like every other kind.
+    expect(payload).not.toHaveProperty("id");
+    expect(payload).not.toHaveProperty("createdAt");
+    // And it must not also be written as some other kind — the failure mode a
+    // "copy it somehow" fix would produce.
     expect(savePath).not.toHaveBeenCalled();
     expect(saveShape).not.toHaveBeenCalled();
+    // The paste must actually SUCCEED, not merely reach the service: the new
+    // note becomes the selection like every other pasted kind, which only
+    // happens if the whole `Promise.all` resolved.
+    expect([...result.current.selection.selectedIds]).toEqual(["new-note"]);
+  });
+
+  it("drops an attached note's anchor on copy, so a cross-board paste is a visible pinned note", async () => {
+    // `TextNote.anchorElementId`'s own contract: a render path must OMIT an
+    // attached note whose anchor cannot be resolved rather than fall back to
+    // (0, 0). The clipboard store is module-level so a payload survives to
+    // another board, where an anchor id from this one resolves to nothing — so
+    // carrying it through would write a document nobody could ever see.
+    const { result } = renderElements();
+    seed({ notes: [{ ...NOTE_1, id: "attached-note", anchorElementId: "shape-1" }] });
+    act(() => {
+      result.current.selection.setMany(["attached-note"], "elements");
+    });
+
+    act(() => {
+      result.current.copySelected();
+    });
+    await act(async () => {
+      await result.current.pasteClipboard();
+    });
+
+    const [, payload] = (pathService.saveTextNote as jest.Mock).mock.calls[0];
+    expect(payload).not.toHaveProperty("anchorElementId");
+    expect(payload.position).toEqual({ x: 216, y: 216 });
   });
 });

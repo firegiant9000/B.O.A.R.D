@@ -16,7 +16,15 @@
  * the rest of the hardware-keyboard work.
  */
 
-import { DrawPath, ShapeElement, TextElement, ImageElement, MathElement, CodeElement } from "../types";
+import {
+  DrawPath,
+  ShapeElement,
+  TextElement,
+  TextNote,
+  ImageElement,
+  MathElement,
+  CodeElement,
+} from "../types";
 import { DUPLICATE_OFFSET, translatePoints } from "./transform";
 
 type Stripped = "id" | "createdAt" | "boardId" | "userId" | "bbox";
@@ -34,7 +42,21 @@ export type ClipItem =
   // out width/height (like `duplicateSelected`'s copy, not
   // `createCodeElement`'s fresh layout) — paste is one Firestore write, same
   // reasoning as `math` above.
-  | { kind: "code"; data: Omit<CodeElement, Stripped> };
+  | { kind: "code"; data: Omit<CodeElement, Stripped> }
+  // Month 6 — sticky notes. Missing from this union (and from `copySelected`'s
+  // loops) until now, so copying a selected note silently produced nothing at
+  // all: no clip item, no error, and a paste that wrote no document. The same
+  // blind spot as the delete defect, in the other direction.
+  //
+  // `anchorElementId` travels with the payload rather than being stripped, and
+  // that is a real decision: a note attached to an element and pasted onto
+  // ANOTHER board would reference an anchor that does not exist there, and
+  // `TextNote.anchorElementId`'s own contract says a render path must OMIT an
+  // attached note whose anchor cannot be resolved. So the copy DROPS the
+  // anchor and keeps `position` (already a write-time snapshot of where the
+  // note was), turning a pasted attached note back into an ordinary pinned
+  // one — visible and editable, instead of correct-but-invisible.
+  | { kind: "note"; data: Omit<TextNote, "id" | "createdAt" | "boardId" | "userId" | "anchorElementId"> };
 
 interface ClipboardState {
   items: ClipItem[];
@@ -91,5 +113,13 @@ export function offsetClipItem(item: ClipItem, d: number): ClipItem {
       return { kind: "math", data: { ...item.data, x: item.data.x + d, y: item.data.y + d } };
     case "code":
       return { kind: "code", data: { ...item.data, x: item.data.x + d, y: item.data.y + d } };
+    case "note":
+      // A note carries `position`, not `x`/`y` — the same shape a text element
+      // does, and the reason this is a separate case rather than another line
+      // in the x/y group above.
+      return {
+        kind: "note",
+        data: { ...item.data, position: { x: item.data.position.x + d, y: item.data.position.y + d } },
+      };
   }
 }

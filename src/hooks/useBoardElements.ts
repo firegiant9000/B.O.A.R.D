@@ -69,6 +69,7 @@ import {
   CodeElement,
   CodeLanguage,
   StickyColor,
+  BoardElementKind,
 } from "../types";
 // The pure leaf, not `lib/codeRender` — this hook re-lays out a code box on
 // resize and never tokenizes, so it has no reason to load Shiki's grammars.
@@ -259,6 +260,22 @@ const codeBoxOf = codeService.codeBoxOf;
 // comment on `MIN_CODE_FONT_SIZE`) rather than redeclared here, mirroring
 // MIN_MATH_SCALE's reasoning: a block scaled to an invisible/zero size could
 // never be resized back up or selected to delete.
+
+/**
+ * What `deleteSelected` does about one element kind: either the ids it matched
+ * and the batch delete to issue for them, or an explicit statement that the
+ * kind has no direct delete, with the reason.
+ *
+ * The `deletable: false` arm is not padding. `deleteSelected` keys a
+ * `Record<BoardElementKind, DeleteRoute>` off the union in src/types, so `tsc`
+ * refuses to build when a kind is added without an entry — and a discriminated
+ * route means the author of that entry has to say which of the two cases their
+ * kind is, rather than being able to satisfy the compiler with an empty array
+ * they never thought about.
+ */
+type DeleteRoute =
+  | { deletable: true; ids: string[]; remove: (ids: string[]) => Promise<void> }
+  | { deletable: false; why: string };
 
 // ────────── PUBLIC TYPES & THE BoardElements INTERFACE ──────────────────
 /** A resolved hit-test result: which element, and which layer it lives in. */
@@ -664,6 +681,28 @@ export function useBoardElements(
   // Firestore doc, unlike a leaked Storage object, has no ongoing cost, and
   // the window is one snapshot round-trip wide.
   const notesRef = useRef<TextNote[]>([]);
+  // Month 6 — UNFILTERED mirrors of the remaining kinds, for `deleteSelected`'s
+  // classification and nothing else. The `visible*Ref` mirrors above are the
+  // blocked-user-filtered sources the EEC hit-testing and guide alignment need,
+  // which is correct for a gesture (you cannot grab what you cannot see) and
+  // wrong for a delete.
+  //
+  // This is the principle `audioNotesRef` and `notesRef` already state, applied
+  // to the kinds that were already here when it was written. A blocked author's
+  // shape is absent from `visibleShapesRef`, so classifying against that mirror
+  // never produced its id — it fell through to the leftover bucket and was
+  // issued against `paths`, where no such document exists, making the delete a
+  // silent no-op while local state dropped it anyway. The document survived in
+  // Firestore and came back the moment its author was unblocked. Reachable, not
+  // theoretical: `boardQaService`'s `CANVAS_CITATION_KINDS` covers path, shape,
+  // text, image and note, `boardQaService` does no blocked-author filtering at
+  // all, and tapping a citation selects the element.
+  const pathsRef = useRef<DrawPath[]>([]);
+  const shapesRef = useRef<ShapeElement[]>([]);
+  const textElementsRef = useRef<TextElement[]>([]);
+  const imagesRef = useRef<ImageElement[]>([]);
+  const mathElementsRef = useRef<MathElement[]>([]);
+  const codeElementsRef = useRef<CodeElement[]>([]);
   // rbush index over every visible element's bbox, rebuilt when the set changes,
   // queried during a marquee drag for O(log n) hit-testing.
   const spatialIndexRef = useRef<ElementIndex>(buildElementIndex([]));
@@ -913,6 +952,28 @@ export function useBoardElements(
   useEffect(() => {
     notesRef.current = notes;
   }, [notes]);
+  // Month 6 — the remaining kinds' unfiltered mirrors, synced from raw state
+  // for the same reason `notesRef` and `audioNotesRef` above are. Kept as six
+  // separate effects rather than one so each stays keyed on its own state and
+  // a change to one kind does not re-run the others.
+  useEffect(() => {
+    pathsRef.current = paths;
+  }, [paths]);
+  useEffect(() => {
+    shapesRef.current = shapes;
+  }, [shapes]);
+  useEffect(() => {
+    textElementsRef.current = textElements;
+  }, [textElements]);
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+  useEffect(() => {
+    mathElementsRef.current = mathElements;
+  }, [mathElements]);
+  useEffect(() => {
+    codeElementsRef.current = codeElements;
+  }, [codeElements]);
 
   // Month 5 — anchor-delete cascade (the orphan fix's other half): any voice
   // note anchored to one of `elementIds` must not survive that element's
@@ -1954,45 +2015,91 @@ export function useBoardElements(
     async (ids: string[]) => {
       if (ids.length === 0) return;
       const idSet = new Set(ids);
-      const shapeIds = visibleShapesRef.current.filter((s) => idSet.has(s.id)).map((s) => s.id);
-      const textIds = visibleTextElementsRef.current.filter((el) => idSet.has(el.id)).map((el) => el.id);
-      const imageIds = visibleImagesRef.current.filter((img) => idSet.has(img.id)).map((img) => img.id);
-      const mathIds = visibleMathElementsRef.current
-        .filter((mEl) => idSet.has(mEl.id))
-        .map((mEl) => mEl.id);
-      const codeIds = visibleCodeElementsRef.current
-        .filter((cEl) => idSet.has(cEl.id))
-        .map((cEl) => cEl.id);
-      // Sticky notes, from the UNFILTERED `notesRef` rather than a
-      // blocked-user-filtered mirror — the same choice `audioNotesRef` makes
-      // and for the same reason: a delete must not silently skip a document
-      // because its author is blocked, which would leave the note in
-      // Firestore while removing it from this client's view.
-      const noteIds = notesRef.current.filter((n) => idSet.has(n.id)).map((n) => n.id);
-      // Whatever is left over is a stroke. Month 6: `mathIds`/`codeIds` have
-      // to be subtracted here as well, or every deleted equation/snippet
-      // would ALSO be issued as a delete against the `paths` collection.
+      // EXHAUSTIVE PER-KIND MATCH, and the exhaustiveness is the point.
       //
-      // `noteIds` belongs in that list for the same reason, and its ABSENCE
-      // was a real defect rather than a theoretical one: a sticky note is
-      // selectable (board Q&A citations include `"note"` —
-      // `boardQaService.ts`'s `CANVAS_CITATION_KINDS` — and clicking one
-      // selects the element), so a selected note's id fell through to
-      // `pathIds` and was issued against `paths`, where no such document
-      // exists. That delete was a silent no-op, `notes` state was never
-      // filtered, and the note survived on screen and in Firestore. The
-      // anchor cascade below does NOT cover this: it matches on
-      // `anchorElementId`, i.e. notes attached to a deleted element, never a
-      // note deleted directly.
-      const pathIds = ids.filter(
-        (i) =>
-          !shapeIds.includes(i) &&
-          !textIds.includes(i) &&
-          !imageIds.includes(i) &&
-          !mathIds.includes(i) &&
-          !codeIds.includes(i) &&
-          !noteIds.includes(i)
-      );
+      // What this replaces: `pathIds` used to be "every id that is not one of
+      // the kinds I remembered to subtract", and every new element kind had to
+      // be subtracted by hand with NOTHING enforcing it. That rule shipped the
+      // same defect three times on this branch — math and code were reasoned
+      // through and added, sticky notes were missed, and the five kinds already
+      // present were left reading from blocked-user-filtered mirrors — because
+      // the reasoning was applied to the kinds being ADDED and never to the
+      // kinds already there.
+      //
+      // `Record<BoardElementKind, …>` is what stops it recurring, and it stops
+      // it at COMPILE time, not in a test: `BoardElementKind` is
+      // `SvgExportElement["kind"]`, the union every element kind already joins
+      // when it is added to the board, so a seventh deletable kind makes `tsc`
+      // refuse to build this object until it is handled here. A route is either
+      // deletable — a source of rows and the batch delete to issue — or
+      // explicitly not, with the reason, so "nothing to do" has to be written
+      // down rather than fallen into.
+      //
+      // Every source below is the UNFILTERED ref, never a `visible*` mirror: a
+      // delete must not silently skip a document because its author is blocked,
+      // which would leave it in Firestore while removing it from this client's
+      // view. See those refs' own declarations for the traced failure.
+      const matching = (rows: readonly { id: string }[]) =>
+        rows.filter((r) => idSet.has(r.id)).map((r) => r.id);
+
+      const routes: Record<BoardElementKind, DeleteRoute> = {
+        path: {
+          deletable: true,
+          ids: matching(pathsRef.current),
+          remove: (batch) => pathService.batchDeletePaths(boardId, batch),
+        },
+        shape: {
+          deletable: true,
+          ids: matching(shapesRef.current),
+          remove: (batch) => shapeService.batchDeleteShapes(boardId, batch),
+        },
+        text: {
+          deletable: true,
+          ids: matching(textElementsRef.current),
+          remove: (batch) => pathService.batchDeleteTextElements(boardId, batch),
+        },
+        note: {
+          deletable: true,
+          ids: matching(notesRef.current),
+          remove: (batch) => pathService.batchDeleteTextNotes(boardId, batch),
+        },
+        image: {
+          deletable: true,
+          ids: matching(imagesRef.current),
+          remove: (batch) => imageService.batchDeleteImages(boardId, batch),
+        },
+        math: {
+          deletable: true,
+          ids: matching(mathElementsRef.current),
+          remove: (batch) => mathService.batchDeleteMathElements(boardId, batch),
+        },
+        code: {
+          deletable: true,
+          ids: matching(codeElementsRef.current),
+          remove: (batch) => codeService.batchDeleteCodeElements(boardId, batch),
+        },
+        // A voice note is never selected directly — it is a badge anchored to
+        // another element, and it goes away through `cascadeDeleteVoiceNotes`
+        // below when that anchor does. Stated rather than omitted so the next
+        // person to add a kind sees that "not applicable" is an answer they
+        // have to write, not a case they can leave out.
+        audio: { deletable: false, why: "cascaded by anchor, never selected directly" },
+      };
+
+      // The residual bucket, and it is NOT the old leftover rule. Every kind in
+      // the union above has already claimed its ids by identity, so what is left
+      // can only be an id that matches no in-memory element of any kind — a
+      // stale selection, or a stroke that exists in Firestore but has not
+      // reached local state yet. Issuing those against `paths` preserves the
+      // one case that was ever worth anything (the unloaded stroke); it can no
+      // longer swallow a whole element kind, because a new kind cannot compile
+      // without a route.
+      const claimed = new Set<string>();
+      for (const route of Object.values(routes)) {
+        if (route.deletable) for (const id of route.ids) claimed.add(id);
+      }
+      const unclassified = ids.filter((i) => !claimed.has(i));
+
       setShapes((prev) => prev.filter((s) => !idSet.has(s.id)));
       setTextElements((prev) => prev.filter((el) => !idSet.has(el.id)));
       setImages((prev) => prev.filter((img) => !idSet.has(img.id)));
@@ -2001,15 +2108,15 @@ export function useBoardElements(
       setNotes((prev) => prev.filter((n) => !idSet.has(n.id)));
       setPaths((prev) => prev.filter((p) => !idSet.has(p.id)));
       try {
-        await Promise.all([
-          pathService.batchDeletePaths(boardId, pathIds),
-          shapeService.batchDeleteShapes(boardId, shapeIds),
-          pathService.batchDeleteTextElements(boardId, textIds),
-          imageService.batchDeleteImages(boardId, imageIds),
-          mathService.batchDeleteMathElements(boardId, mathIds),
-          codeService.batchDeleteCodeElements(boardId, codeIds),
-          pathService.batchDeleteTextNotes(boardId, noteIds),
-        ]);
+        await Promise.all(
+          Object.entries(routes).map(([kind, route]) => {
+            if (!route.deletable) return Promise.resolve();
+            // Strokes carry the residual bucket as well as their own matches,
+            // so `paths` still receives exactly one call.
+            const batch = kind === "path" ? [...route.ids, ...unclassified] : route.ids;
+            return route.remove(batch);
+          })
+        );
         onScheduleSave();
         // Month 5 — anchor cascade (the other half of the orphan fix): any
         // voice note anchored to one of these ids must not survive them.
@@ -2185,8 +2292,33 @@ export function useBoardElements(
       const { id: _i, createdAt: _c, boardId: _b, userId: _u, bbox: _bb, ...rest } = cEl;
       items.push({ kind: "code", data: rest });
     }
+    // Month 6 — sticky notes. Their absence here was the copy-side half of the
+    // same blind spot the delete path had: a selected note produced no clip
+    // item at all, so copy-then-paste silently did nothing.
+    //
+    // `anchorElementId` is stripped along with identity. An attached note's
+    // anchor is an id on THIS board, and the clipboard store is module-level
+    // precisely so a payload survives to another one — where that id resolves
+    // to nothing, and `TextNote.anchorElementId`'s own contract says an
+    // unresolvable attached note must be OMITTED from the render rather than
+    // fall back to (0, 0). Pasting one would therefore write a document nobody
+    // could see. Dropping the anchor keeps `position` authoritative (it is
+    // already a write-time snapshot of where the note sat), so the copy lands
+    // as an ordinary pinned note.
+    for (const n of notes) {
+      if (!ids.has(n.id)) continue;
+      const {
+        id: _i,
+        createdAt: _c,
+        boardId: _b,
+        userId: _u,
+        anchorElementId: _a,
+        ...rest
+      } = n;
+      items.push({ kind: "note", data: rest });
+    }
     setClipboard(items);
-  }, [selection.selectedIds, paths, shapes, textElements, images, mathElements, codeElements]);
+  }, [selection.selectedIds, paths, shapes, textElements, images, mathElements, codeElements, notes]);
 
   // Paste the clipboard onto the *current* board (cross-board safe): re-stamp
   // boardId + the pasting user, cascade the offset down-right, and select the
@@ -2255,6 +2387,19 @@ export function useBoardElements(
           tasks.push(
             codeService
               .saveCodeElement(boardId, { ...off.data, boardId, userId: uid })
+              .then((nid) => {
+                newIds.push(nid);
+              })
+          );
+        } else if (off.kind === "note") {
+          // Month 6 — sticky notes. The clip item carries no
+          // `anchorElementId` (see `copySelected`'s note loop and `ClipItem`'s
+          // own comment for why it is stripped rather than carried), so the
+          // pasted note is always a pinned one and `position` — already
+          // offset by `offsetClipItem` — is authoritative.
+          tasks.push(
+            pathService
+              .saveTextNote(boardId, { ...off.data, boardId, userId: uid })
               .then((nid) => {
                 newIds.push(nid);
               })
