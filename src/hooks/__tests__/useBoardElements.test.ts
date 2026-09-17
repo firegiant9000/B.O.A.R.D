@@ -428,8 +428,9 @@ interface Seed {
 
 /**
  * Push one realistic snapshot per collection through the captured subscription
- * callbacks. `canvasReady` only flips on the PATHS listener (see
- * `useBoardElements.ts:748-760`), so the paths callback always fires — with an
+ * callbacks. `canvasReady` only flips on the PATHS listener (every
+ * `setCanvasReady(true)` in `useBoardElements.ts` sits inside that one
+ * subscription), so the paths callback always fires — with an
  * empty array when the seed has no strokes — or the harness could only ever
  * exercise the loading state.
  */
@@ -919,10 +920,12 @@ describe("useBoardElements — deleteSelected id routing", () => {
     });
 
     // No longer the old leftover-is-a-stroke rule, and the distinction is the
-    // point: every kind in `BoardElementKind` now claims its own ids by
-    // identity (useBoardElements.ts:2045, the exhaustive `routes` record), so
-    // the residual bucket (:2101) can only ever hold an id that matches no
-    // in-memory element of ANY kind. Those still go to `paths`, which is the
+    // point: every DELETABLE kind now claims its own ids by identity
+    // (`deleteSelected`'s exhaustive `routes` record, keyed off
+    // `BoardElementKind`), and the kinds that claim none say so explicitly
+    // because they are never in this selection at all. So the residual bucket
+    // below that record can only ever hold an id that matches no in-memory
+    // element of ANY kind. Those still go to `paths`, which is the
     // one case that rule was ever worth anything for — a stroke that exists in
     // Firestore but has not reached local state yet.
     expect(batchDeletePaths).toHaveBeenCalledWith(BOARD, ["ghost-1"]);

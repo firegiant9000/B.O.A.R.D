@@ -2115,6 +2115,15 @@ export function useBoardElements(
         // person to add a kind sees that "not applicable" is an answer they
         // have to write, not a case they can leave out.
         audio: { deletable: false, why: "cascaded by anchor, never selected directly" },
+        // A poll is never part of this selection either, for a different
+        // reason than `audio`: it IS positioned canvas content, but it is an
+        // overlay with its own delete affordance on the card
+        // (`BoardOverlayLayer` -> `onDeletePoll` -> `useBoardPolls.deletePoll`,
+        // which also has to clean up the poll's `votes` subcollection). It
+        // carries no entry in the spatial index, so a marquee never picks one
+        // up and no id reaching here can be a poll's. Routing it here as well
+        // would give polls two delete paths, one of which would orphan votes.
+        poll: { deletable: false, why: "own card affordance, cascaded via useBoardPolls.deletePoll" },
       };
 
       // The residual bucket, and it is NOT the old leftover rule. Every kind in
@@ -2315,6 +2324,12 @@ export function useBoardElements(
       // element, so there is nothing for a duplicate to act on. Same reasoning
       // as `deleteSelected`'s `audio` route.
       audio: { applies: false, why: "anchored badge, never selected directly" },
+      // Also never in this selection: a poll is an overlay card with its own
+      // affordances and no spatial-index entry, so no id reaching here can be
+      // one. Duplicating a poll would additionally have to decide what happens
+      // to its votes and its quiz sequence, which is a product question nobody
+      // has asked — see `deleteSelected`'s `poll` route.
+      poll: { applies: false, why: "overlay card, never part of the element selection" },
     };
     for (const route of Object.values(routes)) {
       if (route.applies) route.run();
@@ -2476,6 +2491,9 @@ export function useBoardElements(
       // same reasoning as `deleteSelected`'s and `duplicateSelected`'s `audio`
       // routes. `ClipItem` has no `audio` member for the same reason.
       audio: { applies: false, why: "anchored badge, never selected directly" },
+      // Nor is a poll — an overlay card with no spatial-index entry. `ClipItem`
+      // has no `poll` member either; see `duplicateSelected`'s `poll` route.
+      poll: { applies: false, why: "overlay card, never part of the element selection" },
     };
     for (const route of Object.values(routes)) {
       if (route.applies) route.run();

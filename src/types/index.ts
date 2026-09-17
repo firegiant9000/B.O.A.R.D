@@ -1016,18 +1016,36 @@ export interface CodeElement {
 
 // ── the board's element-kind roll-call ──────────────────────────────────────
 //
-// Every kind of thing that can exist on a board, as one union. This is not
-// documentation: two places key an EXHAUSTIVE structure off it, so adding a
-// member here is what makes `tsc` refuse to build until the new kind has been
-// thought about in both.
+// Every POSITIONED kind of thing that can exist on a board, as one union —
+// anything that occupies a place on the canvas and therefore has to be answered
+// for when the board is deleted from or exported. Deliberately narrower than
+// "everything stored under a board": comments and reactions are outside it,
+// because both ANCHOR to an element rather than occupying a position of their
+// own, and neither has a delete route or a drawn node to forget. Polls are
+// inside it — a poll carries its own (x, y) the way a shape does (see
+// `PollElement`) — and were missing from it until Month 6's correction pass,
+// which is exactly how SVG export came to omit every poll silently.
 //
-//  1. `useBoardElements.ts#deleteSelected` builds a
-//     `Record<BoardElementKind, DeleteRoute>`. A kind added here with no route
-//     there fails to compile. That check exists because the delete path used to
-//     classify by subtraction — "whatever is left over is a stroke" — and
-//     nothing enforced that a new kind got subtracted. Sticky notes were missed
-//     that way and were silently undeletable; math and code only escaped it
-//     because someone remembered. Do not reintroduce a leftover rule.
+// This union is HAND-MAINTAINED, and being precise about that matters, because
+// the checks below are easy to over-trust. Nothing derives it from the board's
+// real contents and nothing forces a new element kind to join it; the
+// dependency runs the other way, with `lib/svgExport.ts` asserting its own case
+// list against this one. So:
+//
+//   - ADDING A MEMBER HERE is what makes `tsc` refuse to build until the new
+//     kind has been thought about in both places below.
+//   - ADDING AN ELEMENT KIND WITHOUT TOUCHING THIS UNION trips nothing at all.
+//
+// Update this union first. It is the trigger, not the safety net.
+//
+//  1. `useBoardElements.ts` builds a `Record<BoardElementKind, …>` in THREE
+//     functions — `deleteSelected`, `copySelected` and `duplicateSelected`. A
+//     kind added here with no route in each of them fails to compile. Those
+//     checks exist because all three used to classify by hand — the delete path
+//     by subtraction ("whatever is left over is a stroke"), copy and duplicate
+//     by a loop per kind — with nothing enforcing that a new kind was handled.
+//     Sticky notes were missed in all three, independently. Do not reintroduce
+//     a leftover rule or a bare loop sequence.
 //  2. `lib/svgExport.ts`'s `SvgExportElement` must gain a matching case, tied
 //     to this union by a type-level assertion in that file. Its serializer
 //     SKIPS an unknown kind silently, which is right for a non-visual kind and
@@ -1035,8 +1053,9 @@ export interface CodeElement {
 //     "someone forgot" into a build failure instead of an empty export.
 //
 // A kind that genuinely needs no handling in one of those is still declared
-// there explicitly, with the reason (see `audio`, which is anchored to another
-// element and cascaded rather than selected or drawn).
+// there explicitly, with the reason (see `audio`, anchored to another element
+// and cascaded rather than selected or drawn; and `poll`, which has its own
+// delete affordance and is deliberately not drawn into an export).
 export type BoardElementKind =
   | "path"
   | "shape"
@@ -1045,4 +1064,5 @@ export type BoardElementKind =
   | "image"
   | "audio"
   | "math"
-  | "code";
+  | "code"
+  | "poll";
