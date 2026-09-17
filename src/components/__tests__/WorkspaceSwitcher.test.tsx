@@ -73,8 +73,9 @@ import type { Plan, Workspace } from "../../types";
 /**
  * WorkspaceSwitcher — the workspace cap's upsell.
  *
- * This component had no test at all, which meant B3's actual deliverable was
- * unpinned: `CreateWorkspaceModal.test.tsx` covers the modal's routing
+ * This component had no test at all, which meant the actual deliverable of
+ * routing the workspace cap through the cadence was unpinned:
+ * `CreateWorkspaceModal.test.tsx` covers the modal's routing
  * decision (a denial leaves the component) and stops there, so nothing
  * asserted that the denial then reaches `UpsellModal`, that `variant` is
  * supplied, or that a user's first contact with this gate is the restrained
@@ -145,7 +146,7 @@ describe("WorkspaceSwitcher — the workspace cap reaches the upsell, through th
   });
 
   it("supplies a variant, and it is the restrained one on first contact", async () => {
-    // B3's actual deliverable. Without `variant={upsell.variant}` this prop is
+    // The deliverable itself. Without `variant={upsell.variant}` this prop is
     // absent and `UpsellModal`'s own `"hard"` default takes over — a user's
     // very first encounter with the cap gets the full sell, which is exactly
     // what ROADMAP.md:608 (item 14) asks this gate not to do.
