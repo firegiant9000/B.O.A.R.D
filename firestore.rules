@@ -53,8 +53,17 @@ rules_version = '2';
 // nor writes the marker, so shipping the pin first constrains nothing at all
 // until the function lands.
 //
-// Rolling back is the mirror image: roll rules back BEFORE removing the
-// functions, never after.
+// ROLLING THIS PAIR BACK IS "FUNCTIONS OUT FIRST" — the mirror image of
+// "rules first", and the opposite of the rollback sentence below. Withdraw
+// the grant-aware `createSession` BEFORE restoring the pre-pin rules. The
+// other order un-pins `welcomeSessionGrantUsed` while that function is still
+// deployed, which is precisely the unlimited-grant hole the paragraph above
+// describes — a rollback would OPEN it rather than close it.
+//
+// Rolling back the FOUR functions-first relationships above — and only those
+// four — is the mirror image of deploying them: roll rules back BEFORE
+// removing the functions, never after. This sentence does not cover the fifth
+// pair; that one is stated in its own paragraph directly above.
 //
 // ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the three `allow create`
 // blocks (boards, sessions and workspaces) to their pre-callable predicates.
