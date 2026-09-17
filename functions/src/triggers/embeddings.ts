@@ -39,6 +39,18 @@ import { OPENAI_API_KEY } from "../config";
 // deletion-cleanup section's own comment). Six sources × two = twelve
 // bindings; count the two export blocks rather than trusting this sentence.
 //
+// SIX SOURCES IN THIS FILE, NOT SIX IN THE PRODUCT. Session SUMMARIES are a
+// seventh indexed source and live in triggers/sessionEmbeddings.ts, bound to
+// the top-level `sessions/{sessionId}` — a path the `Collection` union below
+// cannot express, since every value of it is interpolated into
+// `boards/{boardId}/<collection>/{elementId}`. That file reuses this one's
+// `handleElementWrite` and `handleElementDeleted` rather than reimplementing
+// the metering and the race guard, so the counts above stay true OF THIS FILE
+// while the feature has one more source than they describe. The seventh
+// EXPECTED here (Whisper transcripts on audio notes) is still a two-line
+// addition and still belongs in this file, because audio notes ARE under a
+// board.
+//
 // The six sources are the five canvas-content subcollections firestore.rules
 // names — the `paths`, `notes`, `textElements` and `shapes` blocks under
 // `match /boards/{boardId}`, which share one member-read/editor-write gate,
