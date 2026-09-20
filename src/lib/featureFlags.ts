@@ -49,3 +49,77 @@ export const EXPLAIN_ENABLED =
 export const DIAGRAM_ENABLED =
   process.env.EXPO_PUBLIC_DIAGRAM === "1" ||
   process.env.EXPO_PUBLIC_DIAGRAM === "true";
+
+/**
+ * Month 6 — flashcard generation.
+ *
+ * Gates the "Make flashcards" selection affordance and the `generateFlashcards`
+ * callable. Default OFF until the function is deployed; flip to "1" via the
+ * build env to expose it. Rides the Cloud Function gateway like OCR/explain/
+ * diagram, so it is only meaningful once `AI_GATEWAY_ENABLED` is also on. The
+ * review screen and CSV export are NOT gated by this flag — reviewing/exporting
+ * cards you already have needs no AI call and should keep working even with
+ * generation switched off.
+ */
+export const FLASHCARDS_ENABLED =
+  process.env.EXPO_PUBLIC_FLASHCARDS === "1" ||
+  process.env.EXPO_PUBLIC_FLASHCARDS === "true";
+
+/**
+ * Month 6 — board Q&A (chat with your board).
+ *
+ * Gates the sidebar chat affordance and the `askBoard` callable. Default OFF
+ * until the function is deployed; flip to "1" via the build env to expose it.
+ * Rides the Cloud Function gateway like every other AI feature, so it is only
+ * meaningful once `AI_GATEWAY_ENABLED` is also on.
+ *
+ * This flag hides the ENTRY POINT, nothing more — like every other flag here it
+ * is inlined into the client bundle and therefore public and patchable. The
+ * things that actually stop an unauthorized or over-quota question are the
+ * callable's own membership check, rate bucket and plan gate, all server-side.
+ */
+export const BOARD_QA_ENABLED =
+  process.env.EXPO_PUBLIC_BOARD_QA === "1" ||
+  process.env.EXPO_PUBLIC_BOARD_QA === "true";
+
+/**
+ * Month 6 — math elements (LaTeX → SVG path data).
+ *
+ * Gates the toolbar's equation button and the `renderMath` callable. Default
+ * OFF until the function is deployed; flip to "1" via the build env.
+ *
+ * UNLIKE every flag above, this one does NOT depend on `AI_GATEWAY_ENABLED`.
+ * `renderMath` is not an AI feature: MathJax runs in-process, there is no
+ * provider, no API key and no per-call spend, so it is neither gated by the
+ * gateway cutover nor metered against the workspace's AI-call quota. Tying it
+ * to that flag would make equations unavailable for a reason that has nothing
+ * to do with them.
+ *
+ * Like every flag here it is inlined into the client bundle and therefore
+ * public and patchable — it hides the ENTRY POINT, nothing more. What
+ * actually stops an unauthorised or runaway caller is the callable's own
+ * membership check and rate bucket, both server-side, plus firestore.rules on
+ * the element documents themselves.
+ */
+export const MATH_ENABLED =
+  process.env.EXPO_PUBLIC_MATH === "1" || process.env.EXPO_PUBLIC_MATH === "true";
+
+/**
+ * Month 6 — code elements (syntax-highlighted source, tokenized on-device).
+ *
+ * Gates the toolbar's code button. Default OFF; flip to "1" via the build
+ * env to expose it.
+ *
+ * UNLIKE every AI flag above and LIKE `MATH_ENABLED`, this does NOT depend on
+ * `AI_GATEWAY_ENABLED`: Shiki tokenizes entirely client-side (no Cloud
+ * Function, no provider, no per-call spend — see `lib/codeRender.ts`'s
+ * header), so it is neither gated by the gateway cutover nor metered against
+ * the workspace's AI-call quota.
+ *
+ * Like every flag here it is inlined into the client bundle and therefore
+ * public and patchable — it hides the ENTRY POINT, nothing more. What
+ * actually stops an unauthorized write is firestore.rules on the
+ * `codeElements` subcollection, server-side.
+ */
+export const CODE_ENABLED =
+  process.env.EXPO_PUBLIC_CODE === "1" || process.env.EXPO_PUBLIC_CODE === "true";

@@ -1,18 +1,18 @@
 import {
   collection,
-  addDoc,
   getDoc,
   getDocs,
   updateDoc,
   doc,
   query,
   where,
-  serverTimestamp,
   arrayUnion,
   arrayRemove,
   deleteField,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../config/firebase";
+import { lookupUserByEmail } from "./userService";
 import { Plan, Workspace, WorkspaceRole } from "../types";
 
 const workspacesRef = collection(db, "workspaces");
@@ -28,6 +28,7 @@ function mapWorkspace(id: string, data: Record<string, any>): Workspace {
     ownerId: data.ownerId ?? "",
     members: data.members ?? {},
     plan: data.plan ?? "free",
+    swatches: data.swatches ?? [],
     createdAt: data.createdAt?.toDate() ?? new Date(),
   };
 }
@@ -56,21 +57,41 @@ export function canManageMembers(role: WorkspaceRole | undefined): boolean {
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+interface CreateWorkspaceResponse {
+  workspaceId: string;
+}
+
+/**
+ * Server-enforced: the `createWorkspace` callable
+ * (functions/src/callable/createWorkspace.ts) owns the free-tier cap of one
+ * workspace per owner and writes the document itself, and firestore.rules now
+ * denies client workspace creates outright — so this is no longer a direct
+ * write, it is a request. The client signature is unchanged so every
+ * pre-existing call site (`ensurePersonalWorkspace` below, `WorkspaceSwitcher`)
+ * keeps working untouched.
+ *
+ * `plan` is no longer merely "effectively free" the way rules once made it — it
+ * is not sent at all. The function stamps `plan: "free"` on every workspace it
+ * writes, so a value passed here would be silently ignored rather than denied.
+ * The parameter survives for call-site compatibility only; a paid or edu
+ * workspace is still provisioned out of band (the Stripe webhook for pro, an
+ * operator for edu), and `update` in firestore.rules still refuses to let any
+ * client touch the field afterwards.
+ */
 export async function createWorkspace(
   name: string,
   ownerId: string,
   plan: Plan = "free"
 ): Promise<string> {
-  const docRef = await addDoc(workspacesRef, {
-    name,
-    ownerId,
-    members: { [ownerId]: "owner" satisfies WorkspaceRole },
-    // Parallel array for `array-contains` membership queries (see Workspace type).
-    memberIds: [ownerId],
-    plan,
-    createdAt: serverTimestamp(),
-  });
-  return docRef.id;
+  void ownerId; // the function derives the owner from the auth token, not the client
+  void plan; // the function forces "free"; see the doc comment above
+
+  const fn = httpsCallable<{ name: string }, CreateWorkspaceResponse>(
+    functions,
+    "createWorkspace"
+  );
+  const { data } = await fn({ name });
+  return data.workspaceId;
 }
 
 export async function getWorkspace(workspaceId: string): Promise<Workspace | null> {
@@ -141,20 +162,22 @@ export type AddByEmailResult = "added" | "not_found" | "already_member";
  * to the workspace at `role`. Mirrors `boardService.addMemberByEmail`. The write
  * is gated by the workspace `update` rule to owner/admin, so call sites must
  * restrict the action to managers (see `canManageMembers`).
+ *
+ * The lookup is a Cloud Function call, not a Firestore query: firestore.rules
+ * denies `list` on `/users` because that collection carries email addresses
+ * (see src/services/userService.ts). The lowercase/trim this function used to
+ * apply now happens server-side, in the one place all three email lookups
+ * share. Signature and return shape are unchanged.
  */
 export async function addMemberByEmail(
   workspaceId: string,
   email: string,
   role: WorkspaceRole = "member"
 ): Promise<{ result: AddByEmailResult; uid?: string }> {
-  const q = query(
-    collection(db, "users"),
-    where("email", "==", email.toLowerCase().trim())
-  );
-  const snap = await getDocs(q);
-  if (snap.empty) return { result: "not_found" };
+  const target = await lookupUserByEmail(email);
+  if (!target) return { result: "not_found" };
 
-  const uid = snap.docs[0].id;
+  const uid = target.uid;
   const wsSnap = await getDoc(doc(db, "workspaces", workspaceId));
   if (!wsSnap.exists()) throw new Error("Workspace not found");
 
@@ -166,4 +189,107 @@ export async function addMemberByEmail(
     memberIds: arrayUnion(uid),
   });
   return { result: "added", uid };
+}
+
+// ── custom swatch palette (Month 5, ROADMAP items 12 + 14) ─────────────────
+
+/** Upper bound on how many swatches `ColorPickerModal` lets a member add —
+ *  enforced only by disabling the "add" control client-side once a
+ *  workspace's `swatches` array reaches this length; `addWorkspaceSwatch`
+ *  itself does not check it (see that function's own comment). */
+export const MAX_WORKSPACE_SWATCHES = 24;
+
+/** Adds `hex` to the workspace's shared swatch row (deduped via `arrayUnion`
+ *  — Firestore treats the field as a set on write). Advisory Pro gate only:
+ *  see `canUseCustomPalette` below for what that means and does not mean.
+ *  Does not itself enforce `MAX_WORKSPACE_SWATCHES` — a caller past the cap
+ *  would still succeed here; `ColorPickerModal` is what stops offering the
+ *  control once the workspace's current `swatches.length` reaches it. */
+export async function addWorkspaceSwatch(workspaceId: string, hex: string): Promise<void> {
+  await updateDoc(doc(db, "workspaces", workspaceId), {
+    swatches: arrayUnion(hex),
+  });
+}
+
+/** Removes `hex` from the workspace's shared swatch row. Fix Wave F7 — this
+ *  was exported with no caller anywhere in `src/`: a workspace that filled
+ *  all `MAX_WORKSPACE_SWATCHES` slots had no in-app way to free one. Now
+ *  called from `ColorPickerModal`'s existing workspace-swatch row via a
+ *  long-press (see that component's `onRemoveSwatch` prop) — the smaller fix
+ *  chosen over designing a new swatch-management surface, since the row
+ *  already renders exactly the affordance removal needs.
+ *
+ *  Deliberately carries the SAME role gate as `addWorkspaceSwatch` above
+ *  (`canManageWorkspace`/`MANAGER_ROLES`, enforced by firestore.rules'
+ *  `workspaces/{id}` update rule) but NOT `canUseCustomPalette`'s plan gate:
+ *  removing frees capacity rather than spending it, so a workspace that has
+ *  since downgraded to free must still be able to tidy its existing
+ *  swatches down to fit under the cap — gating removal behind Pro would trap
+ *  a downgraded workspace at whatever count it happened to have. */
+export async function removeWorkspaceSwatch(workspaceId: string, hex: string): Promise<void> {
+  await updateDoc(doc(db, "workspaces", workspaceId), {
+    swatches: arrayRemove(hex),
+  });
+}
+
+// ── advisory Pro entitlement check ──────────────────────────────────────────
+// ⚠️ ADVISORY ONLY — NOT AN ENFORCEMENT POINT. See quotaService.ts's module
+// header for the full rationale behind that framing; this is the same thing
+// for a boolean feature-gate instead of a countable quota — mirrors
+// audioService.ts#canRecordVoiceNotes exactly, for a different Pro
+// affordance (ROADMAP item 14's "custom palette" badge instead of item 9's
+// voice notes).
+//
+// The per-workspace custom swatch palette is billed as a Pro-tier feature
+// (ROADMAP item 12 / item 14). Nothing server-side enforces THAT today:
+// firestore.rules' `workspaces/{id}` update rule denies a client touching
+// `plan` at all, but has no predicate on `plan` for `swatches` specifically
+// — any workspace OWNER OR ADMIN (that rule's existing role check, same as
+// every field but `name`; see `MANAGER_ROLES` above) can call
+// `addWorkspaceSwatch`/`removeWorkspaceSwatch` on a FREE-plan workspace
+// right now, the same way a patched bundle or a raw SDK `updateDoc` call
+// bypassing this module entirely could. Do not read this as "any member" —
+// a plain (non-owner/admin) member's update is already rejected by that
+// same rule for any field but `name`, `swatches` included; that part IS
+// enforced (see `ColorPickerModal`'s `canManageWorkspace` prop, which
+// exists for exactly that reason). What's unenforced is narrower: PLAN. This
+// function exists solely so `ColorPickerModal` can show a "Pro" badge and
+// route a free user to the upsell instead of silently accepting the write;
+// it denies nothing a server would enforce.
+//
+// Closing this gap needs the same kind of change quotaService.ts's header
+// describes for boards/sessions: a rules predicate on `plan` (or a
+// callable). That is tracked separately (owned by a later task that already
+// touches firestore.rules) — do not add a plan predicate to firestore.rules
+// here, and do not treat this function as enforcement anywhere it's called.
+export function canUseCustomPalette(plan: Plan): boolean {
+  return plan !== "free";
+}
+
+// Fix Wave F2 — ROADMAP.md:615 names three Pro-only feature affordances:
+// presenter, voice notes, custom palette. The other two were both gated in
+// UI and service layer (`audioService.ts#canRecordVoiceNotes`,
+// `canUseCustomPalette` immediately above); this predicate did not exist at
+// all before this fix, so `BoardHeader.tsx`'s presenter toggle was reachable
+// by every plan. Same advisory-only shape as `canUseCustomPalette`: nothing
+// server-side enforces this. Presenting is a `presenting: true` flag on the
+// presenter's own cursor doc (`useBoardCollab.ts#startPresenting`, written
+// via `cursorService.publishCursor`), gated in firestore.rules' `cursors`
+// match only by board membership and `isOwner(userId)` — no `plan`
+// predicate. Adding one is explicitly out of scope for this fix wave
+// (client-side gate only, per its own scope limit) — do not add it to
+// firestore.rules as part of wiring this predicate in.
+//
+// Final correction (C1) — `plan` is `Plan | undefined`, not just `Plan`.
+// `undefined` means the caller does not yet KNOW the plan (the board's
+// workspace hasn't resolved, the board has no workspace at all, or the
+// workspace fetch failed — see `useBoardDocument.ts`'s `boardWorkspace`
+// comment), and that is a different fact from "known to be on the free
+// plan." This must fail OPEN on the unknown case: `plan !== "free"` already
+// does, because `undefined !== "free"`, so an unresolved/legacy caller is
+// treated as presentable and only a plan actually known to be `"free"` is
+// gated. Do not collapse the unknown case to `"free"` at any call site —
+// that reintroduces the regression this fixes.
+export function canUsePresenter(plan: Plan | undefined): boolean {
+  return plan !== "free";
 }

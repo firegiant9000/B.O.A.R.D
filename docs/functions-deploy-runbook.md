@@ -62,8 +62,53 @@ firebase functions:secrets:set EMBED_JWT_SECRET
 # paste e.g. the output of: openssl rand -base64 48
 ```
 
-Rotating it invalidates every outstanding embed link immediately (they fail
+Rotating it invalidates every outstanding embed **link** immediately (they fail
 verification) — acceptable, since links are short-lived and the host re-mints.
+
+⚠️ **Rotation is not session revocation.** `exchangeEmbedToken` trades a link for a
+Firebase custom token, and `signInWithCustomToken` establishes an Auth session with
+a refresh token that outlives the link entirely. Rotating `EMBED_JWT_SECRET` stops
+new links being redeemed; it does **not** end sessions already exchanged from old
+ones. For a read-only embed that is the accepted Month 4 trade. For an **editable**
+embed it means a link that leaked before rotation is board write access with no
+expiry — see the caveat under the issuer allowlist below. Ending such a session
+today requires `firebase auth:import`-level intervention, i.e.
+`getAuth().revokeRefreshTokens('embed:<iss>:<sub>')` from an admin context, and
+there is no callable that does it.
+
+**Month 5 — embed issuer allowlist.** Editable embeds carry a host-asserted
+subject (`sub`) plus the host that asserted it (`iss`). `iss` is the namespace the
+exchanged Firebase uid is minted under (`embed:<iss>:<sub>`), so it is checked
+against an allowlist — an unvalidated issuer would make the namespace decorative.
+Not a secret, but a runtime param so it can never be edited from a client bundle:
+
+```bash
+# functions/.env.<projectId>
+EMBED_ALLOWED_ISSUERS=meet,extension
+```
+
+It **defaults to empty, which fails closed**: read-only embeds keep working (they
+carry no issuer), but every editable embed is refused until a host is listed. Add
+a host here only when you intend to trust its identity assertions — a compromised
+allowlisted host can impersonate its own users to each other inside its own
+namespace. It can never reach a real B.O.A.R.D account or a board its token does
+not name.
+
+⚠️ **Before listing a host, know what you cannot take back.** An editable link is
+minted with a 5-minute redemption window, but the session it exchanges to is
+unbounded and there is no revocation path (see the secret-rotation note above). So
+an editable link that leaks within those 5 minutes is durable board write access.
+Removing a host from this list stops new links; it does not end sessions already
+established under it. Closing that gap properly needs an `auth_time` bound in the
+rules' `isEmbedEditor` plus a re-exchange loop in the host client — neither exists
+yet.
+
+Month 5's Google Meet add-on shell (`web/meet-addon/`) exists in this repo — do
+**not** read that as "the integration shipped, so `meet` is safe to add here." The
+shell is client wiring only; it does not close the gap above. Do not add `meet` (or
+any real host) to this list, and do not submit that add-on to the Workspace
+Marketplace, until session revocation exists. See `web/meet-addon/README.md`'s
+BLOCKER section for the current, up-to-date statement of what is missing.
 
 ## 3. Deploy
 

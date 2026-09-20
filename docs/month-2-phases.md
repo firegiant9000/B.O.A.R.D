@@ -1,7 +1,12 @@
 # Month 2 — Production Readiness + Auth Polish: Phased Implementation Plan
 
-> **Status:** Planning. Branch `feature/month-2-production-readiness` cut from
-> `main` (post-PR-#89). No prior M2 branches or PRs exist.
+> **Status:** ✅ **Delivered and merged to `main` via PR #90.** All 12 scope items
+> shipped; two were deferred by design (group/ungroup → later; Google Sign-In → M3,
+> where it shipped in `f359613`). This document is kept as the plan of record — the
+> phase contracts below describe what was built. **Month 2 is not *closed*:** the
+> exit criteria are store/device verification (signed builds, TestFlight, push on
+> real hardware, Lighthouse, link + share-intake on-device). That open list is
+> maintained in ROADMAP.md → Month 2 → "Remaining to close Month 2", not here.
 > **Roadmap source:** ROADMAP.md → Month 2 (scope items 1–12).
 > **Carry-forward folded in:** M1 §1 (real Sentry SDK), M1 §2 (selection
 > unification on text), M1 §3 (Android perf baseline numbers).
@@ -411,6 +416,12 @@ deferred** — selection is ephemeral and there is no persistent group primitive
 `⌘/Ctrl+G` would be a dead key; true grouping is a data-model feature (`groupId` +
 selection/transform changes) in its own right, out of a shortcuts phase per this
 plan's own "bind actions that already exist" rationale.
+
+> **Superseded in Month 6 — the `N` half only.** `N`→triangle was this plan's own
+> leftover-letter choice; `ROADMAP.md:243` assigns `N` to the **sticky note** and
+> gives triangle no key at all, and where the plan and the spec conflict the spec
+> wins. Triangle is now reachable through `ShapeOptionsBar`'s kind row and shape
+> recognition rather than a shortcut. The rest of this decision stands.
 
 **Shipped:**
 - **Pure resolver** `src/lib/shortcuts.ts` — a single key-chord → action table

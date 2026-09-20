@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "id": "sprint-planner",
+  "title": "Sprint Planner",
+  "category": "cs",
+  "description": "A five-column Kanban board for planning and tracking a sprint.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Sprint Planner",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 56,
+      "width": 180,
+      "height": 500,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "BACKLOG",
+      "x": 10,
+      "y": 66,
+      "width": 160,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 196,
+      "y": 56,
+      "width": 180,
+      "height": 500,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TO DO",
+      "x": 206,
+      "y": 66,
+      "width": 160,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 392,
+      "y": 56,
+      "width": 180,
+      "height": 500,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "IN PROGRESS",
+      "x": 402,
+      "y": 66,
+      "width": 160,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 588,
+      "y": 56,
+      "width": 180,
+      "height": 500,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "REVIEW",
+      "x": 598,
+      "y": 66,
+      "width": 160,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 784,
+      "y": 56,
+      "width": 180,
+      "height": 500,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "DONE",
+      "x": 794,
+      "y": 66,
+      "width": 160,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Write user stories here before sprint planning.",
+      "x": 10,
+      "y": 100
+    },
+    {
+      "type": "note",
+      "content": "Pull in one task at a time.",
+      "x": 206,
+      "y": 100
+    },
+    {
+      "type": "note",
+      "content": "Flag blockers in daily standup.",
+      "x": 402,
+      "y": 100
+    }
+  ]
+}

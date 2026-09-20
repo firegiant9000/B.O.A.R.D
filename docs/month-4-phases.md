@@ -4,7 +4,12 @@
 **Drafted:** 2026-06-14
 **Branch:** `feature/month-4-sessions-ai` (off `main`)
 **Source scope:** `ROADMAP.md` § Month 4 (items 1–12), Appendix B (AI), Appendix C (collaboration).
-**Status:** Planning draft — sequencing + per-phase contracts, not yet implemented.
+**Status:** ✅ **Delivered and merged to `main` via PR #92** (7 feature commits,
+`4047bf2` → `f3939d0`). All 12 scope items shipped; this document is kept as the
+plan of record — the per-phase contracts describe what was built. **Month 4 is not
+*closed*:** every AI surface is behind a build-time flag that still defaults OFF,
+`functions/` has never been deployed, and the legacy client-held OpenAI key path is
+still the live default. See ROADMAP.md → Month 4 → "Remaining to close Month 4".
 
 > **How to read this:** Month 4 turns the `session` primitive + AI into the
 > reason someone picks B.O.A.R.D over Excalidraw. The work splits into three

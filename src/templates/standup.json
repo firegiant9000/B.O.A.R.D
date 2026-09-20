@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "standup",
+  "title": "Daily Standup",
+  "category": "meeting",
+  "description": "Yesterday / today / blockers — a quick async or live standup board.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Daily Standup",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 60,
+      "width": 240,
+      "height": 260,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "YESTERDAY",
+      "x": 10,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add your update here.",
+      "x": 10,
+      "y": 104
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 260,
+      "y": 60,
+      "width": 240,
+      "height": 260,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TODAY",
+      "x": 270,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add your update here.",
+      "x": 270,
+      "y": 104
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 520,
+      "y": 60,
+      "width": 240,
+      "height": 260,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "BLOCKERS",
+      "x": 530,
+      "y": 70,
+      "width": 220,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#475569"
+    },
+    {
+      "type": "note",
+      "content": "Add your update here.",
+      "x": 530,
+      "y": 104
+    }
+  ]
+}

@@ -70,6 +70,37 @@ const imageItem: ClipItem = {
   },
 };
 
+const mathItem: ClipItem = {
+  kind: "math",
+  data: {
+    schemaVersion: 1,
+    type: "math",
+    latex: "x^2",
+    svgPath: "M 0 0 L 1 1",
+    width: 40,
+    height: 20,
+    x: 5,
+    y: 9,
+    scale: 1,
+  },
+};
+
+const codeItem: ClipItem = {
+  kind: "code",
+  data: {
+    schemaVersion: 1,
+    type: "code",
+    code: "const x = 1;",
+    language: "ts",
+    width: 100,
+    height: 50,
+    x: 5,
+    y: 9,
+    fontSize: 14,
+    rotation: 0,
+  },
+};
+
 describe("clipboard store", () => {
   beforeEach(() => clearClipboard());
 
@@ -154,5 +185,32 @@ describe("offsetClipItem", () => {
       expect(out.data.storagePath).toBe("boards/a/images/x/full.jpg");
       expect(out.data.url).toBe("https://example/full");
     }
+  });
+
+  it("offsets a math element's top-left and preserves its already-rendered path", () => {
+    const out = offsetClipItem(mathItem, 16);
+    expect(out.kind).toBe("math");
+    if (out.kind === "math") {
+      expect(out.data.x).toBe(21);
+      expect(out.data.y).toBe(25);
+      expect(out.data.svgPath).toBe("M 0 0 L 1 1");
+      expect(out.data.width).toBe(40);
+    }
+    // original untouched
+    expect(mathItem.data.x).toBe(5);
+  });
+
+  it("offsets a code element's top-left and preserves its source/language", () => {
+    const out = offsetClipItem(codeItem, 16);
+    expect(out.kind).toBe("code");
+    if (out.kind === "code") {
+      expect(out.data.x).toBe(21);
+      expect(out.data.y).toBe(25);
+      expect(out.data.code).toBe("const x = 1;");
+      expect(out.data.language).toBe("ts");
+      expect(out.data.width).toBe(100);
+    }
+    // original untouched
+    expect(codeItem.data.x).toBe(5);
   });
 });

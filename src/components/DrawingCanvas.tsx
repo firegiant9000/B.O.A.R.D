@@ -2,7 +2,9 @@ import React, { useRef, useMemo, useEffect, useCallback } from "react";
 import { View, StyleSheet, Dimensions, Platform } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Svg, { Path, G, Rect, Ellipse, Line, Polygon, Circle, Defs, Pattern, Image as SvgImage } from "react-native-svg";
-import { DrawPath, ImageElement, BackgroundTemplate } from "../types";
+import { DrawPath, ImageElement, MathElement, CodeElement, BackgroundTemplate } from "../types";
+import MathElementView from "./board/MathElementView";
+import CodeElementView from "./board/CodeElementView";
 import { Viewport, Point, Bounds, screenToBoard } from "../lib/viewport";
 import {
   ShapeDraft,
@@ -19,6 +21,8 @@ import {
   LINE_COLOR,
   AXIS_COLOR,
 } from "../lib/backgrounds";
+import { PenStyle, renderParamsFor, calligraphyWidthRange } from "../lib/penStyles";
+import { calligraphyPathD } from "../lib/calligraphy";
 
 interface DrawingCanvasProps {
   paths: DrawPath[];
@@ -26,6 +30,14 @@ interface DrawingCanvasProps {
   shapes?: (ShapeDraft & { id: string })[];
   /** Persisted image elements (Phase 9), rendered in the SVG element tree. */
   images?: ImageElement[];
+  /** Persisted math elements (Month 6), rendered in the SVG element tree as
+   *  ordinary `<Path>` nodes — which is what makes an equation selectable,
+   *  transformable, exportable and printable with no special-casing. */
+  mathElements?: MathElement[];
+  /** Persisted code elements (Month 6), rendered in the SVG element tree.
+   *  Unlike math, a code element is an ordinary positioned text box (real
+   *  rotation, real z-order) — see `CodeElement`'s type comment. */
+  codeElements?: CodeElement[];
   /** In-progress shape being dragged out, in board-space. */
   shapeDraft?: ShapeDraft | null;
   /** Smart-guide lines (board-space) to overlay during a shape drag. */
@@ -45,6 +57,12 @@ interface DrawingCanvasProps {
   currentPath: Point[] | null;
   color: string;
   strokeWidth: number;
+  /** Month 5 (ROADMAP item 12) — the in-progress stroke's pen variant/alpha,
+   *  mirroring `DrawPath.penStyle`/`opacity` for a persisted one. Both
+   *  optional so a caller drawing plain pen strokes (or the eraser, which
+   *  ignores both) needn't pass them. */
+  penStyle?: PenStyle;
+  opacity?: number;
   tool: "pen" | "eraser";
   viewport: Viewport;
   /** When false, only drawing is active (pan/zoom disabled) — the rollback path. */
@@ -62,8 +80,14 @@ interface DrawingCanvasProps {
   /** A stationary tap, in board-space (text placement / dot). */
   onTap: (point: Point) => void;
   /** Phase 6: pointer moved (hover on web, drag on native), in board-space.
-   *  Side-channel only — must not trigger an element-tree re-render. */
-  onPointerMove?: (point: Point) => void;
+   *  Side-channel only — must not trigger an element-tree re-render.
+   *  Month 5: `pressed` is true only while a button/finger is actually down.
+   *  Native's only source for this callback is mid-drag (no hover on touch),
+   *  so it's always `true` there; web's hover listener reports the real
+   *  `PointerEvent.buttons` state, so a plain mouse-move with nothing held
+   *  reports `false`. The laser tool is the one consumer that cares — see
+   *  `useBoardCollab.ts#publishPointer`. */
+  onPointerMove?: (point: Point, pressed: boolean) => void;
   onPanBy: (dx: number, dy: number) => void;
   onZoomAtPoint: (factor: number, focal: Point) => void;
   onFling: (vx: number, vy: number) => void;
@@ -104,6 +128,126 @@ function simplifyPoints(points: Point[], tolerance: number = 2): Point[] {
 function dashArray(strokeWidth: number): string {
   const d = Math.max(2, strokeWidth * 2);
   return `${d},${d}`;
+}
+
+/**
+ * Resolved paint for one stroke (persisted or the in-progress preview) —
+ * either a stroked outline (`fillMode: false`) or, for calligraphy, a
+ * filled variable-width ribbon (`fillMode: true` — see `calligraphyPathD`'s
+ * own header for why that variant can't be a stroked `<Path>` at all).
+ * Pure/no-JSX so it's one code path for both the persisted-paths loop and
+ * the live `currentPath` preview below, instead of two render sites quietly
+ * drifting apart on how a pen variant looks.
+ */
+export interface StrokeVisual {
+  d: string;
+  fillMode: boolean;
+  paintColor: string;
+  paintOpacity: number;
+  strokeWidth: number;
+  linecap: "round" | "butt" | "square";
+  linejoin: "round" | "miter" | "bevel";
+  multiplyBlend: boolean;
+}
+
+function strokeVisualFor(
+  points: Point[],
+  color: string,
+  strokeWidth: number,
+  tool: "pen" | "eraser",
+  penStyle: PenStyle | undefined,
+  opacity: number | undefined
+): StrokeVisual {
+  if (tool === "eraser") {
+    // Unchanged from the pre-Month-5 eraser look: opaque white/gray paint,
+    // never touched by penStyle/opacity (an eraser stroke has neither).
+    return {
+      d: pointsToSvgPath(points),
+      fillMode: false,
+      paintColor: "#FFFFFF",
+      paintOpacity: 1,
+      strokeWidth: strokeWidth + 10,
+      linecap: "round",
+      linejoin: "round",
+      multiplyBlend: false,
+    };
+  }
+  if (penStyle === "calligraphy") {
+    const [minW, maxW] = calligraphyWidthRange(strokeWidth);
+    return {
+      d: calligraphyPathD(points, minW, maxW),
+      fillMode: true,
+      paintColor: color,
+      paintOpacity: opacity ?? 1,
+      strokeWidth: 0,
+      linecap: "round",
+      linejoin: "round",
+      multiplyBlend: false,
+    };
+  }
+  const params = renderParamsFor(penStyle, strokeWidth, opacity);
+  return {
+    d: pointsToSvgPath(points),
+    fillMode: false,
+    paintColor: color,
+    paintOpacity: params.opacity,
+    strokeWidth: params.strokeWidth,
+    linecap: params.linecap,
+    linejoin: params.linejoin,
+    multiplyBlend: params.multiplyBlend,
+  };
+}
+
+/**
+ * The highlighter's "multiply blend mode" (ROADMAP item 12). react-native-
+ * svg's PUBLIC TypeScript types (`PathProps` via `CommonPathProps`) don't
+ * declare a `style` prop, but its own web renderer's prop preparation does
+ * accept and forward one straight onto the real DOM node
+ * (react-native-svg/src/web/utils/prepare.ts: `style?: object`, merged via
+ * `resolve(...)`) — confirmed against the installed package's source, not
+ * assumed. That makes a real CSS `mix-blend-mode` reachable on web without a
+ * WebView (never allowed on this canvas): the cast below is narrowly scoped
+ * to this one call site, not a blanket escape hatch.
+ *
+ * This is a genuinely **web-only** effect. RNSVG's iOS/Android backend has
+ * no CSS style pipeline to forward this into, and the library's only actual
+ * blend-mode primitive (`<FeBlend>`) blends two NAMED filter inputs — it has
+ * no supported "blend against whatever the canvas already painted" input
+ * (the legacy `BackgroundImage` SVG keyword this would need is not
+ * documented as implemented here, and is unsupported/removed in most modern
+ * renderers regardless). So on native this resolves to `{}`: the highlighter
+ * still renders as the translucent wide stroke above, just without the
+ * darkened overlap where two highlighter strokes cross. That gap is a real,
+ * disclosed platform limitation — not something to claim is "fixed" later
+ * without an actual native blend primitive to fix it with.
+ */
+function multiplyBlendStyle(active: boolean): Partial<React.ComponentProps<typeof Path>> {
+  if (!active || Platform.OS !== "web") return {};
+  return { style: { mixBlendMode: "multiply" } } as unknown as Partial<React.ComponentProps<typeof Path>>;
+}
+
+/** Renders one resolved `StrokeVisual` as the right kind of `<Path>`. Exported
+ *  (only) for `DrawingCanvas.test.tsx`'s render-level check that
+ *  `multiplyBlendStyle` actually reaches the rendered `<Path>` as a `style`
+ *  prop on web and as nothing on native — this component has no test file
+ *  of its own otherwise (see that file's header for why). */
+export function StrokeSvg({ visual }: { visual: StrokeVisual }) {
+  if (!visual.d) return null;
+  if (visual.fillMode) {
+    return <Path d={visual.d} fill={visual.paintColor} fillOpacity={visual.paintOpacity} stroke="none" />;
+  }
+  return (
+    <Path
+      d={visual.d}
+      stroke={visual.paintColor}
+      strokeOpacity={visual.paintOpacity}
+      strokeWidth={visual.strokeWidth}
+      fill="none"
+      strokeLinecap={visual.linecap}
+      strokeLinejoin={visual.linejoin}
+      {...multiplyBlendStyle(visual.multiplyBlend)}
+    />
+  );
 }
 
 /** SVG arrowhead barbs for one end of a line/arrow. */
@@ -299,6 +443,8 @@ function DrawingCanvas(
     paths,
     shapes,
     images,
+    mathElements,
+    codeElements,
     shapeDraft,
     guides,
     selectedIds,
@@ -309,6 +455,8 @@ function DrawingCanvas(
     currentPath,
     color,
     strokeWidth,
+    penStyle,
+    opacity,
     tool,
     viewport,
     enablePanZoom,
@@ -372,8 +520,10 @@ function DrawingCanvas(
       .onUpdate((e) => {
         // Broadcast the pointer regardless of mode (native has no hover, so a
         // drag is the only cursor signal). Side-channel only — publishing is
-        // throttled downstream and never sets state here.
-        cbRef.current.onPointerMove?.(toBoard(e.x, e.y));
+        // throttled downstream and never sets state here. `pressed: true` —
+        // `.onUpdate` only ever fires mid-drag, so a finger/button is
+        // definitionally down for every call here.
+        cbRef.current.onPointerMove?.(toBoard(e.x, e.y), true);
         if (panModeRef.current) {
           cbRef.current.onPanBy(e.x - panLast.x, e.y - panLast.y);
           panLast = { x: e.x, y: e.y };
@@ -455,6 +605,14 @@ function DrawingCanvas(
   // (Phase 6). Side-channel only — onPointerMove is throttled downstream and
   // never re-renders the element tree. Native gets the signal from the gesture
   // above (no hover events on touch).
+  //
+  // Month 5: `e.buttons` (a bitmask; 0 means nothing pressed) is reported
+  // through as `pressed` — a plain hover has nothing held, so it must read as
+  // `false`. Without this, moving the mouse across the canvas with the laser
+  // tool selected paints a continuous trail with no press at all, and a
+  // genuinely isolated quick-tap becomes unreachable (hover right before and
+  // after the tap already seeded one) — this listener runs regardless of
+  // tool, so it's the one place that has to get the distinction right.
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const node: HTMLElement | null = containerRef.current;
@@ -463,7 +621,8 @@ function DrawingCanvas(
       if (disabledRef.current) return;
       const rect = node.getBoundingClientRect();
       cbRef.current.onPointerMove?.(
-        toBoard(e.clientX - rect.left, e.clientY - rect.top)
+        toBoard(e.clientX - rect.left, e.clientY - rect.top),
+        e.buttons > 0
       );
     };
     node.addEventListener("pointermove", onMove);
@@ -482,14 +641,20 @@ function DrawingCanvas(
   const offsetTransform = selectedTransform || undefined;
   const strokeW = 1 / (viewport.scale || 1);
 
-  // Memoize simplified path strings to avoid recomputing on every render.
+  // Memoize resolved stroke visuals (incl. the simplified point path) to
+  // avoid recomputing on every render.
   const pathStrings = useMemo(
     () =>
       paths.map((p) => ({
         id: p.id,
-        d: pointsToSvgPath(simplifyPoints(p.points)),
-        color: p.tool === "eraser" ? "#FFFFFF" : p.color,
-        strokeWidth: p.tool === "eraser" ? p.strokeWidth + 10 : p.strokeWidth,
+        visual: strokeVisualFor(
+          simplifyPoints(p.points),
+          p.color,
+          p.strokeWidth,
+          p.tool,
+          p.penStyle,
+          p.opacity
+        ),
       })),
     [paths]
   );
@@ -521,35 +686,39 @@ function DrawingCanvas(
                 <ImageSvg key={img.id} img={img} />
               )
             )}
-            {pathStrings.map((p) => {
-              if (!p.d) return null;
-              const node = (
-                <Path
-                  d={p.d}
-                  stroke={p.color}
-                  strokeWidth={p.strokeWidth}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              );
-              return offsetTransform && isSel(p.id) ? (
-                <G key={p.id} transform={offsetTransform}>
-                  {node}
+            {pathStrings.map(({ id, visual }) => {
+              if (!visual.d) return null;
+              return offsetTransform && isSel(id) ? (
+                <G key={id} transform={offsetTransform}>
+                  <StrokeSvg visual={visual} />
                 </G>
               ) : (
-                React.cloneElement(node, { key: p.id })
+                <StrokeSvg key={id} visual={visual} />
               );
             })}
-            {currentPath && currentPath.length > 0 && (
+            {currentPath && currentPath.length > 0 && tool === "eraser" && (
+              // Live eraser preview keeps its own distinct light-gray trail
+              // (unchanged from before Month 5's colour + stroke polish) rather than routing through
+              // strokeVisualFor's eraser branch, which renders the
+              // PERSISTED-eraser-path white that made sense against a plain
+              // white canvas — the two were already different colors and
+              // stay that way here.
               <Path
                 d={pointsToSvgPath(currentPath)}
-                stroke={tool === "eraser" ? "#E5E7EB" : color}
-                strokeWidth={tool === "eraser" ? strokeWidth + 10 : strokeWidth}
+                stroke="#E5E7EB"
+                strokeWidth={strokeWidth + 10}
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
+            )}
+            {currentPath && currentPath.length > 0 && tool === "pen" && (
+              // Live pen/highlighter/marker/calligraphy preview — one code
+              // path with the persisted-path renderer above (strokeVisualFor
+              // + StrokeSvg), so the in-progress stroke looks exactly like
+              // what committing it will persist, never a "plain until it
+              // lands" flash for the three new variants.
+              <StrokeSvg visual={strokeVisualFor(currentPath, color, strokeWidth, "pen", penStyle, opacity)} />
             )}
             {shapes?.map((s) =>
               offsetTransform && isSel(s.id) ? (
@@ -561,6 +730,38 @@ function DrawingCanvas(
               )
             )}
             {shapeDraft && <ShapeSvg s={shapeDraft} />}
+            {/* Math elements (Month 6) render above strokes and shapes — the
+                reverse of `useBoardElements.hitTestAny`'s walk order, which
+                is what keeps "what you tap" and "what you see on top" the
+                same thing. Within the layer they take the live group
+                transform exactly like every other kind, because they are
+                just `<Path>` nodes. */}
+            {mathElements?.map((m) =>
+              offsetTransform && isSel(m.id) ? (
+                <G key={m.id} transform={offsetTransform}>
+                  <MathElementView element={m} />
+                </G>
+              ) : (
+                <MathElementView key={m.id} element={m} />
+              )
+            )}
+            {/* Code elements (Month 6) render directly above math — the same
+                "newest rich-content kind paints on top" ordering
+                `useBoardElements.hitTestAny`'s own comment describes, still
+                under the text overlay above. `selected={isSel(c.id)}` gates
+                the copy-code badge per element: `isSel` is a `.has()` check
+                against the whole selection set, so every selected code
+                element in a multi-select renders its own badge, mirroring
+                `CodeElementView.test.tsx`'s own convention. */}
+            {codeElements?.map((c) =>
+              offsetTransform && isSel(c.id) ? (
+                <G key={c.id} transform={offsetTransform}>
+                  <CodeElementView element={c} selected={isSel(c.id)} />
+                </G>
+              ) : (
+                <CodeElementView key={c.id} element={c} selected={isSel(c.id)} />
+              )
+            )}
             {/* Per-element selection outlines (board-space), shifted with the
                 live move so multi-select feedback tracks the drag. */}
             {selectionBoxes?.map((b, i) => {

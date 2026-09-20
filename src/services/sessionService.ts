@@ -1,6 +1,5 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
   deleteDoc,
@@ -15,20 +14,13 @@ import {
   Timestamp,
   QueryConstraint,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
-import { Session, SessionSummary, ParticipantSnapshot } from "../types";
-import { randomCode } from "../lib/secureRandom";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../config/firebase";
+import { Plan, Session, SessionSummary, ParticipantSnapshot } from "../types";
 import { assertQuota } from "./quotaService";
 import { getUsersByIds } from "./friendService";
 
 const sessionsRef = collection(db, "sessions");
-
-// Excludes ambiguous glyphs (I/O/0/1) so codes read aloud unambiguously.
-const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateJoinCode(): string {
-  return `SESS-${randomCode(6, JOIN_CODE_CHARS)}`;
-}
 
 function mapSession(id: string, data: any): Session {
   return {
@@ -58,27 +50,97 @@ function mapSession(id: string, data: any): Session {
   };
 }
 
+interface CreateSessionResponse {
+  sessionId: string;
+  joinCode: string;
+}
+
+/**
+ * Since M5: this function creates sessions through the `createSession`
+ * callable rather than writing the session doc directly, so every session goes
+ * through the cap and gets a server-generated join code. firestore.rules now
+ * denies client session creates outright, so the callable is the only create
+ * path — a patched client or a raw REST call cannot go around it. The client
+ * signature here is unchanged so every call site keeps working untouched.
+ *
+ * "Through the cap" rather than "capped": Month 6's welcome-session grant
+ * (`opts.welcomeSessionGrant` below) is a branch of that one callable which
+ * creates a session without charging the counter, at most once per workspace
+ * ever. It is still the same create path and still the server's decision —
+ * there is no second mechanism — but a session created that way is genuinely
+ * not counted, and saying otherwise here would be false.
+ *
+ * `scheduledAt` doesn't survive the callable boundary as a `Date`, so it's
+ * converted to epoch milliseconds here; the function rebuilds the `Timestamp`
+ * server-side. Lifecycle fields (`summary`, `joinCode`, `startedAt`,
+ * `endedAt`, `participants`) aren't sent — they're either stamped server-side
+ * at create (`joinCode`, and `startedAt` when `status` is "active") or only
+ * ever set later, by `startSession`/`endSession`/`updateSessionSummary`.
+ *
+ * `quota` is the advisory pre-flight's real plan/count (see quotaService's
+ * module header): optional and additive, so every pre-existing call keeps
+ * working untouched. `currentCount` has no honest value to pass yet — the
+ * authoritative monthly count lives in an owner/admin-gated Firestore doc
+ * (see the module header note on `assertQuota`) — so this only ever forwards
+ * `plan` today; a caller that also has a trustworthy count may pass it.
+ *
+ * `opts.welcomeSessionGrant` (Month 6) asks the callable to create this one
+ * session WITHOUT charging it to the monthly cap. Exactly one caller sets it —
+ * `onboardingService.seedSampleWorkspace`, for the demo session ROADMAP.md:706
+ * requires — and the server grants it at most once per workspace, ever, gated
+ * on a marker only the Admin SDK can write (see the createSession callable's
+ * module header for the full reasoning, including what a patched client can
+ * still do with the flag). Passing it also SKIPS the advisory pre-flight
+ * below, which would otherwise predict a denial the server is not going to
+ * make: the grant exists precisely so a workspace already at its cap can still
+ * be seeded. That skip costs nothing in enforcement — `assertQuota` is UX only
+ * (see quotaService's module header) and the callable decides either way.
+ */
 export async function createSession(
-  data: Omit<Session, "id" | "createdAt">
+  data: Omit<Session, "id" | "createdAt">,
+  quota?: { plan?: Plan; currentCount?: number },
+  opts?: { welcomeSessionGrant?: boolean }
 ): Promise<string> {
-  await assertQuota(data.workspaceId, "session");
-  // Drop lifecycle fields that are stamped server-side, not supplied at create:
-  // startedAt is set below (or by startSession), endedAt/participants only at end.
-  const { summary, joinCode: _jc, startedAt: _st, endedAt: _en, participants: _p, ...rest } = data;
-  const payload: Record<string, any> = {
-    ...rest,
-    joinCode: generateJoinCode(),
-    scheduledAt: Timestamp.fromDate(rest.scheduledAt),
-    createdAt: serverTimestamp(),
-  };
-  if (summary !== undefined) payload.summary = summary;
-  if (rest.agenda === undefined) delete payload.agenda; // Firestore rejects undefined
-  // A session created already "active" (e.g. the board's Start Session modal)
-  // anchors its elapsed timer from now; scheduled sessions get startedAt at the
-  // scheduled → active transition (see startSession).
-  if (rest.status === "active") payload.startedAt = serverTimestamp();
-  const ref = await addDoc(sessionsRef, payload);
-  return ref.id;
+  const welcomeSessionGrant = opts?.welcomeSessionGrant === true;
+  if (!welcomeSessionGrant) {
+    await assertQuota(data.workspaceId, "session", quota?.plan, quota?.currentCount);
+  }
+
+  const fn = httpsCallable<
+    {
+      workspaceId: string;
+      boardId: string;
+      boardTitle?: string;
+      title: string;
+      description?: string;
+      scheduledAtMs: number;
+      durationMinutes: number;
+      createdByName?: string;
+      participantIds?: string[];
+      status?: Session["status"];
+      agenda?: string;
+      welcomeSessionGrant?: boolean;
+    },
+    CreateSessionResponse
+  >(functions, "createSession");
+
+  const { data: res } = await fn({
+    workspaceId: data.workspaceId,
+    boardId: data.boardId,
+    boardTitle: data.boardTitle,
+    title: data.title,
+    description: data.description,
+    scheduledAtMs: data.scheduledAt.getTime(),
+    durationMinutes: data.durationMinutes,
+    createdByName: data.createdByName,
+    participantIds: data.participantIds,
+    status: data.status,
+    agenda: data.agenda,
+    // Omitted entirely rather than sent as `false`, so an ordinary create's
+    // payload is byte-for-byte what it was before the grant existed.
+    ...(welcomeSessionGrant ? { welcomeSessionGrant: true } : {}),
+  });
+  return res.sessionId;
 }
 
 export async function joinSessionByCode(

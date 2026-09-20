@@ -185,13 +185,29 @@ export async function batchUpdateImages(
   }
 }
 
+// Month 5 — fixes the M2 carry-forward defect ("Storage objects orphaned on
+// group-delete/clear-board"): both functions below used to delete only the
+// Firestore docs, leaving every image's full.jpg/thumb.jpg behind in Storage
+// forever. They now delete each doc's pair of Storage objects too, chunked
+// alongside the same writeBatch that deletes the docs — best-effort via
+// `Promise.allSettled`, same as deleteImage's single-delete path above (a
+// missing object isn't fatal; the doc is already gone and is the source of
+// truth). See audioService's `batchDeleteVoiceNotes`/`clearBoardVoiceNotes`
+// for the same fix applied to the newer Storage-backed element kind.
 export async function batchDeleteImages(boardId: string, ids: string[]): Promise<void> {
   for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
     const batch = writeBatch(db);
-    for (const imageId of ids.slice(i, i + 500)) {
+    for (const imageId of chunk) {
       batch.delete(doc(db, "boards", boardId, "images", imageId));
     }
     await batch.commit();
+    await Promise.allSettled(
+      chunk.flatMap((imageId) => [
+        deleteObject(storageRef(storage, `boards/${boardId}/images/${imageId}/full.jpg`)),
+        deleteObject(storageRef(storage, `boards/${boardId}/images/${imageId}/thumb.jpg`)),
+      ])
+    );
   }
 }
 
@@ -199,9 +215,16 @@ export async function clearBoardImages(boardId: string): Promise<void> {
   const ref = collection(db, "boards", boardId, "images");
   const snapshot = await getDocs(ref);
   for (let i = 0; i < snapshot.docs.length; i += 500) {
+    const chunk = snapshot.docs.slice(i, i + 500);
     const batch = writeBatch(db);
-    snapshot.docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
+    chunk.forEach((d) => batch.delete(d.ref));
     await batch.commit();
+    await Promise.allSettled(
+      chunk.flatMap((d) => [
+        deleteObject(storageRef(storage, `boards/${boardId}/images/${d.id}/full.jpg`)),
+        deleteObject(storageRef(storage, `boards/${boardId}/images/${d.id}/thumb.jpg`)),
+      ])
+    );
   }
 }
 

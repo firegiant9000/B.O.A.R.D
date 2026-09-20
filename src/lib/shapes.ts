@@ -18,6 +18,10 @@ export const GUIDE_TOLERANCE = 8;
 // Minimum board-space extent of a creation drag before it persists as a shape.
 // Below this a drag is treated as a stray tap and discarded.
 export const MIN_SHAPE_SIZE = 4;
+// Alpha applied to the active colour (via `hexToRgba`) when a fillable shape has
+// fill turned on. Read by both the shape tool's draft builder and the recolour
+// path, so it lives here with the other shape constants rather than in either.
+export const SHAPE_FILL_ALPHA = 0.2;
 
 /** The geometric subset of a shape needed for bbox / rendering math. */
 export type ShapeGeometry = Pick<

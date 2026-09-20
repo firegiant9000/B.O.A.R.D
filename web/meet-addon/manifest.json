@@ -1,0 +1,14 @@
+{
+  "addOns": {
+    "common": {
+      "name": "B.O.A.R.D",
+      "logoUrl": "https://board-6b415.web.app/assets/icon.png"
+    },
+    "meet": {
+      "web": {
+        "sidePanelUrl": "https://board-6b415.web.app/meet-addon/panel.html",
+        "addOnOrigins": ["https://board-6b415.web.app"]
+      }
+    }
+  }
+}

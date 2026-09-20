@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "lecture-notes",
+  "title": "Lecture Notes",
+  "category": "classroom",
+  "description": "Topic boxes with room for sub-points, for outlining a lecture as it happens.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Lecture Notes — Topic",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 60,
+      "width": 220,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#0f172a",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "Main Point 1",
+      "x": 10,
+      "y": 80,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 0,
+      "y": 136
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 0,
+      "y": 216
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 260,
+      "y": 60,
+      "width": 220,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#0f172a",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "Main Point 2",
+      "x": 270,
+      "y": 80,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 260,
+      "y": 136
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 260,
+      "y": 216
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 520,
+      "y": 60,
+      "width": 220,
+      "height": 60,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#0f172a",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "Main Point 3",
+      "x": 530,
+      "y": 80,
+      "width": 200,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 520,
+      "y": 136
+    },
+    {
+      "type": "note",
+      "content": "Sub-point / example",
+      "x": 520,
+      "y": 216
+    }
+  ]
+}

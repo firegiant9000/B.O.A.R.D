@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "id": "weekly-kanban",
+  "title": "Weekly Kanban",
+  "category": "classroom",
+  "description": "A day-by-day Kanban for organizing a week's assignments.",
+  "elements": [
+    {
+      "type": "text",
+      "text": "Weekly Kanban",
+      "x": 0,
+      "y": 0,
+      "width": 760,
+      "height": 36,
+      "fontSize": 24,
+      "color": "#0f172a"
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 0,
+      "y": 56,
+      "width": 150,
+      "height": 420,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "MON",
+      "x": 10,
+      "y": 66,
+      "width": 130,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Task",
+      "x": 10,
+      "y": 100
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 166,
+      "y": 56,
+      "width": 150,
+      "height": 420,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "TUE",
+      "x": 176,
+      "y": 66,
+      "width": 130,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Task",
+      "x": 176,
+      "y": 100
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 332,
+      "y": 56,
+      "width": 150,
+      "height": 420,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "WED",
+      "x": 342,
+      "y": 66,
+      "width": 130,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Task",
+      "x": 342,
+      "y": 100
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 498,
+      "y": 56,
+      "width": 150,
+      "height": 420,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "THU",
+      "x": 508,
+      "y": 66,
+      "width": 130,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Task",
+      "x": 508,
+      "y": 100
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "x": 664,
+      "y": 56,
+      "width": 150,
+      "height": 420,
+      "rotation": 0,
+      "fill": "none",
+      "stroke": "#334155",
+      "strokeWidth": 2,
+      "dashed": false,
+      "arrowheadStart": "none",
+      "arrowheadEnd": "none"
+    },
+    {
+      "type": "text",
+      "text": "FRI",
+      "x": 674,
+      "y": 66,
+      "width": 130,
+      "height": 22,
+      "fontSize": 13,
+      "color": "#0f172a"
+    },
+    {
+      "type": "note",
+      "content": "Task",
+      "x": 674,
+      "y": 100
+    }
+  ]
+}

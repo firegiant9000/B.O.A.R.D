@@ -1,6 +1,5 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
   deleteDoc,
@@ -14,15 +13,14 @@ import {
   deleteField,
   writeBatch,
 } from "firebase/firestore";
-import { db, auth } from "../config/firebase";
-import { Board, BoardRole, Workspace, WorkspaceRole } from "../types";
-import { randomCode } from "../lib/secureRandom";
+import { httpsCallable } from "firebase/functions";
+import { db, auth, functions } from "../config/firebase";
+import { Board, BoardRole, Plan, Workspace, WorkspaceRole } from "../types";
 import { isBackgroundTemplate } from "../lib/backgrounds";
 import { assertQuota } from "./quotaService";
+import { lookupUserByEmail } from "./userService";
 
 const boardsRef = collection(db, "boards");
-
-const INVITE_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function mapBoard(id: string, data: Record<string, any>): Board {
   return {
@@ -40,13 +38,14 @@ function mapBoard(id: string, data: Record<string, any>): Board {
     backgroundTemplate: isBackgroundTemplate(data.backgroundTemplate)
       ? data.backgroundTemplate
       : "blank",
+    // Month 6 — education pilot. Optional/migration-tolerant: absent on
+    // every pre-existing board. See Board.classId's own doc comment for the
+    // pin semantics; this is a plain passthrough read, not an enforcement
+    // point.
+    classId: data.classId ?? undefined,
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   };
-}
-
-function generateInviteCode(): string {
-  return `BORD-${randomCode(6, INVITE_CODE_CHARS)}`;
 }
 
 // ── per-board role resolution (Phase 6) ──────────────────────────────────────
@@ -107,25 +106,43 @@ async function deleteSubcollection(boardId: string, subcollection: string): Prom
   }
 }
 
+interface CreateBoardResponse {
+  boardId: string;
+  inviteCode: string;
+}
+
+/**
+ * Server-enforced since M5: the `createBoard` callable owns the free-tier
+ * board-count gate and generates the invite code (a client can no longer pick
+ * its own). The client signature is unchanged (title/ownerId/workspaceId) so
+ * every pre-existing call site keeps working untouched; `plan`/`currentCount`
+ * are additive and optional.
+ */
 export async function createBoard(
   title: string,
   ownerId: string,
-  workspaceId: string
+  workspaceId: string,
+  // Advisory-only pre-flight (see quotaService's module header) — the caller
+  // supplies the workspace's already-loaded plan and board count so this can
+  // warn before a pointless round trip. Optional: an omitted value falls back
+  // to checkQuota's own "free"/0 defaults, which always predicts "under the
+  // cap". This throws its OWN `QuotaExceededError` (not a callable rejection)
+  // when it predicts over-cap, and short-circuits BEFORE the callable below
+  // ever runs — so on that path the callable does NOT get a chance to make
+  // the real decision. Callers must catch both shapes via
+  // quotaService.isQuotaDenial, never isResourceExhausted alone.
+  plan?: Plan,
+  currentCount?: number
 ): Promise<string> {
-  await assertQuota(workspaceId, "board");
-  const inviteCode = generateInviteCode();
-  const docRef = await addDoc(boardsRef, {
-    workspaceId,
-    title,
-    ownerId,
-    adminId: ownerId,
-    collaboratorIds: [],
-    inviteCode,
-    members: [ownerId],
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
-  return docRef.id;
+  await assertQuota(workspaceId, "board", plan, currentCount);
+  void ownerId; // the function derives the owner from the auth token, not the client
+
+  const fn = httpsCallable<{ workspaceId: string; title: string }, CreateBoardResponse>(
+    functions,
+    "createBoard"
+  );
+  const { data } = await fn({ workspaceId, title });
+  return data.boardId;
 }
 
 // Migration-tolerant workspace scoping (Phase 2). We deliberately keep the
@@ -259,16 +276,22 @@ export async function removeMemberById(boardId: string, uid: string): Promise<vo
 
 export type AddByEmailResult = "added" | "not_found" | "already_member";
 
-/** Looks up a user by email and adds them to the board. Returns the outcome. */
+/** Looks up a user by email and adds them to the board. Returns the outcome.
+ *
+ *  The lookup is a Cloud Function call, not a Firestore query: firestore.rules
+ *  denies `list` on `/users` because that collection carries email addresses
+ *  (see src/services/userService.ts). The lowercase/trim that used to happen on
+ *  this line now happens server-side, so the same normalization applies to all
+ *  three email lookups in this app instead of two of the three. Signature and
+ *  return shape are unchanged. */
 export async function addMemberByEmail(
   boardId: string,
   email: string
 ): Promise<{ result: AddByEmailResult; uid?: string }> {
-  const q = query(collection(db, "users"), where("email", "==", email.toLowerCase().trim()));
-  const snap = await getDocs(q);
-  if (snap.empty) return { result: "not_found" };
+  const target = await lookupUserByEmail(email);
+  if (!target) return { result: "not_found" };
 
-  const uid = snap.docs[0].id;
+  const uid = target.uid;
   const boardSnap = await getDoc(doc(db, "boards", boardId));
   if (!boardSnap.exists()) throw new Error("Board not found");
 

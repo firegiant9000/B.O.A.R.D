@@ -16,12 +16,19 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import WorkspaceSwitcher from "../../src/components/WorkspaceSwitcher";
 import SummaryCard from "../../src/components/SummaryCard";
-import { Session } from "../../src/types";
+import { Session, Plan } from "../../src/types";
 import * as sessionService from "../../src/services/sessionService";
 import * as notificationService from "../../src/services/notificationService";
 import * as activityService from "../../src/services/activityService";
 import * as aiService from "../../src/services/aiService";
+import { isQuotaDenial } from "../../src/services/quotaService";
+import { getWorkspace } from "../../src/services/workspaceService";
+import {
+  trackSessionCompleted,
+  trackAiSummaryGenerated,
+} from "../../src/services/sessionAnalytics";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
+import UpsellModal from "../../src/components/UpsellModal";
 
 type FilterTab = "upcoming" | "active" | "past";
 
@@ -83,6 +90,14 @@ export default function ScheduleScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<FilterTab>("active");
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  // The AI-summary plan-limit upsell, shown instead of a generic alert when a
+  // summary call hits resource-exhausted. Holds the session it was raised
+  // for so the modal has a workspaceId to act on; `upsellPlan` is the
+  // session's workspace's actual plan (looked up fresh — see
+  // handleGenerateSummary), which the modal needs to tell a real plan-cap
+  // denial apart from the plan-independent AI rate throttle.
+  const [upsellSession, setUpsellSession] = useState<Session | null>(null);
+  const [upsellPlan, setUpsellPlan] = useState<Plan | undefined>();
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState("");
@@ -164,6 +179,11 @@ export default function ScheduleScreen() {
             participantCount: session.participantIds.length,
             title: session.title,
           });
+          // Month 6 — ROADMAP.md:685's `session_completed`, schedule-screen
+          // half. `false` for snapshotCaptured is literal, not a placeholder:
+          // this surface has no canvas ref, which is exactly why the
+          // endSession call above passes no snapshot either.
+          trackSessionCompleted(session, "schedule", false);
           setSessions((prev) =>
             prev.map((s) =>
               s.id === session.id
@@ -229,11 +249,32 @@ export default function ScheduleScreen() {
         session.canvasSnapshot
       );
       await sessionService.updateSessionSummary(session.id, summary);
+      // Month 6 — ROADMAP.md:685's `ai_summary_generated`. After the store,
+      // not after the model call: a summary the user never actually got is not
+      // one that was generated as far as this funnel is concerned. Never
+      // inside `sessionService.updateSessionSummary` — onboardingService's
+      // sample seed calls it directly with a CANNED summary
+      // (`SAMPLE_SESSION_SUMMARY`), so an emit there would report an AI call
+      // no model ever made, for every new account.
+      trackAiSummaryGenerated(session, summary, "schedule");
       setSessions((prev) =>
         prev.map((s) => (s.id === session.id ? { ...s, summary } : s))
       );
     } catch (error: any) {
-      showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
+      // checkAiQuota's resource-exhausted covers BOTH the per-workspace AI
+      // rate throttle (plan-independent) and the real plan-cap denial — look
+      // up the workspace's actual plan before deciding what to show.
+      // UpsellModal renders the throttle copy instead of the paywall when
+      // that plan already grants this resource an unlimited allowance.
+      if (isQuotaDenial(error)) {
+        const ws = session.workspaceId
+          ? await getWorkspace(session.workspaceId).catch(() => null)
+          : null;
+        setUpsellPlan(ws?.plan);
+        setUpsellSession(session);
+      } else {
+        showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
+      }
     } finally {
       setGeneratingId(null);
     }
@@ -400,6 +441,14 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
+      <UpsellModal
+        visible={!!upsellSession}
+        resource="aiSummary"
+        plan={upsellPlan}
+        workspaceId={upsellSession?.workspaceId}
+        onDismiss={() => setUpsellSession(null)}
+      />
+
       {/* Screen header — workspace switcher as the title (Phase 3), consistent
           with the Boards tab top bar. */}
       <View style={styles.screenHeader}>

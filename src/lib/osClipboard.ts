@@ -14,3 +14,21 @@ export interface OsClipboardImage {
 export async function getClipboardImage(): Promise<OsClipboardImage | null> {
   return null;
 }
+
+/** Month 6 — writes plain text to the OS clipboard (the flashcard CSV export's
+ *  "get it out of the app" path, since there is no committed dependency here
+ *  for writing a file to disk — see flashcardService.ts's own header on why
+ *  `.apkg` is cut in favor of CSV). Web implementation uses the standard
+ *  Clipboard API directly (no expo-clipboard on web); returns false rather
+ *  than throwing when it's unavailable (an insecure context, an older
+ *  browser, or a test/SSR environment with no `navigator`), so a caller can
+ *  show its own fallback message instead of crashing. */
+export async function setClipboardText(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator === "undefined" || !navigator.clipboard) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
