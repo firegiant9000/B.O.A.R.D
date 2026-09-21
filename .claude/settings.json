@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "disableAllHooks": false,
+  "permissions": {
+    "allow": [
+      "Bash(npm run test:rules)",
+      "Bash(npm run test:rules *)",
+      "Bash(npm --prefix functions test)",
+      "Bash(npm --prefix functions test *)",
+      "Bash(npm --prefix functions run build)",
+      "Bash(npm --prefix functions run build *)",
+      "Bash(npm run test:coverage)",
+      "Bash(npm run test:coverage *)"
+    ]
+  }
+}
