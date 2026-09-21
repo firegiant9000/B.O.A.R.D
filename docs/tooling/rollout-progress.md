@@ -295,3 +295,28 @@ Wave 5 deferred.** No WMS repo was touched in this session.
 `PROMPTS-tooling-rollout.md`, `NEXT-SESSION-PROMPT.md`, and `docs/superpowers/plans/*`. The plan
 never says to track them. Flagged because Task 10's PR body cites the plan path, which will
 dangle in the PR if the plan stays untracked — Arlo's call.
+RULED same session: leave them untracked; drop the plan reference from the PR body instead.
+
+**Task 10 — ATTEMPTED on Arlo's go-ahead, then BLOCKED. Root cause found, not worked around.**
+`git push -u origin chore/claude-config` in B.O.A.R.D failed:
+`remote: Permission to firegiant9000/B.O.A.R.D.git denied to ArloK62` / HTTP 403.
+
+`gh auth status` shows TWO authenticated github.com accounts in the keyring:
+  - `ArloK62` — **Active account: true**, scopes gist/read:org/repo/workflow
+  - `firegiant9000` — Active account: false, same scopes
+The in-scope repos are owned by `firegiant9000`. The active credential is the other account.
+
+This is very likely the SAME root cause as the PlanPal `fetch` failure recorded above: a private
+`firegiant9000/PlanPal` is invisible to `ArloK62`, and GitHub answers a repo you cannot see with
+`404 Repository not found` rather than `403`. B.O.A.R.D is public, so its read (fetch) succeeded
+and only the write (push) hit 403. One cause, two different status codes. NOT yet confirmed for
+PlanPal — confirming it requires switching the active account.
+
+NOT actioned: `gh auth switch` changes the machine-wide git identity and would affect the WMS
+repos and any other session, which is outside this rollout's "config changes only" scope.
+Returned to Arlo.
+
+State at end of session 2 — nothing pushed, no PR opened, nothing merged:
+  B.O.A.R.D  `chore/claude-config` = `33fd443`, 3 commits ahead of `origin/main` @ `8935184`
+  PlanPal    `chore/claude-config` = `3abb26b`, 1 commit ahead of cached `origin/main` @ `f0187a7`
+`npx tsc --noEmit` in B.O.A.R.D: clean, no output, exit 0. No application code was touched.
