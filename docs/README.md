@@ -6,9 +6,10 @@ one level deeper.
 
 ## Plan of record, month by month
 
-The six-month roadmap is [ROADMAP.md](../ROADMAP.md). Each month has a phased
-plan that was written before the work and kept as the record of what was built.
-Each states its own unmet gates.
+The six-month roadmap is [ROADMAP.md](../ROADMAP.md). Months 2–6 each keep the
+phased plan written before the work, as the record of what was built; Month 1
+keeps a completion record instead, its forward-looking plan preserved in git at
+commit `fbdb075`. Each states its own unmet gates.
 
 | Month | Theme | Document |
 |---|---|---|
