@@ -40,22 +40,22 @@ and membership server-side regardless of what the UI showed.
 ## 3. The enforcement spine
 
 `checkQuota()` in `src/services/quotaService.ts` is the UI's free-tier
-pre-flight, there to warn before a create fails. It is not a gate, and the file
-says so on its first line: "ADVISORY ONLY — NOT AN ENFORCEMENT POINT." A
-patched client or an authenticated REST write skips it. Month 5 moved
-every metered create behind a callable. `createBoard` counts the workspace's
-live boards and denies past the cap before writing; `createSession` bumps a
-monthly counter and writes the session in one transaction; `createWorkspace`
-resolves the caller's entitlement across the workspaces they already own.
-`firestore.rules` denies client creates outright for all three — and for
-classes — so the callable is the only path, which makes deploy order
-load-bearing: functions first, rules second, as that file's own header warns.
-The collaborator cap is the odd one out. Joining by invite code is an
-`update` to `members`, not a create, so no callable could cover it; it is a
-rules predicate instead, and a drift test parses the rules text to keep its
-numbers equal to the TypeScript limits table. The bypass test against a
-deployed backend is an explicitly unmet gate: `functions/` has never been
-deployed.
+pre-flight, warning before a create fails. It is not a gate, and the
+file's first line says so: "ADVISORY ONLY — NOT AN ENFORCEMENT POINT." A
+patched client or an authenticated REST write skips it. Month 5 moved every
+metered create behind a callable. `createBoard` counts the workspace's live
+boards and denies past the cap before writing; `createSession` writes the
+session and bumps a monthly counter in one transaction — except for the
+once-per-workspace onboarding session, which commits un-metered alongside its
+marker; `createWorkspace` resolves entitlement across the workspaces the caller
+owns. `firestore.rules` denies client creates outright for all three, and for
+classes, so the callable is the only path, which makes
+deploy order load-bearing: functions first, rules second, as that file's header
+warns. The collaborator cap is the odd one out: joining by invite code is an
+`update` to `members`, not a create, so no callable could cover it. It is a
+rules predicate, kept equal to the TypeScript limits table by a drift test that
+parses the rules text. The bypass test against a deployed backend is an unmet
+gate: `functions/` has never been deployed.
 
 ## 4. Multi-tenancy
 
@@ -76,7 +76,7 @@ tested, and has never been run against real data.
 Every AI feature — session summaries, handwriting OCR, explain-selection,
 text→diagram, flashcards, board Q&A — calls a Cloud Function. The functions
 hold the provider key as a runtime secret, never in the client bundle; talk to
-the model through one adapter interface, so the model is a config change; meter
+the model through one adapter, so the model is a config change; meter
 calls, tokens and cost per workspace and per feature; rate-limit each workspace
 with a token bucket (30-call burst, one token refilled every 30 s); and memoize
 OCR and flashcard generation against a hash of the selected strokes, so a
@@ -85,8 +85,9 @@ Firestore's own `findNearest` vector search, so there is no second datastore.
 Two honest caveats. The functions have never been deployed. And the pre-gateway
 path is still in the tree as the default whenever the gateway flag is off: a
 user-supplied OpenAI key, kept in the user's own Firestore document and cached
-in device storage, used to call the provider straight from the client. Removing
-it is a recorded open item, not a done one.
+in device storage, used to call the provider from the client. Only summaries
+have that fallback; the other five have no client path and are unavailable
+while the flag is off. Removing it is a recorded open item, not a done one.
 
 ## 6. Feature flags
 
@@ -114,7 +115,7 @@ flowchart LR
   SVC -- "httpsCallable (metered creates, AI)" --> CF["Cloud Functions"]
   CF -- "Admin SDK" --> FS
   CF --> AI["AI provider adapter"]
-  CF --> ST["Stripe Checkout"]
+  CF --> ST["Stripe Checkout — code only, no account"]
   RULES["firestore.rules"] -. "gates every client read and write" .- FS
   CFG["src/lib/featureFlags.ts"] -. "hides AI entry points (build-time)" .- UI
 ```
