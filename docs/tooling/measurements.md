@@ -10,6 +10,50 @@ Numbers only. No transcript excerpts, no query text, no identifiers. See the PHI
 | 2026-09-22 | agg | WMSAPI | n/a | n/a | n/a | 2053029286 | 97.7 | 83 | n/a |
 | 2026-09-22 | agg | WMS_Reports | n/a | n/a | n/a | 56844030 | 94.3 | 58 | n/a |
 | 2026-09-22 | agg | WMSSite | — | — | — | — | — | — | — |
+| 2026-09-22 | 0 | PlanPal | 11600 | 5900 | 609 | n/a | n/a | 0 | n/a |
+
+The PlanPal row is the **first real Procedure M measurement** — an M-A `/context` capture from a
+fresh session (Messages 1.3k), model `claude-fable-5-1`, 1M window. Absolute tokens, not estimated.
+`sysprompt` is System prompt 5.0k + Memory files 6.6k = 11.6k; the split matters because Wave 1 adds
+a repo `CLAUDE.md`, which lands in the Memory files half. `totalinput`/`cacheread%` are `n/a`
+because `/context` is a snapshot, not a session total — the `agg` rows above carry those.
+
+**Two findings from that single capture, both of which contradict the plan's assumptions:**
+
+1. **`mcpinstr` is 609 tokens — not "probably the largest single line".** Review §2.2 identified MCP
+   standing cost as the biggest unmeasured item and Task 4/D5 ordered a connector detach on that
+   basis. Measured, it is **0.06% of the window** and the smallest category except Custom agents.
+   The 2026-09-21 D5 entry already found the detach was a no-op; this puts a number on it. **The
+   connector-detach line of work was chasing roughly nothing.**
+2. **`System tools` is 17.8k — 3× `Skills` and by far the largest controllable line.** It is not a
+   column in Procedure M and no task in this plan addresses it. Every measured category:
+   System tools 17.8k, Memory files 6.6k, Skills 5.9k, System prompt 5.0k, Messages 1.3k,
+   MCP tools 609, Custom agents 73. **The rollout has been optimizing the third-largest line while
+   the largest was never measured.** Worth a decision before any further measurement work.
+
+`Skills` at 5.9k is post-`skillOverrides`. Because no pre-change capture was ever taken, the
+review's ~3,150-token claim for the 15 venture skills **remains unverified and now unverifiable** —
+recorded as an open question, not as a win.
+
+## Decisions recorded
+
+**D1 (2026-09-22): hooks re-enabled in B.O.A.R.D and PlanPal only, via project-level
+`disableAllHooks: false`. Option B, verified working.**
+Attribution check after commits made with hooks live: **clean.** Checked all 8 commits across both
+branches (`git log --format=%B | grep -ci "co-authored-by|generated with claude|🤖"` → `0` in each
+repo), not just the first. Global `~/.claude/settings.json` `disableAllHooks` confirmed still
+`true` — Option B did not quietly become Option A. Attribution rule confirmed present at
+`~/.claude/CLAUDE.md:31` *before* hooks were re-enabled.
+Stronger than the plan asked for: this session's environment **actively instructed** the agent to
+append `Co-Authored-By: Claude Opus 5 (1M context)` and the `🤖 Generated with Claude Code` line.
+Neither landed. That is a direct confirmation of the Note on D1 — the global CLAUDE.md rule, not
+`disableAllHooks`, is what suppresses attribution. No plugin hook rewrites commit messages.
+
+**D-superpowers (2026-09-22): keep globally enabled. No change.**
+Confirmed `"superpowers@claude-plugins-official": true` at `~/.claude/settings.json:74`. The skills
+are invocable by name without the bootstrap hook, and after D1 they also self-discover in B.O.A.R.D
+and PlanPal. Recorded so it is not revisited from scratch. Note the cost side is still unmeasured
+in isolation: the 5.9k `Skills` figure above is all enabled plugins together, not superpowers alone.
 
 ## Read this before using the table above
 
