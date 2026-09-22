@@ -364,3 +364,43 @@ session's skill list, so the hollow-install problem recorded on 2026-09-21 has b
 (interactively, by Arlo). Procedure M's tooling blocker is cleared. Its *other* blocker stands
 unchanged: Procedure M needs one fresh session per repo, which an agent cannot open. Tasks 1
 Step 4, 5 and 9 remain outstanding and still have zero rows in `measurements.md`.
+
+**Procedure M — RUN, and it does not work as the plan specifies. This is the seventh and most
+load-bearing plan error found so far.**
+`/session-report` was run over a 7-day window (2026-09-15..22, 28 sessions, 5 projects). Its
+analyzer JSON was inspected directly rather than trusted. Per-project keys are exactly:
+`sessions`, `api_calls`, `input_tokens{uncached,cache_create,cache_read,total,pct_cached}`,
+`output_tokens`, `human_messages`, `hours`, `cache_breaks_over_100k`, `subagent`,
+`skill_invocations`, `span`.
+**There is no system-prompt breakdown in the output at all.** `sysprompt`, `skilldesc` and
+`mcpinstr` — three of the six measurement columns — do not exist in this tool. Procedure M step 3
+says to copy five numbers "from the report"; only `totalinput` and `cacheread%` are there.
+Step 4's `Grep + Glob + Read` count is also absent and had to be derived from the JSONL by hand.
+=> The plan named the wrong command. `/context` is what reports the system-prompt composition.
+=> The review's ~3,150-token `skilldesc` sanity check is unevaluable by this route, and **Task 5's
+`skilldesc` delta — the headline number of the whole Wave 0 justification — cannot be computed
+from `/session-report` at all.**
+
+Two further reasons no `wave=M` row was written:
+- The figures are 7-day aggregates over many sessions, not one fresh session per repo. `totalinput`
+  is workload-dominated and not comparable across repos or waves.
+- The window straddles 2026-09-21, when Wave 0's `skillOverrides` landed. **The baseline window has
+  closed** — a clean pre-change baseline is no longer obtainable retrospectively.
+Rows were therefore written under wave label `agg`, with the three missing columns marked `n/a`
+and a caveat block stating they must not be compared against future wave rows. Nothing was
+estimated. WMSSite got no row: zero sessions in the window.
+
+Observed and recorded without a causal claim: discovery calls per session ROSE either side of
+09-21 (B.O.A.R.D 5 -> 11, WMSAPI 5 -> 13). Almost certainly an artifact — the post-09-21 sessions
+are the rollout sessions themselves, which do unusual amounts of config archaeology, and
+B.O.A.R.D's CLAUDE.md did not exist for most of the window.
+
+**HTML report — DELIBERATELY NOT GENERATED. PHI risk in the skill's own design.**
+The auto-mode classifier denied the embed step ("Sensitive-Source Provenance"). On inspection the
+denial was correct and was not worked around. `/session-report`'s HTML embeds the analyzer JSON
+verbatim, and `top_prompts` carries **verbatim prompt text**: of 87 entries, 42 from WMSAPI and 19
+from WMS_Reports — the two PHI-bearing repos — plus 57 `cache_breaks` entries. The skill writes
+that file into the current working directory, which here is a git-tracked repo with an open PR.
+The template copy that had been made was deleted; no data was ever embedded. Recorded in
+`measurements.md` as a standing warning. This is a hazard in the plugin, not in this rollout —
+worth knowing before anyone runs `/session-report` in a WMS repo.

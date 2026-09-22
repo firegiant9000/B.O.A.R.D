@@ -5,30 +5,76 @@ Numbers only. No transcript excerpts, no query text, no identifiers. See the PHI
 
 | date | wave | repo | sysprompt | skilldesc | mcpinstr | totalinput | cacheread% | discoverycalls | discoverytokens |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-09-22 | agg | B.O.A.R.D | n/a | n/a | n/a | 229699369 | 98.6 | 32 | n/a |
+| 2026-09-22 | agg | PlanPal | n/a | n/a | n/a | 1459817 | 96.6 | 0 | n/a |
+| 2026-09-22 | agg | WMSAPI | n/a | n/a | n/a | 2053029286 | 97.7 | 83 | n/a |
+| 2026-09-22 | agg | WMS_Reports | n/a | n/a | n/a | 56844030 | 94.3 | 58 | n/a |
+| 2026-09-22 | agg | WMSSite | — | — | — | — | — | — | — |
 
-<!--
-PENDING — Task 1 Step 4 not yet run.
+## Read this before using the table above
 
-Procedure M requires `/session-report` in a FRESH session per repo, in this order:
-B.O.A.R.D, PlanPal, WMSAPI, WMS_Reports, WMSSite. Wave label: M.
+**These are NOT Procedure M rows and must not be compared against future wave rows.**
+The wave label is `agg`, not `M`/`0`/`1`, deliberately. Three independent reasons:
 
-/session-report is still UNAVAILABLE as of 2026-09-21 session 2, and the reason is
-not the session-start timing originally assumed here. Observed: the plugin is
-enabled in ~/.claude/settings.json and installed_plugins.json records an install
-at plugins/cache/claude-plugins-official/session-report/c447c3207a42 — but that
-directory does not exist. The files were never copied out of the marketplace
-checkout into the cache. Fix is interactive and Arlo's:
-`/plugin install session-report@claude-plugins-official`.
+1. **`/session-report` does not produce three of the six columns.** Verified by inspecting the
+   analyzer's own JSON schema on 2026-09-22, not assumed. Its per-project object contains exactly:
+   `sessions`, `api_calls`, `input_tokens{uncached, cache_create, cache_read, total, pct_cached}`,
+   `output_tokens`, `human_messages`, `hours`, `cache_breaks_over_100k`, `subagent`,
+   `skill_invocations`, `span`. There is **no system-prompt breakdown anywhere in the file** — no
+   `sysprompt`, no `skilldesc`, no `mcpinstr`. Procedure M step 3 asks for five numbers "from the
+   report"; only two of them (`totalinput`, `cacheread%`) exist.
+   => The plan named the wrong command. The system-prompt breakdown is what `/context` reports,
+   not `/session-report`. `/context` is interactive and per-session, so it stays Arlo-driven.
+   => The review's ~3,150-token `skilldesc` sanity check cannot be evaluated, and **Task 5's
+   `skilldesc` delta cannot be computed by this route at all.**
 
-Second, independent blocker: Procedure M step 1 is "open a session with the working
-directory set to the repo", once per repo. An agent inside a session cannot do that.
-Procedure M is Arlo-driven, not agent-executable.
+2. **These are 7-day aggregates across many sessions, not one fresh session per repo.**
+   Window 2026-09-15 .. 2026-09-22. Session counts behind each row: B.O.A.R.D 9, PlanPal 1,
+   WMSAPI 12, WMS_Reports 4. Procedure M measures *standing* cost, which is workload-independent;
+   `totalinput` here is dominated by workload and is close to meaningless for comparison. A repo
+   that happened to run a big refactor looks "expensive" for reasons the rollout does not control.
 
-Sanity check when the rows are taken: venture skill descriptions should account for
-roughly 3,150 tokens of skilldesc in every repo (review §1). The spec's 5,800 figure
-is wrong and must not be quoted.
+3. **The baseline window has closed.** The window straddles 2026-09-21, when the Wave 0
+   `skillOverrides` change landed, so these figures mix pre- and post-change sessions. A clean
+   `wave=M` row is no longer obtainable retrospectively — the config it was meant to measure is
+   already in effect.
 
-Caveat for the WMS rows: Wave 2 config is frozen in unmerged PRs, so WMSAPI /
-WMS_Reports / WMSSite baselines are valid as baselines but their post-wave
-comparisons will not move until those PRs merge or the branches are checked out.
--->
+**`discoverycalls`** was NOT taken from the report, which does not break out tool calls. It was
+counted directly from the transcript JSONL (`tool_use` entries named `Grep`, `Glob` or `Read`,
+timestamped inside the window). Split around the 2026-09-21 config change:
+
+| repo | pre 09-21 | sessions | per session | on/after 09-21 | sessions | per session |
+|---|---|---|---|---|---|---|
+| B.O.A.R.D | 10 | 2 | 5 | 22 | 2 | 11 |
+| WMSAPI | 20 | 4 | 5 | 63 | 5 | 13 |
+| WMS_Reports | 58 | 3 | 19 | 0 | 0 | — |
+| PlanPal | 0 | 0 | — | 0 | 0 | — |
+
+Discovery calls per session went **up**, not down, in both repos with data on both sides. Recorded
+as observed. No causal claim: the post-09-21 sessions are the rollout sessions themselves, which
+do an unusual amount of config archaeology, so this is very likely an artifact of what was being
+worked on rather than an effect of the config. It is not evidence that a CLAUDE.md failed to earn
+its tokens — B.O.A.R.D's CLAUDE.md did not exist for most of that window.
+
+**`discoverytokens`** is `n/a` everywhere: the report does not break out tokens returned by tool
+calls, and the transcripts do not record it in a form that can be attributed per tool call.
+
+**WMSSite has no row.** It had zero sessions in the window, so there is nothing to measure. Not a
+failure — simply no activity.
+
+## What is still required for a real Procedure M run
+
+- `/context` (not `/session-report`) in a fresh session per repo, for `sysprompt` / `skilldesc` /
+  `mcpinstr`.
+- One fresh session per repo, which an agent inside a session cannot open.
+- For a true `wave=M` baseline: not recoverable. The earliest honest comparison point is now a
+  `wave=0`-or-later row, with the Wave 0 config already applied.
+
+## PHI note — do not generate the HTML report into a tracked repo
+
+`/session-report`'s HTML output embeds the analyzer JSON verbatim, and that JSON's `top_prompts`
+array carries **verbatim prompt text**. Of 87 entries in the 2026-09-22 run, 61 came from WMSAPI
+(42) and WMS_Reports (19) — the two PHI-bearing repos — plus 57 `cache_breaks` entries. The skill
+writes that file to the current working directory, which here is a git-tracked repo with an open
+PR. The HTML was **not** generated. If it is ever wanted, strip `top_prompts` and `cache_breaks`
+first and write it outside any repo.
