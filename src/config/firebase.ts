@@ -8,6 +8,7 @@ import {
 } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getFunctions } from "firebase/functions";
+import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
@@ -51,6 +52,22 @@ if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
 }
 
 const app = initializeApp(firebaseConfig);
+
+/**
+ * App Check (web). Attests that requests come from this web app, not a script
+ * holding the public config. Enabled only when a reCAPTCHA v3 site key is
+ * supplied at build time; with the variable unset (local dev, tests, Expo Go)
+ * this is a no-op. Native clients need DeviceCheck / Play Integrity providers
+ * wired through an EAS build and are not covered here — which is why
+ * enforcement must stay OFF in the Firebase console until they are.
+ */
+const appCheckSiteKey = process.env.EXPO_PUBLIC_APPCHECK_SITE_KEY;
+if (Platform.OS === "web" && appCheckSiteKey && typeof window !== "undefined") {
+  initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider(appCheckSiteKey),
+    isTokenAutoRefreshEnabled: true,
+  });
+}
 
 export const auth = getAuth(app);
 
