@@ -445,3 +445,87 @@ assumed:
 - **In VSCode `/context` opens a native dialog rather than printing into the transcript**
   (line 3521). An agent in that session cannot read it. This is why M-A is explicitly Arlo's step,
   and why the numbers have to be pasted in or captured from the terminal CLI instead.
+
+---
+
+**WAVE 3 — Tasks 15 and 16 CLOSED. Task 17 (Ponytail) NOT DONE, returned to Arlo.**
+Task 15: Step 1 verified the attribution rule is present at `~/.claude/CLAUDE.md:31` BEFORE anything
+was re-enabled. Steps 2-4 were already executed 2026-09-21. Step 5 run stronger than written — the
+plan checks one commit; all 8 commits across both branches were checked
+(`git log origin/main..chore/claude-config --format=%B | grep -ci "co-authored-by|generated with
+claude|🤖"` -> `0` in B.O.A.R.D and `0` in PlanPal). Global `disableAllHooks` re-confirmed `true` at
+`~/.claude/settings.json:99`. Step 6 recorded in `measurements.md`.
+Notable: this session's environment actively instructed the agent to append
+`Co-Authored-By: Claude Opus 5 (1M context)` and the `🤖 Generated with Claude Code` line. Neither
+landed. Direct confirmation of the Note on D1.
+Task 16: `"superpowers@claude-plugins-official": true` confirmed at `~/.claude/settings.json:74`.
+Default ruling taken — keep, no change. Recorded so it is not revisited.
+Task 17: NOT executed. `claude plugin marketplace add` / `install` DO exist as non-interactive CLI
+commands, so it was technically possible; it was declined on judgement and returned to Arlo.
+Reasons: it adds a third-party marketplace (a personal GitHub account) and executes its code on a
+machine carrying PHI repos and production DB MCP servers; it installs a UserPromptSubmit hook that
+sees and modifies every turn; the independent evidence is −15.4% code / −10.3% cost against vendor
+claims of −54%/−20%; and Task 18, which would decide whether it pays for itself, is a Procedure M
+re-measure that cannot produce the per-turn delta it needs. Installing an always-on prompt
+interceptor with no working way to measure it is not a defensible default.
+
+**FIRST REAL PROCEDURE M MEASUREMENT — PlanPal, M-A only.** Arlo supplied a `/context` capture
+(bare `/context`, not `all` — sufficient, since the column needs the total and `all` only adds
+per-skill attribution). Fresh session (Messages 1.3k), model `claude-fable-5-1`, 1M window.
+Recorded as the `wave=0 / PlanPal` row. Two findings that contradict the plan's premises:
+- `mcpinstr` = **609 tokens**, 0.06% of window, second-smallest category. Review §2.2 called MCP
+  standing cost "probably the largest single line" and Task 4/D5 ordered a connector detach on that
+  basis. It was chasing roughly nothing. The 2026-09-21 D5 entry inferred this; this measures it.
+- `System tools` = **17.8k**, 3x `Skills` (5.9k) and the largest controllable category. **It is not
+  a column in Procedure M and no task in this plan addresses it.** The rollout has been optimizing
+  the third-largest line while the largest went unmeasured.
+Also: `Skills` 5.9k is post-`skillOverrides`, and no pre-change capture was ever taken, so the
+review's ~3,150-token claim for the 15 venture skills is now **unverifiable**. Logged as an open
+question, not as a win.
+
+---
+
+## 2026-09-22 — Wave 2 partially unfrozen
+
+Arlo clarified the freeze: Wave 2 work is fine, he simply cannot get the PRs merged. Task 11
+executed on that basis. Tasks 12-14 not started.
+
+**Task 11 (WMSAPI) — Steps 1-9 DONE. Commit `23258a67`. Stopped at Step 10 as the plan requires.**
+Remote note: WMSAPI is `adaptivesoftwarellc/WMSAPI`, a DIFFERENT org from the firegiant9000 repos.
+The per-repo `firegiant9000` credential was deliberately NOT applied here. `git fetch origin` failed
+`remote: Repository not found` under the active `ArloK62` account, and `gh api
+repos/adaptivesoftwarellc/WMSAPI` also returned 404 — so neither the active account nor the local
+git credential can currently see this repo. Branch was created off the **cached** `origin/dev` ref,
+which may be stale; it must be rebased before any push. This blocks Step 11 regardless of sign-off.
+
+Every claim the plan makes about the tracked files was VERIFIED before acting, not trusted:
+- `.claude/settings.local.json` — 59 quoted entries; confirmed present: `write_query`,
+  `create_table`, `alter_table`, `drop_table`, `ivr-prod__read_query`, `ivr-prod__describe_table`,
+  `Bash(git commit *)`, and a `/home/brandondo` path. Plan's description holds.
+- `.claude/config.json` — confirmed it declares both `wms-db-dev` and `wms-db-prod` and points at
+  `/home/brandondo/.../ivr-mcp.sh` twice. Every clone was auto-declaring a PRODUCTION database
+  server pointing at a path that exists on one machine.
+- `.claude/worktrees/feat+masterschedule-view-all` — confirmed mode 160000 gitlink; the commit
+  output shows `delete mode 160000`.
+- `.gitignore:9` already listed `.claude/settings.local.json` and `:10` `.claude/ivr-mcp.sh`,
+  exactly as the plan said — the file was committed before those lines existed, which is why
+  `.gitignore` never caught it.
+
+Deviations, both minor and deliberate:
+- New `.gitignore` entries were added inside the existing "Claude Code temp files" block (after
+  line 10) rather than appended at file end, keeping related rules together.
+- Step 8 says "read the whole diff". The diff's REMOVED side is the contents of `config.json` and
+  `settings.local.json`, which carry machine paths and MCP server declarations. Dumping that into a
+  transcript is the thing the PHI rule exists to prevent. Added lines were inspected in isolation
+  instead (`diff --cached | grep "^+"`): 17 lines, all read-only `mcp__wms-db__*` tools, local
+  `dotnet` build/test/restore, one `$schema` URL, two gitignore paths. No connection string, no
+  password, no hostname, no `*-prod` tool, no git mutation, no absolute path.
+Step 7 verified on disk: both files still present with original timestamps. Nothing was deleted from
+the working tree; `git rm --cached` behaved correctly.
+Commit message verified clean. NOTE: hooks are OFF in WMSAPI (no project-level override), so the
+attribution guard did NOT run here. The message is clean by discipline, not by enforcement.
+
+**STOPPED AT STEP 10.** Not pushed, no PR. Two separate blockers now stand in front of Step 11:
+Arlo's explicit sign-off, and the unresolved credential/visibility problem on the adaptivesoftwarellc
+org. The PR body, when it is written, must state that untracking `settings.local.json` means every
+teammate's next pull deletes their local copy unless they stash it first.
