@@ -13,7 +13,7 @@
  * The custom scheme works today via expo-router's `scheme` ("boardapp" in
  * app.json) with zero native config. The https form additionally requires the
  * hosted association files in `public/.well-known/` plus the native
- * associatedDomains / intentFilters config (see README → "Deep linking").
+ * associatedDomains / intentFilters config (see docs/deep-linking.md).
  */
 
 export const APP_SCHEME = "boardapp";
