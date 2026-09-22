@@ -529,3 +529,73 @@ attribution guard did NOT run here. The message is clean by discipline, not by e
 Arlo's explicit sign-off, and the unresolved credential/visibility problem on the adaptivesoftwarellc
 org. The PR body, when it is written, must state that untracking `settings.local.json` means every
 teammate's next pull deletes their local copy unless they stash it first.
+
+**Task 12 (WMSSite) — Steps 1-6 DONE. Commit `395305b3`. Stopped at Step 7.**
+Plan's claims verified before acting, all held: tracked `settings.local.json` carries `ldupu` (×2),
+a `/Users/seth/Desktop/Repositories/...` path, `Bash(npm install:*)` and `Bash(cd:*)`; `.gitignore`
+had **no** Claude entries at all. `.claude/config.json` deliberately LEFT TRACKED per the plan — it
+declares one MCP server at a shared install-location convention and no production server.
+Step 5 output matched exactly: `D .claude/settings.local.json`, `?? .claude/settings.json`,
+` M .gitignore`, no entry for `config.json`. File confirmed still on disk (1009 bytes).
+
+**Step 4 could not be run as written, and the allowlist was derived differently — say so plainly.**
+`C:\Users\arlok\.claude\projects\c--Users-arlok-OneDrive-Documents-Projects-WMSSite\` contains a
+`memory` subdirectory and **zero `.jsonl` transcripts**. `/fewer-permission-prompts` works by
+scanning transcripts, so it had no evidence to work from. Rather than invent plausible usage, the
+allowlist was grounded in the repo's own `package.json` scripts — a different kind of evidence, and
+recorded as such. Six entries, all `npm run lint` / `npm test` / `npm run build` plus their
+trailing-wildcard forms.
+Deliberately EXCLUDED from a repo whose scripts offer them: `lint:fix` and `prettier` (mutate
+files), `rm:all` (`rm -rf`), `re:start`/`re:build`/`re:build-npm` (run `npm install`), and
+`dev`/`start`/`dev:host` (long-running servers). The plan's instruction to delete
+`Bash(npm install:*)` and `Bash(cd:*)` was satisfied by construction — the file carrying them was
+untracked wholesale. Lint budget confirmed `--max-warnings 50` in `package.json`, matching the
+global CLAUDE.md; no `--max-warnings 0` form was introduced. Lockfile is `package-lock.json`, so
+npm forms are correct and no manager was switched.
+No MCP rules were added: WMSSite's tracked `config.json` declares a server, but with no transcripts
+there is no evidence of which tools are actually used, and guessing at MCP grants is exactly what
+this rollout is trying to stop.
+
+**Task 13 (WMS_Reports) — Steps 1, 2, 4-7 DONE. Commit `773ede82`. Step 3 pending. Stopped at Step 8.**
+Plan's claims verified: `claudeMdExcludes: ["**/WMS_Reports/CLAUDE.md"]` present at lines 2-4 of the
+untracked `settings.local.json`, and 18 `prod` references in that file — matching the plan's stated
+10 `reports-db-prod` + 8 `wms-db-prod` exactly. Tracked files confirmed as described: `CLAUDE.md`,
+`.claude/skills/verify/SKILL.md`, `.claude/reports-mcp.sh`, `.gitignore`. `settings.local.json` is
+NOT tracked, so there was nothing to untrack — as the plan said.
+
+**Step 2 (D2) applied — and this session already measured the "before" state.** The 2026-09-22
+`/context` capture for WMS_Reports shows its loaded memory as `MEMORY.md` 2.9k +
+`~/.claude/CLAUDE.md` 2.7k + `CLAUDE.local.md` 1.4k — **the repo's own tracked `CLAUDE.md` is
+absent.** That is direct measured confirmation of review §2.6: the exclude was live and had been
+suppressing the team's documented conventions from every session on this machine. The three-line
+`claudeMdExcludes` block was removed; JSON re-validated, all 40 `permissions.allow` entries intact.
+This file is untracked and machine-local — no sign-off, not in the commit.
+Step 3 (fresh session, confirm `WMS_Reports/CLAUDE.md` now appears in `/context`) NOT RUN — needs a
+new session. The before-state is on record above, so the after-check is a single comparison.
+
+Step 4 allowlist built from 58 transcripts. Observed counts drove both what was kept and what was
+refused. **Refused despite being the two highest-count MCP tools in the repo:**
+`mcp__reports-db__run_query` (205) and `mcp__reports-db-prod__run_query` (173). The first returns
+row data from a PHI-bearing database; the second is production. Also refused:
+`mcp__reports-db-prod__get_table_schema` (7), `mcp__wms-db-prod__run_query` (9),
+`mcp__wms-db-prod__get_table_schema` (7), `mcp__wms-db__run_query` (9), `gh api` (17),
+`gh secret` (6), `node` (14), `dotnet run` (19), `dotnet add`/`new`/`publish`, every git mutation
+(`add` 124, `commit` 124, `push` 39, `stash`, `reset`, `checkout`, `merge`, `apply`, `switch`), and
+the `node "C:\Users\arlok\AppData\Local\Temp\...scratchpad\*.mjs"` invocations (absolute machine
+paths). Kept: the eight schema-only `mcp__reports-db__*` tools, `dotnet build`/`test`/`restore`,
+`npm run lint`/`build`/`test`, `npx tsc --noEmit`, `npx vitest run`, each with wildcard variants.
+Step 6 verification run as the plan demands: `git diff --cached | grep -ci prod` -> **0**. An extra
+check beyond the plan, `grep -ci "run_query|query_table"` -> **0**.
+
+**All three Wave 2 branches are committed and UNPUSHED. Nothing merged. Arlo's sign-off outstanding
+on all three, and the adaptivesoftwarellc credential/visibility problem blocks the push regardless:**
+  WMSAPI      `chore/claude-config` = `23258a67`  (off cached `origin/dev`)
+  WMSSite     `chore/claude-config` = `395305b3`  (off cached `origin/dev`)
+  WMS_Reports `chore/claude-config` = `773ede82`  (off cached `origin/dev`)
+All three are based on CACHED `origin/dev` refs that could not be refreshed — each must be rebased
+before any push.
+
+Incidental observation, no action taken: WMSAPI's working tree was switched back to
+`feat/esign-v2-phase-1` by something outside this session partway through, which made its
+`.claude/settings.json` and `.gitignore` appear to revert. Commit `23258a67` is intact on its own
+branch; nothing was lost and nothing was re-applied.
