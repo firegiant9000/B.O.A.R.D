@@ -404,3 +404,44 @@ that file into the current working directory, which here is a git-tracked repo w
 The template copy that had been made was deleted; no data was ever embedded. Recorded in
 `measurements.md` as a standing warning. This is a hazard in the plugin, not in this rollout —
 worth knowing before anyone runs `/session-report` in a WMS repo.
+
+**Procedure M — REWRITTEN in the plan, 2026-09-22.** Split into M-0 (open a fresh session),
+M-A (`/context all` → sysprompt/skilldesc/mcpinstr), M-B (`/session-report` → totalinput/cacheread%,
+with the workload-aggregate caveat and the PHI warning), M-C (discoverycalls, counted from
+transcripts, recorded per-session), M-D (record; never estimate). It now states up front that the
+procedure is Arlo-driven, not agent-executable.
+
+The plan file is UNTRACKED, so the superseded text is not recoverable from git. Preserved verbatim
+here, as it stood before the rewrite:
+
+    ### Procedure M — the measurement procedure
+
+    Referenced by name from the baseline task and every re-measure task. Run it exactly as written.
+
+    1. Open a Claude Code session with the working directory set to the repo.
+    2. Run `/session-report`.
+    3. From the report, copy **only these five numbers** into the measurement table:
+       `system prompt tokens`, `skill+plugin description tokens`, `MCP instruction tokens`,
+       `total session input tokens`, `cache read %`.
+    4. Additionally record `Grep + Glob + Read tool call count` and, if the report breaks it out,
+       `tokens returned by those calls`. This is the *discovery cost* figure the Graphify gate uses.
+    5. Close the session. Repeat for the next repo.
+    6. Append a row per repo to `docs/tooling/measurements.md` (in the B.O.A.R.D repo) with columns:
+       `date | wave | repo | sysprompt | skilldesc | mcpinstr | totalinput | cacheread% | discoverycalls | discoverytokens`.
+
+    **Numbers only. No excerpts.** See the PHI rule above.
+
+Facts the rewrite is built on, all verified against `~/.claude/cache/changelog.md` rather than
+assumed:
+- `/context all` breaks out per-skill token estimates; bare `/context` summarizes them (line 3210).
+  `all` is therefore required to get `skilldesc` at all.
+- `/context all` attributes plugin-sourced skills to their providing plugin (line 3213).
+- `/context` reports per-MCP-server tool token counts (line 4854).
+- `/context` may fall back to a LOCAL ESTIMATE when the token-counting API is unavailable
+  (line 536) — so rows must be marked `est` when that happens, or estimated and measured figures
+  get mixed silently.
+- Percentages are computed against the model's own window: 1M for Opus 4.7+, 200K for earlier
+  models (line 3687). Absolute token counts only; percentages are not comparable across models.
+- **In VSCode `/context` opens a native dialog rather than printing into the transcript**
+  (line 3521). An agent in that session cannot read it. This is why M-A is explicitly Arlo's step,
+  and why the numbers have to be pasted in or captured from the terminal CLI instead.
