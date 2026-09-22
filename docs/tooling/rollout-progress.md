@@ -320,3 +320,47 @@ State at end of session 2 — nothing pushed, no PR opened, nothing merged:
   B.O.A.R.D  `chore/claude-config` = `33fd443`, 3 commits ahead of `origin/main` @ `8935184`
   PlanPal    `chore/claude-config` = `3abb26b`, 1 commit ahead of cached `origin/main` @ `f0187a7`
 `npx tsc --noEmit` in B.O.A.R.D: clean, no output, exit 0. No application code was touched.
+
+---
+
+## 2026-09-22
+
+**Credential blocker — RESOLVED per-repo, at Arlo's instruction. Global identity untouched.**
+Chosen over `gh auth switch` so the WMS repos and other sessions keep the `ArloK62` active
+account. Applied identically to B.O.A.R.D and PlanPal, all `--local`:
+  `credential.https://github.com.username = firegiant9000`
+  `credential.helper = ""`   (empty value clears the inherited global `manager`)
+  `credential.helper = !gh auth git-credential`
+The global helper remains GCM (`manager`); `gh` 2.94 holds valid tokens for both accounts, and
+its helper honours the pinned username.
+
+**The PlanPal 404 hypothesis — CONFIRMED.** After the credential change, `git fetch origin main`
+in PlanPal succeeded where it had failed with `remote: Repository not found` the day before.
+One root cause, two status codes: 403 on the public repo's push, 404 on the private repo's
+fetch, both because the active credential was the wrong GitHub account.
+
+**Task 10 — DONE. Both branches pushed, both PRs open, neither merged.**
+  B.O.A.R.D → https://github.com/firegiant9000/B.O.A.R.D/pull/94
+  PlanPal   → https://github.com/firegiant9000/PlanPal/pull/7
+PR bodies omit the plan path, per the 2026-09-21 ruling to leave the planning docs untracked.
+
+**PlanPal had moved underneath the branch — rebased, not force-fitted.**
+Observed on return: PlanPal was on `main`, working tree clean, and `origin/main` had advanced
+from the cached `f0187a7` to `a4738c3` (PRs #5 and #6 merged in the interim). `chore/claude-config`
+was `ahead 1, behind 6`. Rebased onto the new `origin/main`; `.claude/settings.json` conflicted.
+Resolved as a UNION — main's newer entries kept, mine added. Did NOT drop rules that had landed
+on main independently (`npx.cmd tsc|turbo|jest *`, two pinned `node -e` version reads, the
+`Skill(claude-api*)` and PowerShell entries); removing another change's rules during a conflict
+resolution would have been an unrelated regression smuggled into this PR. Final diff vs main is
+additions only, 8 lines, 29 allow entries total.
+Consequence for D6: **no action was needed.** Current `main` carries no `enabledPlugins` block at
+all, so the uncommitted typescript-lsp entry is already gone upstream. The commit message was
+amended to say so rather than claiming a revert that did not happen.
+Also note: `disableAllHooks: false` is NOT on PlanPal's `main` — Task 15's PlanPal override lives
+only on this PR branch until #7 merges. Until then, hooks are off in PlanPal on `main`.
+
+**`/session-report` — NOW AVAILABLE.** The skill `session-report:session-report` appears in this
+session's skill list, so the hollow-install problem recorded on 2026-09-21 has been fixed
+(interactively, by Arlo). Procedure M's tooling blocker is cleared. Its *other* blocker stands
+unchanged: Procedure M needs one fresh session per repo, which an agent cannot open. Tasks 1
+Step 4, 5 and 9 remain outstanding and still have zero rows in `measurements.md`.
