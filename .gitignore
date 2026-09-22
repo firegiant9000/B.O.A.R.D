@@ -53,3 +53,10 @@ ui-debug.log
 # Claude Code — .claude/settings.json is shared; local overrides are personal
 .claude/settings.local.json
 .claude/worktrees/
+
+# Working documents that are not part of this project's public record:
+# tooling notes that concern other repositories, agent-dispatch scaffolding,
+# and business planning kept for an audience of one.
+docs/tooling/
+docs/superpowers/
+docs/internal/
