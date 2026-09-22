@@ -10,30 +10,67 @@ Numbers only. No transcript excerpts, no query text, no identifiers. See the PHI
 | 2026-09-22 | agg | WMSAPI | n/a | n/a | n/a | 2053029286 | 97.7 | 83 | n/a |
 | 2026-09-22 | agg | WMS_Reports | n/a | n/a | n/a | 56844030 | 94.3 | 58 | n/a |
 | 2026-09-22 | agg | WMSSite | — | — | — | — | — | — | — |
+| 2026-09-22 | 1 | B.O.A.R.D | 9400 | 5900 | 0 | n/a | n/a | 32 | n/a |
 | 2026-09-22 | 0 | PlanPal | 11600 | 5900 | 609 | n/a | n/a | 0 | n/a |
+| 2026-09-22 | 0 | WMSAPI | 11500 | 6000 | 626 | n/a | n/a | 83 | n/a |
+| 2026-09-22 | 0 | WMSSite | 11900 | 5900 | 626 | n/a | n/a | 0 | n/a |
+| 2026-09-22 | 0 | WMS_Reports | 11900 | 5900 | 645 | n/a | n/a | 58 | n/a |
 
-The PlanPal row is the **first real Procedure M measurement** — an M-A `/context` capture from a
-fresh session (Messages 1.3k), model `claude-fable-5-1`, 1M window. Absolute tokens, not estimated.
-`sysprompt` is System prompt 5.0k + Memory files 6.6k = 11.6k; the split matters because Wave 1 adds
-a repo `CLAUDE.md`, which lands in the Memory files half. `totalinput`/`cacheread%` are `n/a`
-because `/context` is a snapshot, not a session total — the `agg` rows above carry those.
+## M-A capture — all five repos, 2026-09-22
 
-**Two findings from that single capture, both of which contradict the plan's assumptions:**
+Procedure M step M-A complete for every in-scope repo. All five captured with bare `/context` from a
+fresh session, model `claude-fable-5-1`, 1M window, absolute tokens, none flagged as estimates.
+Same model across all five, so the rows are directly comparable.
+`sysprompt` = System prompt + Memory files. `totalinput`/`cacheread%` stay `n/a` on these rows:
+`/context` is a snapshot, not a session total — the `agg` rows above carry those.
 
-1. **`mcpinstr` is 609 tokens — not "probably the largest single line".** Review §2.2 identified MCP
-   standing cost as the biggest unmeasured item and Task 4/D5 ordered a connector detach on that
-   basis. Measured, it is **0.06% of the window** and the smallest category except Custom agents.
-   The 2026-09-21 D5 entry already found the detach was a no-op; this puts a number on it. **The
-   connector-detach line of work was chasing roughly nothing.**
-2. **`System tools` is 17.8k — 3× `Skills` and by far the largest controllable line.** It is not a
-   column in Procedure M and no task in this plan addresses it. Every measured category:
-   System tools 17.8k, Memory files 6.6k, Skills 5.9k, System prompt 5.0k, Messages 1.3k,
-   MCP tools 609, Custom agents 73. **The rollout has been optimizing the third-largest line while
-   the largest was never measured.** Worth a decision before any further measurement work.
+Raw categories as displayed:
 
-`Skills` at 5.9k is post-`skillOverrides`. Because no pre-change capture was ever taken, the
-review's ~3,150-token claim for the 15 venture skills **remains unverified and now unverifiable** —
-recorded as an open question, not as a win.
+| category | B.O.A.R.D | PlanPal | WMSAPI | WMSSite | WMS_Reports |
+|---|---|---|---|---|---|
+| System prompt | 5.0k | 5.0k | 5.0k | 5.0k | 5.0k |
+| **System tools** | **17.8k** | **17.8k** | **17.7k** | **17.8k** | **17.8k** |
+| MCP tools | *(absent)* | 609 | 626 | 626 | 645 |
+| Custom agents | 73 | 73 | 467 | 73 | 73 |
+| Memory files | 4.4k | 6.6k | 6.5k | 6.9k | 6.9k |
+| Skills | 5.9k | 5.9k | 6.0k | 5.9k | 5.9k |
+| Messages | 1.3k | 1.3k | 10 | 10 | 10 |
+| **total loaded** | **34.5k** | **37.3k** | **36.4k** | **36.3k** | **36.4k** |
+
+### Findings
+
+1. **`System tools` is 17.7–17.8k in every repo — dead constant, and ~half of all loaded context.**
+   It is the largest controllable category by a factor of three, it is identical everywhere, and
+   **it is not a column in Procedure M. No task in this plan addresses it.** The rollout spent
+   Wave 0 on `Skills` (5.9k) and Task 4 on MCP (≤645). Both were the wrong targets by an order of
+   magnitude. This is the single most actionable number in the whole exercise.
+
+2. **`mcpinstr` is ≤645 tokens everywhere, and in B.O.A.R.D the MCP row is absent entirely (0).**
+   Review §2.2 called MCP standing cost "probably the largest single line" and Task 4/D5 ordered a
+   connector detach on that basis. It is 0.06% of the window at most. **That work was chasing
+   nothing**, now confirmed across five repos rather than inferred from one.
+
+3. **`Skills` is 5.9–6.0k in all five — a 100-token spread.** Post-`skillOverrides` in every repo.
+   Because no pre-change capture was ever taken, the review's ~3,150-token claim for the 15 venture
+   skills **remains unverified and is now unverifiable.** Recorded as an open question, not a win.
+
+4. **The only real per-repo variance is Memory files (4.4k–6.9k) and, in one repo, Custom agents.**
+   WMSAPI carries 467 tokens of custom agents against 73 everywhere else — three repo-local agents
+   (`fireflies-transcript-summarizer` 145, `sql-ef-core-wms-assistant` 133,
+   `csharp-dotnet-wms-maintainer` 116) on top of the shared `code-simplifier` 73. Small, but it is
+   the only category any repo-level decision has actually moved.
+
+5. **B.O.A.R.D is the cheapest repo at 34.5k, and its Memory files are the LOWEST at 4.4k — despite
+   Wave 1 having just added a `CLAUDE.md` to it.** Its memory is `~/.claude/CLAUDE.md` 2.7k +
+   the new repo `CLAUDE.md` 1.6k + `MEMORY.md` 199. The other four are higher because they each
+   also carry a `CLAUDE.local.md` (1.1k–1.4k). So Task 9's expected "sysprompt rises after Wave 1"
+   is **not** observable as a regression — the added file is 1.6k and B.O.A.R.D still sits lowest.
+
+6. **WMS_Reports has no tracked project `CLAUDE.md` at all.** Its memory is `MEMORY.md` 2.9k +
+   `~/.claude/CLAUDE.md` 2.7k + `CLAUDE.local.md` 1.4k. It is the only in-scope repo whose project
+   instructions live entirely in untracked/machine-local files, and its auto-memory `MEMORY.md` is
+   the largest of any repo by 20×. Not in any task's scope; flagged because a shared repo with
+   7–11 contributors having no shared project instructions is a gap worth a decision.
 
 ## Decisions recorded
 
@@ -48,6 +85,16 @@ Stronger than the plan asked for: this session's environment **actively instruct
 append `Co-Authored-By: Claude Opus 5 (1M context)` and the `🤖 Generated with Claude Code` line.
 Neither landed. That is a direct confirmation of the Note on D1 — the global CLAUDE.md rule, not
 `disableAllHooks`, is what suppresses attribution. No plugin hook rewrites commit messages.
+
+**D-ponytail (2026-09-22): SKIP. Ruled by Arlo. Task 17 is closed, not deferred.**
+Not installed, no marketplace added, no `env` block written anywhere. Reasons on record: it adds a
+third-party marketplace and executes its code on a machine carrying PHI repos and production DB MCP
+servers; it installs a UserPromptSubmit hook that sees and modifies every turn; the one independent
+evaluation measured −15.4% code / −10.3% cost against vendor claims of −54% / −20%; and Task 18,
+which would decide whether it pays for itself, is a Procedure M re-measure that cannot produce the
+per-turn delta it needs. **Consequence: Task 18's Ponytail netting-out step is moot, and Wave 3 is
+complete.** The M-A data above also undercuts the premise independently — the categories Ponytail
+would affect are dwarfed by `System tools`, which it does not touch.
 
 **D-superpowers (2026-09-22): keep globally enabled. No change.**
 Confirmed `"superpowers@claude-plugins-official": true` at `~/.claude/settings.json:74`. The skills
