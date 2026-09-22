@@ -49,3 +49,13 @@ ui-debug.log
 # generated native folders
 /ios
 /android
+
+.claude/settings.local.json
+.claude/worktrees/
+
+# Working documents that are not part of this project's public record:
+# tooling notes that concern other repositories, agent-dispatch scaffolding,
+# and business planning kept for an audience of one.
+docs/tooling/
+docs/superpowers/
+docs/internal/
