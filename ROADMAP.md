@@ -37,6 +37,13 @@ B.O.A.R.D is currently a working real-time collaborative whiteboard built in Rea
 
 ### 2.2 Weaknesses
 
+> **As of the drafting date.** The entries below describe the codebase on
+> 2026-05-12, before Month 1, and are left as written rather than edited into the
+> present tense. Several have since been fixed — tests, offline support, drawing
+> performance, the eraser and the error boundary all landed in Month 1; others,
+> such as the client-side OpenAI key, are still open. The per-month status blocks
+> in §4 are the record of what has actually shipped.
+
 - **Zero tests.** No Jest config, no `__tests__`. Every change is a manual regression.
 - **No offline support.** No `enableIndexedDbPersistence`, no service worker. Network drop = frozen app. Hard blocker for classroom Wi-Fi reality.
 - **Drawing performance has no throttling.** PanResponder fires per frame, every point goes to Firestore, no batching, no coalescence. Will not scale to 10+ concurrent drawers.
@@ -356,7 +363,7 @@ gate (`2a7d5fb`, `99dacf1`).
 - Firestore rules tests pass in CI.
 
 **Mid-point gut check (end of Month 3):**
-- How many real users have you seeded outside your class? Target: 10-20.
+- How many real users have you seeded outside your class?
 - Are the AI summaries (still in WIP) something users *want*? Talk to 5 people.
 
 ---
@@ -630,9 +637,22 @@ every subsequent phase serializes through merge conflicts in one file.
   slips, cut item 12 next, then item 9 — not the enforcement work.
 
 **Exit criteria:**
-- All five free-tier gates actually enforced **at the database or in a Cloud
-  Function**. A client-side check does not count.
-- Stripe test-mode round-trip passes in *both* directions (upgrade and downgrade).
+- ⚠️ **All five free-tier gates actually enforced at the database or in a Cloud
+  Function — NOT met.** A client-side check does not count, and the enforcement
+  that would count is written but not running. `createBoard`, `createSession`
+  and `createWorkspace` are callables in
+  [`functions/src/callable/`](functions/src/callable);
+  [`firestore.rules`](firestore.rules) denies client `create` outright on
+  workspaces, classes, boards and sessions; the collaborator cap is a rules
+  predicate. `functions/` has never been deployed, so no gate has ever been
+  enforced against a live backend and the bypass test above has not been run.
+- ⚠️ **Stripe test-mode round-trip passes in *both* directions (upgrade and
+  downgrade) — NOT met.** There is no Stripe account behind the checkout code:
+  no product, no live price, no registered webhook endpoint, and
+  `STRIPE_WEBHOOK_SECRET` does not exist. Checkout, the webhook and the Customer
+  Portal are written and unit-tested against a fake Stripe-shaped client — see
+  the header of [`functions/src/billing/stripe.ts`](functions/src/billing/stripe.ts)
+  — but the real Stripe API has never been called.
 
 ---
 
@@ -736,12 +756,16 @@ data instead of guesses. This is also where M5's deferred rendering work lands.
 
 **Verification:**
 - DAU / WAU / MAU pulled from analytics — which requires A1 to have shipped *before* the launch, not after.
-- Conversion rate from free → Pro (any conversion at all is a win at this stage).
 
 **Exit criteria:**
-- **Analytics (A1) is live and running through the launch, not bolted on after it.**
-  A launch on top of eight half-finished features produces numbers you cannot
-  attribute, and an unattributable number cannot scope M6b.
+- ⚠️ **Analytics (A1) is live and running through the launch, not bolted on
+  after it — NOT met.** A launch on top of eight half-finished features produces
+  numbers you cannot attribute, and an unattributable number cannot scope M6b.
+  The funnel is instrumented behind one seam
+  ([`src/services/analyticsService.ts`](src/services/analyticsService.ts)), but
+  no PostHog project has been provisioned — `EXPO_PUBLIC_POSTHOG_KEY` is unset
+  in every environment, so `track()` takes its no-op branch on every call. There
+  has been no launch, and there are no users to measure.
 
 ---
 
@@ -1169,7 +1193,7 @@ Mobile parity is non-negotiable per the cross-cutting constraints. This appendix
 
 # Appendix E — Education / Study-Group Vertical Catalog
 
-The recommended pivot is classroom / study-group collaboration. This appendix is the catalog of vertical-specific features and content that make the wedge real.
+This appendix is the catalog of vertical-specific features and content for the classroom / study-group wedge described in §2.3 — what it would take to serve students and instructors specifically, rather than a general audience.
 
 ## E.1 Student-side features
 

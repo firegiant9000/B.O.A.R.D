@@ -12,7 +12,11 @@ The Expo app (`app/`, `src/`) is checked by the root `tsc`. Cloud Functions
 engine and a `tsc` build. The browser extension (`web/extension`) is plain JS
 with no bundler, carrying a hand-ported copy of the pure logic it needs from
 `src/lib/extension/`; the TypeScript originals are the tested ones and the
-ports are kept in sync by hand. The root `tsconfig.json` excludes the other two
+ports are written by hand, but not left unguarded —
+`src/lib/extension/__tests__/sharedMirror.test.ts` executes
+`web/extension/shared.js` through Node's `vm` and asserts identical output
+against those originals on the same fixtures, which catches behavioral drift a
+textual comparison would miss. The root `tsconfig.json` excludes the other two
 outright — they target different runtimes, Node against `firebase-admin` on one
 side and an Expo bundle on the other. The direct consequence is that a type
 error under `functions/` passes the root type-check and fails CI, which runs
@@ -24,11 +28,11 @@ under `functions/` is not done until `npm run functions:build` is clean.
 
 Screen → hook → `src/services/*Service.ts` → Firebase SDK. Live reads are
 `onSnapshot` listeners; writes go to Firestore directly for element data
-(strokes, shapes, text, notes) and through `httpsCallable` for anything the
-free tier meters — board, session and workspace creation all leave the client
-that way. `src/config/firebase.ts` is the only place the SDK is initialized,
-resolving config from `EXPO_PUBLIC_FIREBASE_*` first and the committed dev
-project in `app.json` second. The convention is that nothing outside
+(strokes, shapes, text, notes) and through `httpsCallable` for every create the
+server has to gate — board, class, session and workspace creation all leave the
+client that way. `src/config/firebase.ts` is the only place the SDK is
+initialized, resolving config from `EXPO_PUBLIC_FIREBASE_*` first and the
+committed dev project in `app.json` second. The convention is that nothing outside
 `src/services/` and `src/config/` imports `firebase/*`. Three files break it
 today — `src/components/ShareBoardModal.tsx`, `src/contexts/AuthContext.tsx`
 and `src/hooks/useBoardPresence.ts` each do a direct `getDoc` on a `users`

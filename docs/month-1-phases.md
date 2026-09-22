@@ -2,7 +2,10 @@
 
 > **Status:** All 7 phases delivered and merged to `main` via PR #89
 > (Phase 1 in `84a8222`; Phases 2–7 in `2e146c4`, plus cold-load snapshot fix
-> `56d65d2`). Month 1 is closed.
+> `56d65d2`). **Month 1 is not *closed*:** the Sentry dogfood exception is not
+> yet met — the seam is in place, but the real `@sentry/react-native` SDK needs
+> a DSN and a native (EAS) build. Carried into Month 2; see "Exit-criteria
+> status" below.
 >
 > **Test status:** 16 suites, 140 tests passing. `npm run test:coverage` enforces
 > the 60% global lines/statements gate from CI.

@@ -12,9 +12,10 @@
 > This document is the investigation and rationale behind that work — read it when
 > you need to know *why* a phase is shaped the way it is.
 
-> **How to read this:** Month 6 is the month the project earns a yes or a no. That
-> makes it structurally different from months 1–5: the deliverable is not a feature
-> set, it is **an attributable number**. The plan is therefore split at the launch —
+> **How to read this:** Month 6 is the month the product is instrumented,
+> launched, and measured. That makes it structurally different from months 1–5:
+> the deliverable is not a feature set, it is **an attributable number**. The
+> plan is therefore split at the launch —
 > **M6a** ships the smallest set of things that make the product demoable and
 > measurable, then launches; **M6b** spends the post-launch weeks on scope chosen
 > from what the launch actually showed.
@@ -33,7 +34,7 @@ document scanner, export polish, a 15–20 item template library, an onboarding
 tutorial), **plus a second platform integration**, **plus analytics
 instrumentation**, **plus three blog posts**, **plus instructor outreach**, **plus a
 coordinated multi-channel launch** — in the same month that is supposed to produce
-the go/no-go decision.
+the scope decision.
 
 Any one of the AI items is a week. LTI 1.3 alone is 2–3 weeks *plus* partner
 paperwork, by the roadmap's own estimate. **The failure mode is specific: eight
