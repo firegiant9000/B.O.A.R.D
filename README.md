@@ -18,18 +18,18 @@ and a metered AI gateway.
 
 ## At a glance
 
-Measured at commit `09afe01` with the commands in
+Measured at commit `c91f2ba` with the commands in
 [docs/README.md → Reproducing these numbers](docs/README.md#reproducing-these-numbers).
 
 | | |
 |---|---|
-| TypeScript, including tests | 92,613 lines |
-| App test suite | 130 suites / 2,018 tests · type-check clean |
-| Cloud Functions suite | 31 suites / 739 tests |
-| Security-rules suite (Firestore emulator) | 3 suites / 356 tests |
-| Callable functions / Firestore triggers | 16 / 2 |
+| TypeScript, including tests | 96,163 lines |
+| App test suite | 134 suites / 2,066 tests · type-check clean |
+| Cloud Functions suite | 32 suites / 810 tests |
+| Security-rules suite (Firestore emulator) | 4 suites / 364 tests |
+| Callable functions / Firestore triggers | 16 / 3 |
 | Client service modules | 40 |
-| `firestore.rules` | 1,427 lines |
+| `firestore.rules` | 1,473 lines |
 | Built | March – September 2026, solo |
 
 ## The hard parts
