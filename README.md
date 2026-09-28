@@ -37,8 +37,11 @@ Measured at commit `09afe01` with the commands in
 **A client-side check is not a gate.** The first free-tier cap was `checkQuota()` in
 the app, in front of a direct Firestore write. A patched client skips it, and the
 file says so on its own first line. Board, class, session and workspace creation now
-go through callables that count and write in one transaction, and `firestore.rules`
-denies client creates for all four outright. The collaborator cap could not move the
+go through callables, and `firestore.rules` denies client creates for all four
+outright. `createSession` bumps its monthly counter and writes the session in one
+transaction; `createBoard` and `createWorkspace` count what already exists and deny
+past the cap before writing, which leaves a narrow race a transaction would close.
+The collaborator cap could not move the
 same way: joining by invite code is an `update` to `members`, not a create, so no
 callable covers it. It is a rules predicate instead, with a test that parses the
 rules text to keep its numbers equal to the TypeScript limits table. The bypass test
@@ -65,7 +68,8 @@ on-device, using its pure-JS engine because the default compiles Oniguruma to
 WebAssembly that neither Jest nor Hermes can be assumed to load. shiki and the
 unist/hast/micromark stack behind it are pure ESM, and jest-expo's transform never
 matches `.mjs`. The root Jest config spreads the preset's transform, adds an `.mjs`
-entry, and admits about twenty packages by prefix. Read its comments before touching
+entry, and admits that stack's twenty-five packages by prefix alongside the
+preset's own. Read its comments before touching
 it.
 
 ## Stack
@@ -135,7 +139,9 @@ The commands above need none of that.
 1. The Cloud Functions have never been deployed, so nothing metered or AI-backed has
    run outside tests and the emulator.
 2. Every AI flag defaults off, and the pre-gateway client-key path is still the
-   default.
+   default. The math and code elements sit behind their own build-time flags, also
+   off by default, so they are equally invisible in a stock build — code elements
+   need no backend, only the flag.
 3. The Stripe checkout code has no Stripe account, product, price or webhook behind
    it.
 4. The workspace migration has run against tests only, never production data.
