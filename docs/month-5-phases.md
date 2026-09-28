@@ -2,16 +2,15 @@
 
 **Author:** Arlo Kharod
 **Drafted:** 2026-09-01
-**Branch:** `feature/months-5-6-monetization-growth` (off `main`) — one branch shared with Month 6; see the executable plan's Execution Handoff.
+**Branch:** `feature/months-5-6-monetization-growth` (off `main`) — one branch shared with Month 6.
 **Source scope:** `ROADMAP.md` § Month 5 (items 1–14, as revised 2026-09-01), Appendix C (collaboration), Appendix E (education pricing).
-**Status:** Planning draft — sequencing + per-phase contracts, not yet implemented.
+**Status:** ✅ Delivered and merged to `main` via PR #93 (`8935184`, 2026-09-20). This document is kept as the plan of record — the phase contracts describe what was built. **Month 5 is not *closed*:** `functions/` has never been deployed, there is no Stripe account behind the checkout code (`functions/src/billing/stripe.ts` says so in its header), and the bypass test against production has not been run. See ROADMAP.md → Month 5 → "Exit criteria".
 
-> **▶ Executable form:** the M5 and M6 plans are combined into a single
-> subagent-executable task list at
-> [`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
-> (37 tasks, Tasks 1–20 are this month). **That document is what you execute.**
-> This one is the investigation and rationale behind it — read it when you need to
-> know *why* a task is shaped the way it is.
+> **Execution record:** Months 5 and 6 were executed from a combined task list that
+> is not part of the public repository. The commits on `feature/months-5-6-monetization-growth`
+> (merged in PR #93) are the record of what was built and in what order.
+> This document is the investigation and rationale behind that work — read it when
+> you need to know *why* a phase is shaped the way it is.
 
 > **How to read this:** Month 5 is the month the product can take money. The work
 > splits into three tracks that run in parallel after a shared prerequisite:

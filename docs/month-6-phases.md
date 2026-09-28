@@ -2,20 +2,20 @@
 
 **Author:** Arlo Kharod
 **Drafted:** 2026-09-01
-**Branch:** `feature/months-5-6-monetization-growth` (off `main`) — one branch shared with Month 5; see the executable plan's Execution Handoff.
+**Branch:** `feature/months-5-6-monetization-growth` (off `main`) — one branch shared with Month 5.
 **Source scope:** `ROADMAP.md` § Month 6 (restructured into M6a / M6b, 2026-09-01), Appendix E (education vertical), Appendix F (M7+ backlog).
-**Status:** Planning draft — sequencing + per-phase contracts, not yet implemented.
+**Status:** ✅ Delivered and merged to `main` via PR #93 (`8935184`, 2026-09-20). This document is kept as the plan of record — the phase contracts describe what was built. **Month 6 is not *closed*:** every AI surface is behind a build-time flag that defaults OFF, `functions/` has never been deployed, analytics has no PostHog project behind it, and there are no users to measure. See ROADMAP.md → Month 6.
 
-> **▶ Executable form:** the M5 and M6 plans are combined into a single
-> subagent-executable task list at
-> [`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
-> (37 tasks, Tasks 21–37 are this month). **That document is what you execute.**
-> This one is the investigation and rationale behind it — read it when you need to
-> know *why* a task is shaped the way it is.
+> **Execution record:** Months 5 and 6 were executed from a combined task list that
+> is not part of the public repository. The commits on `feature/months-5-6-monetization-growth`
+> (merged in PR #93) are the record of what was built and in what order.
+> This document is the investigation and rationale behind that work — read it when
+> you need to know *why* a phase is shaped the way it is.
 
-> **How to read this:** Month 6 is the month the project earns a yes or a no. That
-> makes it structurally different from months 1–5: the deliverable is not a feature
-> set, it is **an attributable number**. The plan is therefore split at the launch —
+> **How to read this:** Month 6 is the month the product is instrumented,
+> launched, and measured. That makes it structurally different from months 1–5:
+> the deliverable is not a feature set, it is **an attributable number**. The
+> plan is therefore split at the launch —
 > **M6a** ships the smallest set of things that make the product demoable and
 > measurable, then launches; **M6b** spends the post-launch weeks on scope chosen
 > from what the launch actually showed.
@@ -34,7 +34,7 @@ document scanner, export polish, a 15–20 item template library, an onboarding
 tutorial), **plus a second platform integration**, **plus analytics
 instrumentation**, **plus three blog posts**, **plus instructor outreach**, **plus a
 coordinated multi-channel launch** — in the same month that is supposed to produce
-the go/no-go decision.
+the scope decision.
 
 Any one of the AI items is a week. LTI 1.3 alone is 2–3 weeks *plus* partner
 paperwork, by the roadmap's own estimate. **The failure mode is specific: eight

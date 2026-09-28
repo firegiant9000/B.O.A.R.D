@@ -7,18 +7,15 @@
 
 ---
 
+> **Line-number citations.** Comments in `src/`, `functions/`, `firestore.rules`,
+> `storage.rules`, the test suites and the month documents cite this file as
+> `ROADMAP.md:NNN`. Those numbers refer to the file as of commit `e66aa2c`, before the
+> business-planning sections were moved out of the public copy. Resolve one with
+> `git show e66aa2c:ROADMAP.md | sed -n 'NNNp'`.
+
 ## 1. Executive Summary
 
 B.O.A.R.D is currently a working real-time collaborative whiteboard built in React Native / Expo + Firestore, originally scoped for a CMPS 357 final project. The codebase is clean, the architecture is reasonable, and the feature surface (drawing, text, presence, sharing, scheduled sessions, friend system, AI session summaries) is well above what most student projects ship.
-
-**The core question:** is this a marketable product as-is, or does it need a pivot?
-
-**Verdict:** It is **not** marketable today. As a horizontal "Miro/FigJam/Excalidraw clone" it is well behind the incumbents and has no moat. But the project does have two genuinely differentiating ingredients that nobody is bundling well right now:
-
-1. **Cross-platform mobile-first real-time collaboration** (iOS + Android + web from one codebase — Miro/FigJam are web-first; Notability is iPad-only).
-2. **Session-scoped AI summarization** (start session → collaborate → end → auto-generated notes). Excalidraw and Miro don't do this; Notability doesn't have real-time collab.
-
-The recommended path is a **focused pivot toward classroom / study-group collaboration**, exploiting the fact that the app was already built around the "session" primitive. This is also the market you have direct empathy for (senior CS student, group projects). The roadmap below is built around that thesis but explicitly preserves the option to repivot at the end of Month 3 if the validation work fails.
 
 **Two cross-cutting constraints apply through every phase:**
 
@@ -39,6 +36,13 @@ The recommended path is a **focused pivot toward classroom / study-group collabo
 - **The "session" primitive is the right abstraction** for what makes this product different — scheduled, time-bounded collaboration with an artifact (board state) at the end.
 
 ### 2.2 Weaknesses
+
+> **As of the drafting date.** The entries below describe the codebase on
+> 2026-05-12, before Month 1, and are left as written rather than edited into the
+> present tense. Several have since been fixed — tests, offline support, drawing
+> performance, the eraser and the error boundary all landed in Month 1; others,
+> such as the client-side OpenAI key, are still open. The per-month status blocks
+> in §4 are the record of what has actually shipped.
 
 - **Zero tests.** No Jest config, no `__tests__`. Every change is a manual regression.
 - **No offline support.** No `enableIndexedDbPersistence`, no service worker. Network drop = frozen app. Hard blocker for classroom Wi-Fi reality.
@@ -69,21 +73,7 @@ The recommended path is a **focused pivot toward classroom / study-group collabo
 
 ## 3. Strategic Options
 
-### Option A — Generic SaaS whiteboard
-Position against Miro/FigJam at a lower price point. **Don't do this.** No moat, no story, no advantage. You will lose on features and lose on sales motion.
-
-### Option B — Classroom / study-group collaboration (Recommended)
-Position as: "the whiteboard built for study sessions and group projects." Lean into the `session` primitive, ship AI summaries that are actually good, add classroom-specific features (rosters, attendance, shareable session recordings, assignment-submission snapshots).
-- **Buyer:** students directly (freemium), and later: course instructors / TAs / departments.
-- **Price:** $0 free / $4-6 per user / month / Pro / $TBD per seat for institution.
-- **Moat:** the session model + AI session artifacts + cross-platform + price.
-
-### Option C — Specialized pivot (interview prep, design sprints, agile retros)
-Same engine, narrower wedge. e.g. "the whiteboard for technical interview pair-programming" — built-in timer, prebuilt scratch templates, AI summary that becomes a debrief.
-- Risk: narrower market means harder to grow organically; needs more sales effort to seed.
-- Reward: less competition, clearer messaging.
-
-**Recommendation: Option B**, with a hedge — at the end of **Month 3** you will have enough data (10-20 real users) to decide whether to keep going on B or repivot to C. The work in Months 1-3 is mostly infrastructure that benefits all three options anyway.
+*Maintained outside the public repository.*
 
 ---
 
@@ -373,9 +363,8 @@ gate (`2a7d5fb`, `99dacf1`).
 - Firestore rules tests pass in CI.
 
 **Mid-point gut check (end of Month 3):**
-- How many real users have you seeded outside your class? Target: 10-20.
+- How many real users have you seeded outside your class?
 - Are the AI summaries (still in WIP) something users *want*? Talk to 5 people.
-- If the answer is "no, they want X instead" — repivot to Option C now, while the architecture is still flexible.
 
 ---
 
@@ -504,12 +493,15 @@ Functions deploy, prod flag cutover, and a real Android device.
 
 **Goal:** Be able to charge money.
 
-**Status:** Not started. Full investigation, gap analysis, and phased plan:
-[`docs/month-5-phases.md`](docs/month-5-phases.md). **Read it before scoping the
-month** — it revises three instructions below and adds a prerequisite phase.
-**To execute:** M5 and M6 are combined into one subagent-driven task list at
-[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
-(37 tasks; Tasks 1–20 are this month).
+**Status:** ✅ Delivered and merged to `main` via PR #93 (`8935184`, 2026-09-20).
+Full investigation, gap analysis, and phased plan:
+[`docs/month-5-phases.md`](docs/month-5-phases.md) — it revises three instructions
+below and adds a prerequisite phase. **Month 5 is not *closed*:** `functions/` has
+never been deployed, there is no Stripe account behind the checkout code, and the
+bypass test against production has not been run — see "Exit criteria" below.
+Months 5 and 6 were executed from a combined task list that is not part of the
+public repository; the commits on `feature/months-5-6-monetization-growth` (merged
+in PR #93) are the record of what was built and in what order.
 Headline corrections: (a) the Stripe Firebase Extension is a dead end (see item 1);
 (b) `checkQuota` cannot enforce anything where it currently sits — client-side check
 in front of a direct client write — so item 2 is an architecture change, not a
@@ -530,8 +522,8 @@ needs real AI cost data).
    - Customer portal for cancellation / payment-method changes.
 2. **Plan gating, enforced — server-side**
    - Free: 1 workspace, 5 boards, 3 sessions / month, 5 AI summaries / month, max 4 collaborators per board.
-   - Pro: $5/user/month — unlimited boards, sessions, AI; up to 25 collaborators; session recordings retained 90 days.
-   - Edu: $TBD/seat — bulk-priced for instructors with their class roster; only sell this manually for now (don't build self-serve).
+   - Pro: unlimited boards, sessions, AI; up to 25 collaborators; session recordings retained 90 days.
+   - Edu: bulk-priced for instructors with their class roster; only sell this manually for now (don't build self-serve).
    - ⚠️ **Correction: this is an architecture change, not a `checkQuota` body change.**
      `checkQuota` is a client-side call in front of a *direct client `addDoc`*
      (`boardService.createBoard`), so a patched bundle or a raw REST call creates
@@ -603,7 +595,7 @@ needs real AI cost data).
     - **Eyedropper tool** — sample color from any element on the canvas.
     - Highlighter pen (semi-transparent, wide stroke, multiply blend mode).
     - Marker pen variant (thicker, harder edges) and a calligraphy variant (width responds to direction).
-13. **Sticky-note polish** — ➡️ **MOVED TO MONTH 6.** Pure polish, no revenue path.
+13. **Sticky-note polish** — ➡️ **MOVED TO MONTH 6.** Pure polish.
 14. **Free-vs-Pro upsell surfaces**
     - When a user hits a gate (6th board, 4th session this month, 6th AI call), show an inline upsell modal. Skip on first attempt; harder push on second.
     - ⚠️ **This needs two platform variants, and getting it wrong gets the binary
@@ -645,23 +637,39 @@ every subsequent phase serializes through merge conflicts in one file.
   slips, cut item 12 next, then item 9 — not the enforcement work.
 
 **Exit criteria:**
-- One paying customer that is not you, your co-developer, or a family member.
-- All five free-tier gates actually enforced **at the database or in a Cloud
-  Function**. A client-side check does not count.
-- Stripe test-mode round-trip passes in *both* directions (upgrade and downgrade).
+- ⚠️ **All five free-tier gates actually enforced at the database or in a Cloud
+  Function — NOT met.** A client-side check does not count, and the enforcement
+  that would count is written but not running. `createBoard`, `createSession`
+  and `createWorkspace` are callables in
+  [`functions/src/callable/`](functions/src/callable);
+  [`firestore.rules`](firestore.rules) denies client `create` outright on
+  workspaces, classes, boards and sessions; the collaborator cap is a rules
+  predicate. `functions/` has never been deployed, so no gate has ever been
+  enforced against a live backend and the bypass test above has not been run.
+- ⚠️ **Stripe test-mode round-trip passes in *both* directions (upgrade and
+  downgrade) — NOT met.** There is no Stripe account behind the checkout code:
+  no product, no live price, no registered webhook endpoint, and
+  `STRIPE_WEBHOOK_SECRET` does not exist. Checkout, the webhook and the Customer
+  Portal are written and unit-tested against a fake Stripe-shaped client — see
+  the header of [`functions/src/billing/stripe.ts`](functions/src/billing/stripe.ts)
+  — but the real Stripe API has never been called.
 
 ---
 
 ### Month 6 — Growth + Decide
 
-**Goal:** Get to 100 active users and decide whether to keep going.
+**Goal:** Instrument, launch, and measure.
 
-**Status:** Not started. Full investigation, gap analysis, and phased plan:
-[`docs/month-6-phases.md`](docs/month-6-phases.md). **Read it before scoping the
-month.** **To execute:** combined with M5 into one subagent-driven task list at
-[`docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md`](docs/superpowers/plans/2026-09-09-months-5-6-monetization-and-growth.md)
-(37 tasks; Tasks 21–37 are this month). Headline findings: (a) **this month is over-scoped by roughly 2×** — eight
-substantial features plus an integration plus a launch plus the go/no-go decision —
+**Status:** ✅ Delivered and merged to `main` via PR #93 (`8935184`, 2026-09-20).
+Full investigation, gap analysis, and phased plan:
+[`docs/month-6-phases.md`](docs/month-6-phases.md). **Month 6 is not *closed*:**
+every AI surface is behind a build-time flag that defaults OFF, `functions/` has
+never been deployed, analytics has no PostHog project behind it, and there are no
+users to measure. Months 5 and 6 were executed from a combined task list that is
+not part of the public repository; the commits on
+`feature/months-5-6-monetization-growth` (merged in PR #93) are the record of what
+was built and in what order. Headline findings: (a) **this month is over-scoped by roughly 2×** — eight
+substantial features plus an integration plus a launch plus the scope decision —
 and the recommendation is to split it around the launch (M6a: analytics → templates →
 export → reactions/polls → launch; M6b: flashcards, board Q&A, integration, scanner);
 (b) **analytics (item 4) must move to first**, since instrumentation shipped after the
@@ -675,7 +683,7 @@ needs no external vector store.
 **Scope, restructured into two halves.** The original 14-item list does not fit in
 one month (see Status above), and cramming it produces the one thing this month
 cannot afford: eight features at 70% and a launch on top of them, yielding numbers
-too ambiguous to support a go/no-go. So the month splits at the launch.
+too ambiguous to support the scope decision. So the month splits at the launch.
 
 ---
 
@@ -749,18 +757,16 @@ data instead of guesses. This is also where M5's deferred rendering work lands.
 
 **Verification:**
 - DAU / WAU / MAU pulled from analytics — which requires A1 to have shipped *before* the launch, not after.
-- Conversion rate from free → Pro (any conversion at all is a win at this stage).
 
-**Exit criteria + decision point:**
-- 100+ signups, 20+ weekly active, 3+ paying.
-- **The decision needs A1's analytics running through a real launch.** That is the
-  whole argument for splitting the month: a launch on top of eight half-finished
-  features produces numbers you cannot attribute, and an unattributable number
-  cannot support a go/no-go. M6a exists to make the M6b scope decision — and the
-  final one — with evidence.
-- Either: keep going with the same wedge → write the Month 7-12 plan with confidence.
-- Or: numbers don't support it → repivot using everything you've built. The infra (workspaces, billing, real-time collab, Cloud Functions) is reusable for any collaboration product. The pivot cost is weeks, not months.
-- Or: it's working but it's not fun → open-source it, write a great README, put it on your résumé, ship something else. This is a legitimate outcome.
+**Exit criteria:**
+- ⚠️ **Analytics (A1) is live and running through the launch, not bolted on
+  after it — NOT met.** A launch on top of eight half-finished features produces
+  numbers you cannot attribute, and an unattributable number cannot scope M6b.
+  The funnel is instrumented behind one seam
+  ([`src/services/analyticsService.ts`](src/services/analyticsService.ts)), but
+  no PostHog project has been provisioned — `EXPO_PUBLIC_POSTHOG_KEY` is unset
+  in every environment, so `track()` takes its no-op branch on every call. There
+  has been no launch, and there are no users to measure.
 
 ---
 
@@ -827,16 +833,7 @@ This is a viable solo budget. The biggest cost risks are Firebase (if you accide
 
 ## 7. Success Metrics by Phase
 
-| Phase | Hard metric | Soft metric |
-|---|---|---|
-| End of Month 2 | App on TestFlight + Play (closed) + PWA | Five non-team users have signed up |
-| End of Month 3 | Workspaces in prod, rules tested | Ten non-team users; have talked to 5 about needs |
-| End of Month 4 | AI summary cost < $0.02/session avg | Twenty real sessions completed by non-team users |
-| End of Month 5 | One real paying customer **+ every free-tier gate enforced server-side** (a bypass test must fail) | Five active workspaces |
-| End of Month 6a | Analytics live *before* launch; launch shipped | Templates + export + polls in users' hands |
-| End of Month 6 | 100 signups, 20 WAU, 3 paying | A clear yes/no on whether to keep going |
-
-If you miss two consecutive monthly hard metrics, stop adding features and spend a week on user interviews. Building features against the wrong problem is the most expensive mistake at this stage.
+*Maintained outside the public repository.*
 
 ---
 
@@ -880,17 +877,9 @@ whose unit cost you have never measured.
 6. **Run the M3 migration on staging and soak it for a week**, then cut over prod.
    This is the last genuinely open Month 3 item and it blocks removing the legacy
    no-`workspaceId` rules fallback.
-7. **Seed 10–20 real users outside your class, starting now — in parallel with the
-   above.** The Month 3 mid-point gut check asked for this and has no recorded
-   answer anywhere in the repo. M5's exit criterion is *one paying customer*; if this
-   number is still zero when M5 starts, you will have built a payment system with
-   nobody to charge. This is the single highest-risk item on the list, and it is not
-   an engineering task.
-8. **Get a mid-range Android test device** if you still don't have one. Pixel 6a or
+7. **Get a mid-range Android test device** if you still don't have one. Pixel 6a or
    Galaxy A-series, $150–250 used. Every mobile-verification gate from M2 onward —
    several of which are now stacked up unclosed — assumes it's on your desk.
-9. **Pick a product name.** "B.O.A.R.D" / "BOARD" is too generic for SEO and
-   trademark, and M6a's content strategy depends on it. An hour, not a week.
 
 ---
 
@@ -1063,7 +1052,7 @@ Quality targets:
 ## B.6 Cost / quota model
 
 Free tier: 5 AI calls / month across the whole workspace.
-Pro tier: 100 calls / month soft-capped, then $0.05 per overage call.
+Pro tier: 100 calls / month, soft-capped.
 Edu tier: 50 calls / student / month, with workspace-level usage dashboard for instructors.
 
 Per-call cost budget: aim for $0.02 average across all AI features (Tier 0–2). Anything above $0.05 should be Pro-only.
@@ -1205,7 +1194,7 @@ Mobile parity is non-negotiable per the cross-cutting constraints. This appendix
 
 # Appendix E — Education / Study-Group Vertical Catalog
 
-The recommended pivot is classroom / study-group collaboration. This appendix is the catalog of vertical-specific features and content that make the wedge real.
+This appendix is the catalog of vertical-specific features and content for the classroom / study-group wedge described in §2.3 — what it would take to serve students and instructors specifically, rather than a general audience.
 
 ## E.1 Student-side features
 
@@ -1254,10 +1243,7 @@ The recommended pivot is classroom / study-group collaboration. This appendix is
 
 ## E.5 Pricing for education
 
-- **Free** — students; 1 workspace, light quotas (already in plan).
-- **Pro for individual students** — $4-5/mo for unlimited (already in plan).
-- **Edu — per-instructor or per-seat** — pricing TBD; aim for $1-3 per student per month, sold to the instructor / department, **not** student-pays.
-- **Institutional** — site license for a department or campus; manual sales, Year-2.
+*Maintained outside the public repository.*
 
 ## E.6 Go-to-market for education
 
