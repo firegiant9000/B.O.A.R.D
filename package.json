@@ -41,7 +41,7 @@
     "expo-share-intent": "^6.1.1",
     "expo-sharing": "~55.0.7",
     "expo-splash-screen": "~55.0.12",
-    "expo-status-bar": "~55.0.4",
+    "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~55.0.16",
     "firebase": "^12.11.0",
     "posthog-js": "^1.430.2",
