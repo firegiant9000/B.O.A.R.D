@@ -40,3 +40,24 @@ commit `fbdb075`. Each states its own unmet gates.
   and the share-into-app receiver.
 - [keyboard-shortcuts.md](keyboard-shortcuts.md) — the web binding table and the
   native hardware-keyboard hooks.
+
+## Reproducing these numbers
+
+The README's figures were produced by these commands at the commit it names. Run
+them at that commit to reproduce, or at `HEAD` to refresh.
+
+| Figure | Command |
+|---|---|
+| Type-check | `npx tsc --noEmit` |
+| App suite | `npm test -- --ci` |
+| Functions suite | `npm --prefix functions test -- --ci` |
+| Rules suite | `npm run test:rules` (needs JDK 21+) |
+| TypeScript lines, incl. tests | `git ls-files -z -- 'src/**/*.ts' 'src/**/*.tsx' 'app/**/*.ts' 'app/**/*.tsx' 'functions/src/**/*.ts' \| xargs -0 wc -l \| tail -n 1` |
+| Callables / triggers | `ls functions/src/callable \| wc -l`, `ls functions/src/triggers \| wc -l` |
+| Service modules | `ls src/services/*.ts \| wc -l` |
+| Rules lines | `wc -l firestore.rules` |
+
+"Service modules" counts top-level modules in `src/services/`, including platform
+variants and excluding tests. Use the shell glob above rather than a git pathspec:
+in `git ls-files 'src/services/*.ts'` the `*` crosses `/`, so it also counts the
+test files under `src/services/__tests__/`.
