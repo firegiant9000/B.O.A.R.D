@@ -34,6 +34,15 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 // stays ignorant of debouncing, metering, and which collections exist — it
 // only knows how to memoize one element's embed.
 //
+// A SEVENTH source — session SUMMARIES — reaches `embedElement` through a
+// second trigger file, `functions/src/triggers/sessionEmbeddings.ts`, because
+// sessions are TOP-LEVEL documents and the six bindings above are all under
+// `boards/`. It writes into the same `boards/{boardId}/embeddings/{elementId}`
+// contract (keyed by the session id, stamped `SESSION_ELEMENT_TYPE`) and reuses
+// the other file's metering and race guard. This file is indifferent to both:
+// it is handed a `BoardElementInput` and memoizes one embed, whatever produced
+// it.
+//
 // RULES NOTE: this collection has NO match block in firestore.rules at all —
 // mirroring flashcardCache.ts's precedent, not ocrCache.ts's. No client
 // surface ever reads a raw embedding vector: retrieval happens entirely
@@ -70,6 +79,24 @@ export interface BoardElementInput {
   elementType: string;
   text: string;
 }
+
+/**
+ * The `elementType` stamped on a SESSION SUMMARY's embedding.
+ *
+ * Lives here, on the contract both halves read, rather than in either half:
+ * the write side (functions/src/triggers/sessionEmbeddings.ts) stamps it and
+ * the read side (functions/src/callable/askBoard.ts) branches on it to apply a
+ * readership check no other indexed kind needs. Two string literals that had to
+ * agree, in two packages' worth of apart, is exactly the drift that would make
+ * every session summary silently unreadable — or, far worse, silently ungated.
+ *
+ * It is NOT a board subcollection name and must never be added to
+ * `ELEMENT_COLLECTIONS` in askBoard.ts: a session is a TOP-LEVEL document
+ * (`sessions/{sessionId}`), not a document under `boards/{boardId}/`. Its
+ * embedding is written under the board (so board-scoped retrieval finds it),
+ * but the document it stands for is not.
+ */
+export const SESSION_ELEMENT_TYPE = "session";
 
 /** `text-embedding-3-small`'s dimension. Firestore's vector cap is 2048. */
 export const EMBEDDING_DIMENSIONS = 1536;

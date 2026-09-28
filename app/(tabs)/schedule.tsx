@@ -29,6 +29,7 @@ import {
 } from "../../src/services/sessionAnalytics";
 import { showAlert, confirmAlert } from "../../src/utils/alerts";
 import UpsellModal from "../../src/components/UpsellModal";
+import { useUpsellCadence } from "../../src/hooks/useUpsellCadence";
 
 type FilterTab = "upcoming" | "active" | "past";
 
@@ -91,11 +92,21 @@ export default function ScheduleScreen() {
   const [activeTab, setActiveTab] = useState<FilterTab>("active");
   const [generatingId, setGeneratingId] = useState<string | null>(null);
   // The AI-summary plan-limit upsell, shown instead of a generic alert when a
-  // summary call hits resource-exhausted. Holds the session it was raised
-  // for so the modal has a workspaceId to act on; `upsellPlan` is the
-  // session's workspace's actual plan (looked up fresh — see
+  // summary call hits resource-exhausted. `upsellSession` holds the session it
+  // was raised for so the modal has a workspaceId to act on; `upsellPlan` is
+  // that session's workspace's actual plan (looked up fresh — see
   // handleGenerateSummary), which the modal needs to tell a real plan-cap
   // denial apart from the plan-independent AI rate throttle.
+  //
+  // VISIBILITY is `useUpsellCadence`'s, not `upsellSession`'s: ROADMAP.md:608
+  // (item 14) asks for restraint on a user's first encounter with a gate, and
+  // this screen used to give every encounter the full sell. The session and
+  // the plan stay local because the hook is deliberately about cadence only —
+  // it knows the resource, not which workspace the denial came from. Both are
+  // set BEFORE `upsell.show`, so the modal never renders against a stale
+  // session: `show` resolves the stored count asynchronously and only then
+  // commits the resource that mounts the modal.
+  const upsell = useUpsellCadence(user?.uid);
   const [upsellSession, setUpsellSession] = useState<Session | null>(null);
   const [upsellPlan, setUpsellPlan] = useState<Plan | undefined>();
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -272,6 +283,7 @@ export default function ScheduleScreen() {
           : null;
         setUpsellPlan(ws?.plan);
         setUpsellSession(session);
+        upsell.show("aiSummary");
       } else {
         showAlert("Summary Failed", error.message ?? "Failed to generate summary.");
       }
@@ -441,13 +453,19 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
-      <UpsellModal
-        visible={!!upsellSession}
-        resource="aiSummary"
-        plan={upsellPlan}
-        workspaceId={upsellSession?.workspaceId}
-        onDismiss={() => setUpsellSession(null)}
-      />
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={upsellPlan}
+          workspaceId={upsellSession?.workspaceId}
+          onDismiss={() => {
+            setUpsellSession(null);
+            upsell.dismiss();
+          }}
+        />
+      )}
 
       {/* Screen header — workspace switcher as the title (Phase 3), consistent
           with the Boards tab top bar. */}

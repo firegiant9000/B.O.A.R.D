@@ -94,21 +94,49 @@ allowlisted host can impersonate its own users to each other inside its own
 namespace. It can never reach a real B.O.A.R.D account or a board its token does
 not name.
 
-⚠️ **Before listing a host, know what you cannot take back.** An editable link is
-minted with a 5-minute redemption window, but the session it exchanges to is
-unbounded and there is no revocation path (see the secret-rotation note above). So
-an editable link that leaks within those 5 minutes is durable board write access.
-Removing a host from this list stops new links; it does not end sessions already
-established under it. Closing that gap properly needs an `auth_time` bound in the
-rules' `isEmbedEditor` plus a re-exchange loop in the host client — neither exists
-yet.
+**Month 6 — the unrevocable-session acknowledgement.** Listing a host above is
+**necessary but not sufficient** for an editable embed. A second, separate
+parameter must also be set, and it is the one that says you have accepted that
+an edit-scoped embed session cannot be revoked:
+
+```bash
+# functions/.env.<projectId>
+EMBED_EDIT_UNREVOCABLE_ACK=i-accept-unrevocable-edit-embed-sessions
+```
+
+With it unset (the default), **both** `mintEmbedToken` and `exchangeEmbedToken`
+refuse every `edit`-scope request with `failed-precondition` and a message
+naming the reason. Read-only embeds are completely unaffected — they carry no
+issuer, no subject and no write capability, and need nothing set.
+
+Withdrawing it takes effect immediately on the exchange as well as the mint, so
+an editable link minted while it was set stops being redeemable the moment it is
+removed and redeployed. That bounds NEW sessions only; it still does not end
+sessions already established (see below).
+
+It is a fixed sentence rather than a boolean on purpose. `true`/`1`/`yes` are the
+values that get copied between environments without being read, and the entire
+point of this parameter is that it is read.
+
+⚠️ **Before setting either parameter, know what you cannot take back.** An
+editable link is minted with a 5-minute redemption window, but the session it
+exchanges to is unbounded and there is no revocation path (see the
+secret-rotation note above). So an editable link that leaks within those 5
+minutes is durable board write access. Removing a host from the allowlist, or
+withdrawing the acknowledgement, stops new links and new exchanges; neither ends
+sessions already established. Closing that gap properly needs an `auth_time`
+bound in the rules' `isEmbedEditor` plus a re-exchange loop in the host client —
+neither exists yet. The acknowledgement parameter does not close the gap; it
+makes crossing the fence a deliberate act instead of a side effect of
+configuring a host.
 
 Month 5's Google Meet add-on shell (`web/meet-addon/`) exists in this repo — do
 **not** read that as "the integration shipped, so `meet` is safe to add here." The
 shell is client wiring only; it does not close the gap above. Do not add `meet` (or
-any real host) to this list, and do not submit that add-on to the Workspace
-Marketplace, until session revocation exists. See `web/meet-addon/README.md`'s
-BLOCKER section for the current, up-to-date statement of what is missing.
+any real host) to this list, do not set the acknowledgement, and do not submit
+that add-on to the Workspace Marketplace, until session revocation exists. See
+`web/meet-addon/README.md`'s BLOCKER section for the current, up-to-date
+statement of what is missing.
 
 ## 3. Deploy
 

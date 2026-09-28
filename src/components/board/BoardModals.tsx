@@ -114,8 +114,16 @@ interface BoardModalsProps {
   recentColors: string[];
   /** The board's workspace plan — the advisory Pro gate `ColorPickerModal`
    *  reads for the swatch-palette badge (see
-   *  `workspaceService.ts#canUseCustomPalette`'s header). */
-  plan: Plan;
+   *  `workspaceService.ts#canUseCustomPalette`'s header).
+   *
+   *  Optional, and NOT defaulted to `"free"` anywhere on the way down.
+   *  `undefined` means the workspace hasn't resolved / has no workspace /
+   *  the fetch failed, which is not the same fact as "on the free plan";
+   *  `canUseCustomPalette` fails open on it, so a Pro workspace mid-fetch
+   *  keeps its palette instead of being shown a "Pro" badge for a feature it
+   *  pays for. Same treatment as the `plan` this file already forwards to
+   *  `BoardHeader` and `UpsellModal`. */
+  plan?: Plan;
   /** Whether the CALLER may write workspace-doc fields beyond its name (see
    *  `ColorPickerModal`'s identical prop doc — firestore.rules restricts
    *  `swatches` writes to workspace owner/admin regardless of plan). */

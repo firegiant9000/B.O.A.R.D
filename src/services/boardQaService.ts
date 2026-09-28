@@ -64,6 +64,23 @@ export const CITATION_KINDS: Record<string, string> = {
   // selecting a shape, so the board screen branches on this kind — but it is
   // still a placeable, tappable citation, which is what matters here.
   comment: "comment",
+  // `session` is deliberately ABSENT, and its absence is load-bearing rather
+  // than pending.
+  //
+  // Session SUMMARIES are indexed and DO ground answers (Month 6), but the
+  // server filters them out of the citation list before it replies — a session
+  // is not on the canvas and has nothing to select, and routing a tap to the
+  // session recap is a product decision (navigating away from the board
+  // mid-conversation) that has not been made. See `askBoard.ts`'s `citations`
+  // comment for the three options and why that one is chosen.
+  //
+  // So nothing should ever arrive here with `elementType: "session"`. If one
+  // did — a rolled-back server, a cached response — `citationKind` returns null
+  // and the panel renders a non-tappable chip rather than pointing a tap at a
+  // canvas element that does not exist. That is the correct failure, which is
+  // why this stays a map lookup with no fallback and why adding `session` here
+  // without also giving the board screen a way to resolve it would be a
+  // regression, not an improvement.
 };
 
 /** The citation kinds that name a canvas element (so `boxOfElement` can resolve

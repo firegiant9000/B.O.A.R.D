@@ -2,7 +2,8 @@ import React from "react";
 import { render, waitFor } from "@testing-library/react-native";
 import { G, Rect, Text as SvgText, TSpan } from "react-native-svg";
 import CodeElementView from "../CodeElementView";
-import { CODE_BACKGROUND_COLOR, CODE_BORDER_COLOR, layoutCodeBox } from "../../../lib/codeRender";
+import { CODE_BACKGROUND_COLOR, CODE_BORDER_COLOR } from "../../../lib/codeRender";
+import { layoutCodeBox } from "../../../lib/codeLayout";
 import type { CodeElement } from "../../../types";
 
 jest.mock("../../../lib/osClipboard", () => ({

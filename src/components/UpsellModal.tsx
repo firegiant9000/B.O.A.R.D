@@ -56,14 +56,26 @@ export default function UpsellModal({
   plan,
   workspaceId,
   // ROADMAP.md:608 (item 14) — "Skip on first attempt; harder push on second".
-  // Defaults to "hard", the body this modal has always rendered, so every
-  // caller and test that predates the cadence keeps exactly its behaviour and
-  // only a deliberate opt-in gets the restrained one. That default is the
-  // opposite of fail-soft on purpose: the ONE production caller
-  // (app/board/[id].tsx via useUpsellCadence) always supplies a variant that
-  // was itself resolved fail-soft, so the only thing this default can reach is
-  // a caller that never asked for cadence at all — and silently stripping the
-  // sell from such a caller would be a behaviour change nobody requested.
+  // Defaults to "hard", the body this modal has always rendered.
+  //
+  // WHAT THE DEFAULT IS FOR, NOW THAT EVERY PRODUCTION CALLER SUPPLIES A
+  // VARIANT. It used to be load-bearing in a different way: while the board
+  // screen was the only cadence-aware caller, the default was what the other
+  // five renderers actually got, and "hard" kept their pre-cadence behaviour
+  // rather than silently changing it. All six now route through
+  // `useUpsellCadence` (the two session screens, session create, the
+  // dashboard's board cap, `BoardModals`, and `WorkspaceSwitcher`), so nothing
+  // in the app reaches this default any more.
+  //
+  // It is kept, and kept as "hard" rather than "soft", for the callers that
+  // are not the app: this component's own tests, and any future call site that
+  // genuinely has no cadence to express. Defaulting to "soft" would mean a
+  // caller who forgot the prop silently stops making the offer — a revenue
+  // change that looks like nothing and that no test would flag. Defaulting to
+  // "hard" means a forgotten prop shows the sell too eagerly, which is
+  // visible. The cadence's fail-soft direction lives in `upsellCadence.ts`,
+  // where a storage error resolves "soft"; this default is a different
+  // decision about a different failure and deliberately points the other way.
   variant = "hard",
 }: UpsellModalProps) {
   const effectivePlan: Plan = plan ?? "free";

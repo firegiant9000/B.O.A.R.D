@@ -4,6 +4,8 @@ import {
   verifyEmbedToken,
   isAllowedIssuer,
   parseIssuerAllowlist,
+  isEditUnrevocableAcknowledged,
+  EMBED_EDIT_UNREVOCABLE_ACK_VALUE,
   EMBED_TOKEN_VERSION,
   EMBED_TOKEN_TTL_SECONDS,
   EMBED_EDIT_TOKEN_TTL_SECONDS,
@@ -324,7 +326,15 @@ describe("issuer allowlist", () => {
 
 describe("handleExchangeEmbedToken", () => {
   const mint = jest.fn(async (uid: string, claims: object) => `custom(${uid},${JSON.stringify(claims)})`);
-  const deps = () => ({ secret: SECRET, allowedIssuers: ["meet", "extension"], mintCustomToken: mint });
+  // `editUnrevocableAcknowledged: true` by default so each test below isolates
+  // the thing it names. The acknowledgement gate has its own describe block
+  // further down, which sets it false explicitly.
+  const deps = (over: Partial<{ editUnrevocableAcknowledged: boolean }> = {}) => ({
+    secret: SECRET,
+    allowedIssuers: ["meet", "extension"],
+    editUnrevocableAcknowledged: over.editUnrevocableAcknowledged ?? true,
+    mintCustomToken: mint,
+  });
   const reqOf = (token?: string) =>
     ({ data: token === undefined ? {} : { token } } as CallableRequest<{ token: string }>);
 
@@ -457,6 +467,7 @@ describe("handleMintEmbedToken", () => {
     found: boolean;
     legacy: boolean;
     allowedIssuers: string[];
+    editUnrevocableAcknowledged: boolean;
   }>;
   const access = (over: MintOpts = {}) => ({
     workspaceId: over.legacy ? "" : "ws1",
@@ -466,6 +477,9 @@ describe("handleMintEmbedToken", () => {
   const deps = (over: MintOpts = {}) => ({
     secret: SECRET,
     allowedIssuers: over.allowedIssuers ?? ["meet", "extension"],
+    // Defaults true so each test below isolates the thing it names; the
+    // acknowledgement gate's own tests set it false explicitly.
+    editUnrevocableAcknowledged: over.editUnrevocableAcknowledged ?? true,
     resolveAccess: jest.fn(async () => (over.found === false ? null : access(over))),
     isInWorkspace: jest.fn(async () => over.inWorkspace ?? true),
   });
@@ -630,5 +644,212 @@ describe("handleMintEmbedToken", () => {
         NOW_MS
       )
     ).rejects.toMatchObject({ code: "invalid-argument" });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // The unrevocable-edit-session acknowledgement, mint side.
+  //
+  // The property under test is exactly the one that used to be a README:
+  // setting the ISSUER ALLOWLIST ALONE must not enable edit scope. Every case
+  // below therefore runs with a fully-populated allowlist and a caller who
+  // satisfies every other gate — admin, in the workspace, well-formed
+  // subject/issuer — so the only thing standing between the request and a
+  // minted edit token is the acknowledgement.
+
+  describe("unrevocable-edit acknowledgement", () => {
+    const editReq = { boardId: "b1", scope: "edit", sub: "host:u9", iss: "meet" };
+
+    it("refuses an edit mint when the issuer allowlist is set but the acknowledgement is not", async () => {
+      // THE regression this gate exists to prevent. `allowedIssuers` here is
+      // the same list the accepted case above uses.
+      const d = deps({ editUnrevocableAcknowledged: false });
+      await expect(handleMintEmbedToken(reqOf("u1", editReq), d, NOW_MS)).rejects.toMatchObject({
+        code: "failed-precondition",
+      });
+      expect(d.allowedIssuers).toContain("meet");
+    });
+
+    it("names the reason and the remedy, not just the remedy", async () => {
+      // An operator who learns only which string to paste has learned nothing
+      // and will paste it.
+      await expect(
+        handleMintEmbedToken(reqOf("u1", editReq), deps({ editUnrevocableAcknowledged: false }), NOW_MS)
+      ).rejects.toThrow(/cannot be revoked/i);
+      await expect(
+        handleMintEmbedToken(reqOf("u1", editReq), deps({ editUnrevocableAcknowledged: false }), NOW_MS)
+      ).rejects.toThrow(/EMBED_EDIT_UNREVOCABLE_ACK=/);
+    });
+
+    it("refuses BEFORE resolving board access — a deploy-level precondition needs no Firestore read", async () => {
+      const d = deps({ editUnrevocableAcknowledged: false });
+      await expect(handleMintEmbedToken(reqOf("u1", editReq), d, NOW_MS)).rejects.toThrow();
+      expect(d.resolveAccess).not.toHaveBeenCalled();
+      expect(d.isInWorkspace).not.toHaveBeenCalled();
+    });
+
+    it("mints the edit token once BOTH are set — the gate is the acknowledgement, not something else", async () => {
+      // The positive control for the three refusals above: identical request,
+      // identical deps, acknowledgement flipped on.
+      const res = await handleMintEmbedToken(
+        reqOf("u1", editReq),
+        deps({ editUnrevocableAcknowledged: true }),
+        NOW_MS
+      );
+      expect(res.scope).toBe("edit");
+      expect(verifyEmbedToken(res.token, SECRET, NOW_MS).payload).toMatchObject({
+        scope: "edit", sub: "host:u9", iss: "meet",
+      });
+    });
+
+    it("leaves the VIEW scope completely unaffected with NEITHER parameter set", async () => {
+      // Read-only embeds carry no issuer and no write capability, so there is
+      // nothing here for an operator to acknowledge. An empty allowlist AND no
+      // acknowledgement must still mint a working view link.
+      const res = await handleMintEmbedToken(
+        reqOf("u1", { boardId: "b1" }),
+        deps({ allowedIssuers: [], editUnrevocableAcknowledged: false, isAdmin: false }),
+        NOW_MS
+      );
+      expect(res.scope).toBe("view");
+      expect(verifyEmbedToken(res.token, SECRET, NOW_MS).ok).toBe(true);
+      expect(res.expiresAt).toBe(NOW_S + EMBED_TOKEN_TTL_SECONDS);
+    });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The acknowledgement parameter's own parsing, and the exchange half of the
+// gate. Kept together because the value is the whole control: a parser that
+// said yes to "true" would put the fence back where it was.
+
+describe("isEditUnrevocableAcknowledged", () => {
+  it("accepts exactly the documented sentence", () => {
+    expect(isEditUnrevocableAcknowledged(EMBED_EDIT_UNREVOCABLE_ACK_VALUE)).toBe(true);
+  });
+
+  it("tolerates surrounding whitespace and casing — a pasted value was meant", () => {
+    expect(isEditUnrevocableAcknowledged(`  ${EMBED_EDIT_UNREVOCABLE_ACK_VALUE}\n`)).toBe(true);
+    expect(isEditUnrevocableAcknowledged(EMBED_EDIT_UNREVOCABLE_ACK_VALUE.toUpperCase())).toBe(true);
+  });
+
+  it("rejects the values that get copied between environments unread", () => {
+    // The reason this is a sentence and not a boolean.
+    for (const v of ["true", "TRUE", "1", "yes", "on", "enabled"]) {
+      expect(isEditUnrevocableAcknowledged(v)).toBe(false);
+    }
+  });
+
+  it("rejects unset, empty and near-miss values", () => {
+    expect(isEditUnrevocableAcknowledged(undefined)).toBe(false);
+    expect(isEditUnrevocableAcknowledged(null)).toBe(false);
+    expect(isEditUnrevocableAcknowledged("")).toBe(false);
+    expect(isEditUnrevocableAcknowledged("   ")).toBe(false);
+    expect(isEditUnrevocableAcknowledged("i-accept-unrevocable-edit-embed-session")).toBe(false);
+    expect(isEditUnrevocableAcknowledged(`x${EMBED_EDIT_UNREVOCABLE_ACK_VALUE}`)).toBe(false);
+    expect(isEditUnrevocableAcknowledged(`${EMBED_EDIT_UNREVOCABLE_ACK_VALUE} extension`)).toBe(false);
+  });
+
+  it("the accepted value names what is being accepted", () => {
+    // If this ever became a bare flag, the parameter would stop doing the one
+    // thing it exists to do: make the setter read the word.
+    expect(EMBED_EDIT_UNREVOCABLE_ACK_VALUE).toMatch(/unrevocable/);
+  });
+});
+
+describe("handleExchangeEmbedToken — unrevocable-edit acknowledgement", () => {
+  // The exchange is an INDEPENDENT entry point: it does not call the mint and
+  // the mint does not call it. It is also where the unrevocable session is
+  // actually created, so gating the mint alone would leave an already-minted
+  // link redeemable for its full window after the acknowledgement is withdrawn.
+  const mint = jest.fn(async (uid: string, claims: object) => `custom(${uid},${JSON.stringify(claims)})`);
+  const deps = (ack: boolean) => ({
+    secret: SECRET,
+    allowedIssuers: ["meet", "extension"],
+    editUnrevocableAcknowledged: ack,
+    mintCustomToken: mint,
+  });
+  const reqOf = (token: string) => ({ data: { token } } as CallableRequest<{ token: string }>);
+  const editToken = () =>
+    mintEmbedToken({
+      boardId: "b9", scope: "edit", sub: "host:u9", iss: "meet", secret: SECRET, nowMs: NOW_MS,
+    }).token;
+
+  beforeEach(() => mint.mockClear());
+
+  it("refuses to exchange a valid, allowlisted edit token without the acknowledgement", async () => {
+    await expect(
+      handleExchangeEmbedToken(reqOf(editToken()), deps(false), NOW_MS)
+    ).rejects.toMatchObject({ code: "failed-precondition" });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it("names the reason and the remedy", async () => {
+    await expect(
+      handleExchangeEmbedToken(reqOf(editToken()), deps(false), NOW_MS)
+    ).rejects.toThrow(/cannot be revoked/i);
+    await expect(
+      handleExchangeEmbedToken(reqOf(editToken()), deps(false), NOW_MS)
+    ).rejects.toThrow(/EMBED_EDIT_UNREVOCABLE_ACK=/);
+  });
+
+  it("exchanges the same token once the acknowledgement is set", async () => {
+    // Positive control: identical token, identical deps, ack flipped on.
+    const res = await handleExchangeEmbedToken(reqOf(editToken()), deps(true), NOW_MS);
+    expect(res).toMatchObject({ boardId: "b9", scope: "edit" });
+    expect(mint).toHaveBeenCalledWith("embed:meet:host:u9", expect.objectContaining({
+      embedScope: "edit",
+    }));
+  });
+
+  it("still gives a FORGED edit token the flat denial, not the configuration message", async () => {
+    // The acknowledgement refusal is the one branch here that says anything
+    // specific. It must be reachable only by someone already holding a validly
+    // signed, allowlisted, identity-bearing edit token.
+    const forged = mintEmbedToken({
+      boardId: "b9", scope: "edit", sub: "host:u9", iss: "meet", secret: "wrong", nowMs: NOW_MS,
+    }).token;
+    await expect(
+      handleExchangeEmbedToken(reqOf(forged), deps(false), NOW_MS)
+    ).rejects.toThrow(/invalid embed link/i);
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it("still gives a NON-ALLOWLISTED issuer the flat denial, not the configuration message", async () => {
+    const offList = mintEmbedToken({
+      boardId: "b9", scope: "edit", sub: "host:u9", iss: "evil-host", secret: SECRET, nowMs: NOW_MS,
+    }).token;
+    await expect(
+      handleExchangeEmbedToken(reqOf(offList), deps(false), NOW_MS)
+    ).rejects.toThrow(/invalid embed link/i);
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it("leaves the VIEW scope completely unaffected with NEITHER parameter set", async () => {
+    // A read-only embed carries no issuer, so an empty allowlist was never in
+    // its way; the acknowledgement must not be either. This is the check the
+    // brief asked be verified rather than assumed.
+    const view = mintEmbedToken({ boardId: "b9", scope: "view", secret: SECRET, nowMs: NOW_MS }).token;
+    const res = await handleExchangeEmbedToken(
+      reqOf(view),
+      { ...deps(false), allowedIssuers: [] },
+      NOW_MS
+    );
+    expect(res).toMatchObject({ boardId: "b9", scope: "view" });
+    expect(mint).toHaveBeenCalledWith(embedUid("b9"), {
+      embed: true, embedBoardId: "b9", embedScope: "view",
+    });
+  });
+
+  it("leaves a LEGACY v1 view token unaffected too", async () => {
+    // Existing embeds in the wild are v1. A deploy-time parameter introduced
+    // years later must not retroactively break them.
+    const v1View = signJwt({ v: 1, boardId: "b9", scope: "view", iat: NOW_S, exp: NOW_S + 100 }, SECRET);
+    const res = await handleExchangeEmbedToken(
+      reqOf(v1View),
+      { ...deps(false), allowedIssuers: [] },
+      NOW_MS
+    );
+    expect(res).toMatchObject({ boardId: "b9", scope: "view" });
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 });

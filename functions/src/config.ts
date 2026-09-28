@@ -32,7 +32,50 @@ export const EMBED_JWT_SECRET = defineSecret("EMBED_JWT_SECRET");
 // The default is EMPTY so a fresh or misconfigured deploy fails closed — every
 // identity-bearing token is refused until a host is listed. Read-only ('view')
 // embeds carry no issuer and are unaffected.
+//
+// LISTING A HOST HERE IS NO LONGER SUFFICIENT to enable edit-scoped embeds. It
+// is one of TWO params that must both be set — see EMBED_EDIT_UNREVOCABLE_ACK
+// directly below for the second and for why there is a second.
 export const EMBED_ALLOWED_ISSUERS = defineString("EMBED_ALLOWED_ISSUERS", {
+  default: "",
+});
+
+// The second, separate gate on edit-scoped embeds (Month 6). Deliberately NOT
+// folded into EMBED_ALLOWED_ISSUERS above, because the two say different things
+// and one of them is an acceptance of risk rather than a piece of routing:
+//
+//   EMBED_ALLOWED_ISSUERS says WHICH hosts' identity assertions we accept.
+//   EMBED_EDIT_UNREVOCABLE_ACK says the operator has accepted that an
+//   edit-scoped embed session CANNOT BE REVOKED before its token expires.
+//
+// That second fact is real and unfixed: `exchangeEmbedToken` mints a Firebase
+// custom token, `signInWithCustomToken` turns it into an Auth session whose
+// refresh token outlives the embed token, survives re-minting, and survives
+// rotating EMBED_JWT_SECRET. There is no `revokeRefreshTokens` path and no
+// `auth_time` bound in firestore.rules' isEmbedEditor. A leaked editable embed
+// link, redeemed once, is durable board write access.
+//
+// Until this param existed, that gap was fenced only by the emptiness of the
+// allowlist — a runbook control, not an enforced one. An operator wiring up
+// Meet or the browser extension sets one deploy-time string and the fence is
+// gone, having never read a README. Requiring a SECOND, differently-named
+// param whose only purpose is to say "yes, unrevocable, I know" means the fence
+// cannot be removed by accident while doing something else.
+//
+// Set it (per environment, in functions/.env.<project>) only when that trade is
+// genuinely accepted:
+//   EMBED_EDIT_UNREVOCABLE_ACK=i-accept-unrevocable-edit-embed-sessions
+//
+// The accepted value is a fixed sentence, not a boolean: `true`/`1`/`yes` are
+// the kind of thing that gets copied between environments without being read,
+// and the whole point of this param is that it is read. Parsed by
+// `isEditUnrevocableAcknowledged` (embed/token.ts), which holds the value.
+//
+// The default is EMPTY, so every edit-scoped mint AND exchange is refused with
+// `failed-precondition` on a deploy that has not set it. Read-only ('view')
+// embeds are completely unaffected — they carry no issuer, no subject, and no
+// write capability, so there is nothing here to acknowledge.
+export const EMBED_EDIT_UNREVOCABLE_ACK = defineString("EMBED_EDIT_UNREVOCABLE_ACK", {
   default: "",
 });
 

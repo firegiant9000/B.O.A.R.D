@@ -12,6 +12,7 @@ import {
   Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { isQuotaDenial } from "../services/quotaService";
 
 interface CreateWorkspaceModalProps {
   visible: boolean;
@@ -20,6 +21,21 @@ interface CreateWorkspaceModalProps {
   onCreate: (name: string) => Promise<string>;
   /** Called with the new workspace id after a successful create. */
   onCreated: (id: string) => void;
+  /** Called instead of this modal's inline error when creation is denied for
+   *  being over the plan's workspace cap — the caller shows its own upsell UI.
+   *  Exactly `TemplateGalleryModal`'s `onQuotaDenied` contract, and named the
+   *  same, because it is the same decision: the modal owns the call and hands
+   *  its caller the outcome.
+   *
+   *  Why it cannot stay an inline string. The workspace cap is one of the five
+   *  enforced plan gates, and it was the only one that never reached
+   *  `UpsellModal` — so it was also the only one that never got
+   *  `upsellCadence`'s soft-first/hard-second treatment (ROADMAP.md:608, item
+   *  14). Rendering `createWorkspace`'s raw rejection text here gave a user's
+   *  very first encounter with the cap the same flat message as their tenth,
+   *  and the message itself ended in "Upgrade for more." with nothing to
+   *  upgrade with. */
+  onQuotaDenied: () => void;
 }
 
 export default function CreateWorkspaceModal({
@@ -27,6 +43,7 @@ export default function CreateWorkspaceModal({
   onClose,
   onCreate,
   onCreated,
+  onQuotaDenied,
 }: CreateWorkspaceModalProps) {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -54,6 +71,26 @@ export default function CreateWorkspaceModal({
       reset();
       onCreated(id);
     } catch (err: any) {
+      // `isQuotaDenial` rather than a string match on the message: the cap is
+      // enforced in `createWorkspace`, which rejects with `resource-exhausted`.
+      // Matching on the copy would break the moment that sentence is reworded,
+      // and it is a sentence the caller is about to stop showing anyway.
+      // Everything else still surfaces inline here.
+      //
+      // `isQuotaDenial` also matches the client pre-flight's
+      // `QuotaExceededError`, and that half is DEFENCE IN DEPTH rather than a
+      // live path: `quotaService.ts` deliberately has no `QuotaResource` entry
+      // for workspaces (a pre-flight needs a workspace id to check against, and
+      // a workspace create has none), so nothing in this flow can throw one
+      // today. It is used anyway because `isQuotaDenial` is the function every
+      // create site is supposed to call — reaching for the narrower
+      // `isResourceExhausted` here would make this the one site that has to be
+      // revisited if workspaces ever do get a pre-flight.
+      if (isQuotaDenial(err)) {
+        reset();
+        onQuotaDenied();
+        return;
+      }
       setError(err.message ?? "Failed to create workspace.");
       setLoading(false);
     }

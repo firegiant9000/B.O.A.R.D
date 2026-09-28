@@ -44,8 +44,15 @@ export interface ColorPickerModalProps {
 
   /** The workspace's plan — the advisory Pro gate on adding a NEW swatch
    *  (see `workspaceService.ts#canUseCustomPalette`'s header). Existing
-   *  swatches remain visible/usable to every plan; only adding one is gated. */
-  plan: Plan;
+   *  swatches remain visible/usable to every plan; only adding one is gated.
+   *
+   *  Optional on purpose: `undefined` is "the plan isn't known yet", not
+   *  "free". Coercing it here would render the "Pro" badge on the swatch row
+   *  and route a paying admin's tap to the upsell for the whole time the
+   *  workspace fetch is unresolved (and permanently if it failed), which is
+   *  exactly the regression `canUseCustomPalette`'s widened signature exists
+   *  to prevent. */
+  plan?: Plan;
   /** Whether the CALLER's workspace role may write to the workspace doc at
    *  all beyond renaming it — firestore.rules' `workspaces/{id}` update rule
    *  restricts every other field (including `swatches`) to owner/admin

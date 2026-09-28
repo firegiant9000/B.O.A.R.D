@@ -13,6 +13,12 @@ rules_version = '2';
 // Deploy `functions` first, confirm all three callables respond, then deploy
 // rules.
 //
+// ⚠️ "Deploy `functions` first" is the rule for the FOUR relationships below
+// it, not for every relationship this file has with `functions`. One of them
+// — the welcome-session grant, last in this banner — is the other way round,
+// and deploying functions first there opens a real hole. Read to the end of
+// this banner before ordering a deploy; do not generalise the sentence above.
+//
 // ⚠️ `createWorkspace` is the worst of the three to get wrong, and not by a
 // little. Signing up creates a workspace (src/services/authService.ts ->
 // `ensurePersonalWorkspace` -> `workspaceService.createWorkspace`), so
@@ -28,8 +34,36 @@ rules_version = '2';
 // throws a permissions error in the user's face. Deploy `functions` first
 // here as well.
 //
-// Rolling back is the mirror image: roll rules back BEFORE removing the
-// functions, never after.
+// ⚠️ A FIFTH relationship, and this ONE IS REVERSED — deploy RULES FIRST (or
+// simultaneously). It is the grant-aware `createSession`
+// (functions/src/callable/createSession.ts) paired with the
+// `welcomeSessionGrantUsed` pin in the `workspaces/{id}` update rule below.
+// The blanket "deploy `functions` first" instruction at the top of this
+// banner does NOT apply to this pair and must not be applied to it.
+//
+// WHY, in one sentence a reader can check: the live pre-pin ruleset pins only
+// `['plan']` (`git show c9ade12:firestore.rules`, the `workspaces/{id}`
+// update rule) and its owner/admin arm permits every other field, so
+// `welcomeSessionGrantUsed` is CLIENT-WRITABLE until this file ships — and
+// with the new function live but the old rules still serving, a workspace
+// owner can write `welcomeSessionGrantUsed: false` back and re-claim the
+// un-metered session grant without limit.
+//
+// The reverse order is safe and inert: the old `createSession` neither reads
+// nor writes the marker, so shipping the pin first constrains nothing at all
+// until the function lands.
+//
+// ROLLING THIS PAIR BACK IS "FUNCTIONS OUT FIRST" — the mirror image of
+// "rules first", and the opposite of the rollback sentence below. Withdraw
+// the grant-aware `createSession` BEFORE restoring the pre-pin rules. The
+// other order un-pins `welcomeSessionGrantUsed` while that function is still
+// deployed, which is precisely the unlimited-grant hole the paragraph above
+// describes — a rollback would OPEN it rather than close it.
+//
+// Rolling back the FOUR functions-first relationships above — and only those
+// four — is the mirror image of deploying them: roll rules back BEFORE
+// removing the functions, never after. This sentence does not cover the fifth
+// pair; that one is stated in its own paragraph directly above.
 //
 // ⚠️ AND IF YOU DO HAVE TO ROLL BACK: restore ONLY the three `allow create`
 // blocks (boards, sessions and workspaces) to their pre-callable predicates.
@@ -1344,6 +1378,18 @@ service cloud.firestore {
     // existing ones stay readable.
     // TODO(phase-9-cutover): remove the `workspaceId == null` read tolerance once
     // the migration has stamped every session and the staging soak closes.
+    //
+    // ⚠️ THE READ RULE BELOW IS MIRRORED SERVER-SIDE. Month 6 indexes session
+    // SUMMARIES for board Q&A, and that retrieval path runs on the Admin SDK,
+    // which bypasses this file — so `sessionReadableBy` in
+    // functions/src/callable/askBoard.ts re-derives these four disjuncts by
+    // hand and applies them per candidate. It is NOT enough to be a member of
+    // the session's board: a member of a LEGACY board need be in no workspace
+    // at all, and `isMemberOfWorkspace('')` is false, so board membership and
+    // session readership genuinely diverge. If a disjunct here is narrowed,
+    // narrow it there in the same commit — widening here is safe, narrowing
+    // here alone would leave board Q&A answering from sessions this rule has
+    // started refusing.
     match /sessions/{sessionId} {
       allow read:   if isSignedIn() && (
                       request.auth.uid == resource.data.createdById ||

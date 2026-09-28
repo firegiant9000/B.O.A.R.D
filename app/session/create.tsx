@@ -22,7 +22,10 @@ import * as boardService from "../../src/services/boardService";
 import * as sessionService from "../../src/services/sessionService";
 import { isQuotaDenial } from "../../src/services/quotaService";
 import { track } from "../../src/services/analyticsService";
+import { getWorkspace } from "../../src/services/workspaceService";
 import UpsellModal from "../../src/components/UpsellModal";
+import { useUpsellCadence } from "../../src/hooks/useUpsellCadence";
+import type { Plan } from "../../src/types";
 
 const DURATION_OPTIONS = [
   { label: "30m", value: 30 },
@@ -53,7 +56,25 @@ export default function CreateSessionScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   // The session-create plan-limit upsell, shown instead of the generic error
   // alert when createSession is denied for being over the session cap.
-  const [upsellVisible, setUpsellVisible] = useState(false);
+  //
+  // Visibility through `useUpsellCadence`, not a bare boolean, so a user's
+  // first encounter with this gate gets the restrained notice
+  // (ROADMAP.md:608, item 14) — the same cadence every other gate now has.
+  const upsell = useUpsellCadence(user?.uid);
+  // The board's workspace plan, looked up on the denial path only.
+  //
+  // This modal used to be rendered with NO `plan` prop at all, so
+  // `UpsellModal` fell back to "free" for everyone. That is inert today and
+  // was still worth closing: `createSession` has exactly one
+  // resource-exhausted throw site (the plan cap), and `sessionsPerPeriod` is
+  // UNLIMITED on pro/edu, so a paying customer cannot currently reach this
+  // modal at all. The moment either of those changes — a request-rate throttle
+  // on this callable, or a finite paid-tier number — a hardcoded "free" would
+  // quote the free plan's limit to a Pro customer and offer them a paywall,
+  // which is precisely the failure `isPlanCapped` exists to prevent. Looked up
+  // the same way the two AI-summary screens look theirs up, on the denial path
+  // so an ordinary create pays for no extra read.
+  const [upsellPlan, setUpsellPlan] = useState<Plan | undefined>();
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -167,7 +188,10 @@ export default function CreateSessionScreen() {
       // site, the plan cap itself, so no workspace-plan lookup is needed to
       // tell this apart from anything else.
       if (!isEdit && isQuotaDenial(error)) {
-        setUpsellVisible(true);
+        const workspaceId = selectedBoard?.workspaceId;
+        const ws = workspaceId ? await getWorkspace(workspaceId).catch(() => null) : null;
+        setUpsellPlan(ws?.plan);
+        upsell.show("session");
       } else {
         Alert.alert("Error", `Failed to ${isEdit ? "update" : "create"} session`);
       }
@@ -211,12 +235,16 @@ export default function CreateSessionScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <UpsellModal
-        visible={upsellVisible}
-        resource="session"
-        workspaceId={selectedBoard?.workspaceId}
-        onDismiss={() => setUpsellVisible(false)}
-      />
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={upsellPlan}
+          workspaceId={selectedBoard?.workspaceId}
+          onDismiss={upsell.dismiss}
+        />
+      )}
 
       {/* Header */}
       <View style={styles.header}>

@@ -1,12 +1,15 @@
+import { CODE_DEFAULT_FOREGROUND, codeTransform, tokenizeCode } from "../codeRender";
+// The language list, the defaults, the type guard and the pure box layout now
+// live in the dependency-free leaf (`lib/codeLayout.ts`) so that a caller that
+// needs only those never loads Shiki. This suite still covers both halves
+// together, because the two are one feature — what changed is which module
+// each export is imported from.
 import {
   CODE_DEFAULT_FONT_SIZE,
-  CODE_DEFAULT_FOREGROUND,
   CODE_LANGUAGES,
-  codeTransform,
   isCodeLanguage,
   layoutCodeBox,
-  tokenizeCode,
-} from "../codeRender";
+} from "../codeLayout";
 import type { CodeLanguage } from "../../types";
 
 // A representative snippet per supported language — each one deliberately

@@ -12,6 +12,7 @@
     "test:coverage": "jest --coverage",
     "test:rules": "firebase emulators:exec --only firestore,storage --project demo-board-rules \"jest --config firestore-tests/jest.config.js --runInBand\"",
     "migrate:workspaces": "node scripts/migrate-workspaces.js",
+    "backfill:welcome-grant": "node scripts/backfill-welcome-session-grant.js",
     "functions:build": "npm --prefix functions run build",
     "functions:test": "npm --prefix functions test",
     "functions:serve": "npm --prefix functions run serve"

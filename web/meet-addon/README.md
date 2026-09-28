@@ -124,13 +124,28 @@ codebase**. See `functions/src/embed/token.ts` (`EMBED_TOKEN_TTL_SECONDS`'s
 doc comment) and `docs/functions-deploy-runbook.md` (the embed
 secret-rotation and issuer-allowlist sections) for the full detail.
 
-**Do not add `meet` (or any real host) to `EMBED_ALLOWED_ISSUERS` and do not
-submit this add-on to the Workspace Marketplace until session revocation
-exists**: `auth.revokeRefreshTokens(uid)` reachable from somewhere, an
-`auth_time` bound in `firestore.rules`' `isEmbedEditor`, and a host client
-(this panel, eventually) that re-exchanges on expiry instead of holding one
-Auth session indefinitely. This shell builds none of that — it was out of
-scope here and remains open.
+**Do not add `meet` (or any real host) to `EMBED_ALLOWED_ISSUERS`, do not set
+`EMBED_EDIT_UNREVOCABLE_ACK`, and do not submit this add-on to the Workspace
+Marketplace until session revocation exists**: `auth.revokeRefreshTokens(uid)`
+reachable from somewhere, an `auth_time` bound in `firestore.rules`'
+`isEmbedEditor`, and a host client (this panel, eventually) that re-exchanges on
+expiry instead of holding one Auth session indefinitely. This shell builds none
+of that — it was out of scope here and remains open.
+
+**This paragraph is no longer the only thing standing in the way.** It used to
+be: the gap was fenced by `EMBED_ALLOWED_ISSUERS` defaulting to empty plus this
+warning, and a README is not a control — one deploy-time string set by someone
+who never read this file removed the fence. As of Month 6 the fence is enforced
+in code. Edit-scoped embeds need a SECOND parameter,
+`EMBED_EDIT_UNREVOCABLE_ACK`, set to a fixed sentence that names the risk;
+without it both `mintEmbedToken` and `exchangeEmbedToken` refuse every `edit`
+request with `failed-precondition`. Setting the issuer allowlist alone does
+nothing for edit scope. See `functions/src/config.ts` and the embed sections of
+`docs/functions-deploy-runbook.md`.
+
+That parameter does not close the revocation gap and is not permission to
+submit this add-on — it only makes crossing this fence a deliberate act rather
+than a side effect of wiring up a host. Everything above still applies.
 
 ## The framing question — who may iframe the embed page today
 

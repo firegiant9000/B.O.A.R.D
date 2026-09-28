@@ -16,7 +16,7 @@ import { recordAiUsage, checkFeatureQuota, estimateCostUsd } from "../ai/usage";
 import { resolveBoardAccess, type BoardAccess } from "../lib/board";
 import { OPENAI_API_KEY } from "../config";
 import type { AIProvider, ChatUsage } from "../ai/provider";
-import type { EmbeddingProvider } from "../ai/embeddings";
+import { SESSION_ELEMENT_TYPE, type EmbeddingProvider } from "../ai/embeddings";
 
 // Month 6 — board Q&A retrieval + chat: the READ half of the embeddings the
 // element-write trigger maintains. Reads `boards/{boardId}/embeddings`, which
@@ -58,15 +58,45 @@ import type { EmbeddingProvider } from "../ai/embeddings";
 //
 // CITATIONS ARE VERIFIED BEFORE THEY ARE OFFERED — see `liveChunks` below.
 //
-// SCOPE GAP, KNOWN AND ESCALATED. ROADMAP.md scopes this chat over "board
-// content + session history + comments". Board content and comment threads are
-// both indexed (the write trigger binds one extractor per source). SESSION
-// HISTORY IS NOT, and is not a small addition: sessions do not live under
-// `boards/`, so it needs a session → board resolution this codebase has no
-// place for yet, and a decision nobody has posed about whether the indexed unit
-// is a session summary or a raw transcript. Rather than guess at either, the
-// no-context answer below names what this can and cannot see, so a user asking
-// about a session gets told why instead of a bare "nothing found".
+// SESSION SUMMARIES ARE IN SCOPE; TRANSCRIPTS ARE NOT. ROADMAP.md scopes this
+// chat over "board content + session history + comments". All three are now
+// indexed — session summaries by triggers/sessionEmbeddings.ts, which writes
+// them into the asking board's own `embeddings` subcollection so they come back
+// from the same `findNearest` as everything else. What is deliberately NOT
+// indexed is the raw transcript or the `canvasSnapshot`; see that trigger's
+// header for why that is a decision rather than an unfinished edge.
+//
+// ⚠️ AND THIS IS WHY THE LIVENESS CHECK BELOW BECAME A VISIBILITY CHECK.
+//
+// Every other indexed kind lives UNDER the asking board, and the board
+// membership check above is therefore the whole of its access control: if you
+// may ask, you may already read every note, stroke and comment that could come
+// back. A SESSION IS NOT UNDER THE BOARD, and its read rule is a different
+// predicate over different fields (firestore.rules' `match /sessions/...` —
+// creator, participant, workspace member, or any signed-in user when the
+// session carries a joinCode).
+//
+// Those two predicates CAN disagree, in the dangerous direction. The concrete
+// case is a LEGACY board: `isBoardMember` requires `uid in board.members` and
+// `inBoardWorkspace(board)`, and `inBoardWorkspace` is satisfied outright when
+// the board has no `workspaceId` — so a member of a legacy board need not be in
+// any workspace at all. A session on that board inherits `""` (or nothing), and
+// `isMemberOfWorkspace('')` is false by construction, so unless that person is
+// the creator, a participant, or the session carries a joinCode, THEY CANNOT
+// READ THAT SESSION. The same divergence opens whenever a session's stored
+// `workspaceId` is not the board's current one.
+//
+// Board membership is therefore NOT a safe proxy for session readership, and
+// answering from a session summary on the strength of board membership alone
+// would disclose it to someone the rules refuse. So the per-candidate check
+// below applies the NARROWER gate: for a session chunk it re-derives the rules'
+// own read predicate against the asking uid, and a chunk that fails is dropped
+// BEFORE it becomes context — not merely before it becomes a citation. Dropping
+// it later would be worthless: the answer would already have been written from
+// content this caller may not see.
+//
+// SESSION CHUNKS ARE NOT CITED. They ground the answer but are filtered out of
+// the returned citations — see `citations` below for that decision.
 
 /** Feature key for cost telemetry. The usage page groups `byFeature` off
  *  whatever keys it finds, so this name is all that is needed for board Q&A to
@@ -127,6 +157,14 @@ export const ELEMENT_COLLECTIONS: Record<string, string> = {
   // scope names alongside board content. Its liveness read works identically:
   // one document under the board, which either still exists or does not.
   comment: "comments",
+  // `session` is deliberately ABSENT. A session is a top-level document, not a
+  // subcollection of the board, so there is no value that could go here — and a
+  // session chunk needs a readership check no board subcollection needs. It is
+  // branched on explicitly in `makeAskBoardDeps` below, before this map is ever
+  // consulted. Adding it here would silently route a session at
+  // `boards/{boardId}/sessions/{id}`, which does not exist, so every session
+  // chunk would drop and the feature would look merely broken rather than
+  // wrong — which is how it would survive review.
 };
 
 /** The subcollection for `elementType`, or `null` when it is one this build
@@ -134,9 +172,70 @@ export const ELEMENT_COLLECTIONS: Record<string, string> = {
  *  rather than guessing a path: an unverifiable citation is exactly what this
  *  check exists to keep off the screen. A new embeddable element kind — audio
  *  transcripts are the expected next one — must be added here to be citable,
- *  and the log line below is how that gets noticed. */
+ *  and the log line below is how that gets noticed.
+ *
+ *  Not consulted for `SESSION_ELEMENT_TYPE`; see `ELEMENT_COLLECTIONS`. */
 export function collectionForElementType(elementType: string): string | null {
   return ELEMENT_COLLECTIONS[elementType] ?? null;
+}
+
+/**
+ * Whether `uid` may read `sessions/{sessionId}` — a server-side re-derivation
+ * of the read rule in firestore.rules' `match /sessions/{sessionId}` block.
+ *
+ * ⚠️ THIS MUST MIRROR THAT RULE. The Admin SDK bypasses security rules, so this
+ * function IS the enforcement for anything retrieval surfaces out of a session.
+ * The rule's four disjuncts, in the order it writes them:
+ *   1. `request.auth.uid == resource.data.createdById`
+ *   2. `request.auth.uid in resource.data.participantIds`
+ *   3. `isMemberOfWorkspace(resource.data.get('workspaceId', null))`
+ *   4. `resource.data.joinCode != null`
+ *
+ * Disjunct 4 is the surprising one and is mirrored faithfully rather than
+ * quietly tightened: a session carrying a joinCode is readable by ANY signed-in
+ * user, because that is what makes join-by-code work. Tightening it here would
+ * mean refusing to answer from a summary the asker could read by opening the
+ * session, which is a worse kind of wrong than it looks — the answer would be
+ * silently incomplete with nothing on screen to say so. If that disjunct is
+ * ever narrowed in the rules, narrow it here in the same commit.
+ *
+ * Ordered cheapest-first: three checks against the session document already in
+ * hand before the workspace read, which is the only extra round trip.
+ */
+export async function sessionReadableBy(
+  db: Firestore,
+  uid: string,
+  sessionId: string
+): Promise<boolean> {
+  const snap = await db.doc(`sessions/${sessionId}`).get();
+  // A deleted session is also an unreadable one, so this doubles as the
+  // liveness check the other kinds get from their own existence read.
+  if (!snap.exists) return false;
+  const data = snap.data() as {
+    createdById?: unknown;
+    participantIds?: unknown;
+    workspaceId?: unknown;
+    joinCode?: unknown;
+  };
+
+  if (data.createdById === uid) return true;
+  if (Array.isArray(data.participantIds) && data.participantIds.includes(uid)) return true;
+  // Rules read a missing map key as null, so "present and not null" is the
+  // faithful reading of `joinCode != null` — including a joinCode of "".
+  if (data.joinCode !== undefined && data.joinCode !== null) return true;
+
+  // `isMemberOfWorkspace` requires a workspace id that is neither null nor the
+  // empty string, which is exactly the legacy/migration-tolerant case
+  // (`Session.workspaceId` is `""` or absent on a pre-Phase-4 session). That
+  // case is a DENIAL here, not a fallback to the board's workspace: falling
+  // back would grant precisely the access the rules refuse.
+  const workspaceId = typeof data.workspaceId === "string" ? data.workspaceId : "";
+  if (!workspaceId) return false;
+
+  const ws = await db.doc(`workspaces/${workspaceId}`).get();
+  if (!ws.exists) return false;
+  const members = (ws.data() as { members?: Record<string, unknown> }).members;
+  return !!members && Object.prototype.hasOwnProperty.call(members, uid);
 }
 
 export interface AskBoardRequest {
@@ -177,8 +276,25 @@ export interface AskBoardDeps {
   /** Nearest indexed elements on THIS board. The board filter is the
    *  subcollection path itself, not a `where()`. */
   findNearest(boardId: string, vector: number[], limit: number): Promise<RetrievedChunk[]>;
-  /** Whether the element a candidate cites still exists on the board. */
-  elementExists(boardId: string, elementType: string, elementId: string): Promise<boolean>;
+  /**
+   * Whether a retrieved candidate may become context for THIS caller: its
+   * source still exists, AND this uid is entitled to read it.
+   *
+   * It was `elementExists(boardId, elementType, elementId)` while every indexed
+   * kind lived under the board, where membership (already checked) settled
+   * readability and existence was the only open question. Session summaries
+   * broke that: they are indexed under the board but gated by the session's own
+   * read rule, which board membership does not imply. Renamed rather than
+   * quietly given a uid, because the OLD NAME WOULD HAVE LIED — a reader
+   * checking "is this filter enough?" against a function called `elementExists`
+   * would correctly conclude it is not an access check.
+   */
+  chunkVisibleTo(
+    uid: string,
+    boardId: string,
+    elementType: string,
+    elementId: string
+  ): Promise<boolean>;
   /** Turns the question into a query vector. */
   embedder: EmbeddingProvider;
   /** Answers from the retrieved context. */
@@ -199,16 +315,24 @@ export interface AskBoardDeps {
  * an answer, not an error: an empty or newly-created board genuinely has
  * nothing to answer from, and that is not a failure.
  *
- * It names what is NOT searched, deliberately. ROADMAP.md scopes this chat over
- * "board content + session history + comments"; notes, text, transcribed
- * strokes and comment threads are indexed, session history is not (see this
- * file's header note on that gap). Someone who asks about something said in a
- * session and gets a bare "I couldn't find anything" would reasonably conclude
- * the feature is broken, or worse, that the thing was never discussed. Saying
- * which sources exist turns a dead end into a usable one.
+ * It names what IS and IS NOT searched, deliberately. ROADMAP.md scopes this
+ * chat over "board content + session history + comments"; all three are indexed
+ * now, but what is indexed from a session is its SUMMARY, never the transcript
+ * or the canvas snapshot (see triggers/sessionEmbeddings.ts for why that is a
+ * decision). Someone who asks about something SAID in a session, and gets a
+ * bare "I couldn't find anything", would reasonably conclude the feature is
+ * broken or that the thing was never discussed. Naming the boundary turns a
+ * dead end into a usable one.
+ *
+ * It is also the answer a caller gets when the only matching content was a
+ * session they are not entitled to read — see the visibility filter in
+ * `handleAskBoard`. That is correct and is why this is phrased as "I couldn't
+ * find anything" rather than "there is nothing": it must not distinguish
+ * "nothing exists" from "nothing you can see", which would leak the existence
+ * of a session to someone the rules deny.
  */
 const NO_CONTEXT_ANSWER =
-  "I couldn't find anything that answers that. I can read this board's notes, text, transcribed handwriting and comment threads — but not session recordings or session summaries. Try asking about something on the canvas or in the comments.";
+  "I couldn't find anything that answers that. I can read this board's notes, text, transcribed handwriting, comment threads and the summaries of sessions you have access to — but not session recordings or transcripts. Try asking about something on the canvas, in the comments, or in a session summary.";
 
 const MAX_EXCERPT_CHARS = 160;
 
@@ -294,8 +418,16 @@ export async function handleAskBoard(
 
   const candidates = await deps.findNearest(boardId, embedded.vector, RETRIEVAL_TOP_K);
 
-  // CITATION LIVENESS. A candidate whose element no longer exists is dropped
-  // here — before it becomes context, and so before it can be cited.
+  // CITATION LIVENESS AND READER VISIBILITY. A candidate whose source no longer
+  // exists — or which THIS caller is not entitled to read — is dropped here,
+  // before it becomes context, and so before it can be cited or quoted.
+  //
+  // The visibility half only bites for session summaries, the one indexed kind
+  // whose read rule is not implied by board membership; see this file's header
+  // for the concrete divergence and why board membership is not a safe proxy.
+  // It is applied at the SAME point as the liveness check, not later, because
+  // an answer written from a chunk is a disclosure of that chunk whether or not
+  // it is ever cited.
   //
   // This is not belt-and-braces over the deletion-cleanup trigger; it is the
   // half that trigger cannot do. Cleanup is eventually consistent and can fail
@@ -312,7 +444,7 @@ export async function handleAskBoard(
   // the ordering keeps the retrieval rank stable for the context block.
   const liveChunks: RetrievedChunk[] = [];
   for (const candidate of candidates) {
-    if (await deps.elementExists(boardId, candidate.elementType, candidate.elementId)) {
+    if (await deps.chunkVisibleTo(uid, boardId, candidate.elementType, candidate.elementId)) {
       liveChunks.push(candidate);
     }
   }
@@ -396,14 +528,40 @@ export async function handleAskBoard(
   // of the requirement. It can only ever offer ids already proven live above.
   const citationIds = citedIds.length > 0 ? citedIds : [...byId.keys()];
 
-  const citations: BoardQaCitation[] = citationIds.map((id) => {
-    const chunk = byId.get(id)!;
-    return {
+  // SESSION SUMMARIES ARE NOT CITED — decided, not overlooked.
+  //
+  // A citation exists to be tapped: the board screen resolves the kind, selects
+  // the element, and the user verifies the answer against the thing itself.
+  // That is the roadmap's whole anti-hallucination mitigation. A session is not
+  // on the canvas and has nothing to select, so there are only three options
+  // and two of them are worse:
+  //
+  //   (a) Ship it as an unknown kind. `citationKind` (boardQaService.ts) returns
+  //       null for a type it cannot place and the panel renders a dead chip
+  //       reading "Can't open this element" — which, for a citation that is
+  //       perfectly real, reads as a bug and hides the excerpt behind it.
+  //   (b) Add a `session` canvas kind and route taps to the session recap. That
+  //       is a genuine feature (a new branch in the board screen's
+  //       `isCitationLive`/`handleSelectCitation`, a navigation away from the
+  //       board mid-conversation, and a product call about whether a Q&A answer
+  //       should take you off the board at all) and it is not this one.
+  //   (c) Answer from the summary and cite the canvas elements the answer also
+  //       drew on. That is what this does.
+  //
+  // The honest cost: an answer grounded ONLY in a session summary comes back
+  // with no citations. That is already a supported outcome (`askBoard`'s client
+  // treats an empty citation list as real, not malformed) and it is truthful —
+  // there is nothing on this board to point at. It is not an invitation to
+  // relax the filter; it is the reason (b) is worth doing if session answers
+  // turn out to matter.
+  const citations: BoardQaCitation[] = citationIds
+    .map((id) => byId.get(id)!)
+    .filter((chunk) => chunk.elementType !== SESSION_ELEMENT_TYPE)
+    .map((chunk) => ({
       elementId: chunk.elementId,
       elementType: chunk.elementType,
       excerpt: excerptOf(chunk.text),
-    };
-  });
+    }));
 
   const stripped = stripCitationMarkers(chat.text);
 
@@ -470,7 +628,16 @@ export function makeAskBoardDeps(
         })
         .filter((c) => c.text.trim().length > 0);
     },
-    elementExists: async (boardId, elementType, elementId) => {
+    chunkVisibleTo: async (uid, boardId, elementType, elementId) => {
+      // A session summary is the one indexed kind that is NOT under the board,
+      // and the one whose readability board membership does not imply. Branched
+      // FIRST, before `collectionForElementType` is consulted at all — there is
+      // no board subcollection it could resolve to, and the readership check is
+      // not an extra on top of an existence check, it subsumes it (a deleted
+      // session is unreadable). See `sessionReadableBy` and this file's header.
+      if (elementType === SESSION_ELEMENT_TYPE) {
+        return sessionReadableBy(db, uid, elementId);
+      }
       const collection = collectionForElementType(elementType);
       if (!collection) {
         logger.warn("askBoard: unknown elementType on an embedding, skipping citation", {
@@ -479,6 +646,9 @@ export function makeAskBoardDeps(
         });
         return false;
       }
+      // Everything else lives under the board, where the membership check the
+      // handler already made is the whole of the access decision — so existence
+      // remains the only open question for these kinds.
       const snap = await db.doc(`boards/${boardId}/${collection}/${elementId}`).get();
       return snap.exists;
     },

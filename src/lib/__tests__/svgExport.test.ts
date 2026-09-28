@@ -1,8 +1,8 @@
 import { toSvgDocument, toSvgExportElements, SvgExportElement, SvgExportBounds } from "../svgExport";
 import { mathTransform } from "../mathInk";
-import { layoutCodeBox } from "../codeRender";
+import { layoutCodeBox } from "../codeLayout";
 import { STICKY_COLORS, STICKY_SIZE_METRICS } from "../stickyNotes";
-import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../../types";
+import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, PollElement, ShapeElement, TextElement, TextNote } from "../../types";
 
 const bounds: SvgExportBounds = { x: 0, y: 0, width: 800, height: 600 };
 
@@ -142,6 +142,25 @@ const codeData: CodeElement = {
   createdAt: new Date(),
 };
 
+// Month 6 — a poll. A member of `BoardElementKind` (it occupies a board
+// position the way a shape does) that this module deliberately draws NOTHING
+// for. It is here precisely so that "polls export as nothing" is an assertion
+// rather than an accident: before `"poll"` joined the union, the serializer's
+// `default` branch swallowed them silently and no test could see it.
+const pollData: PollElement = {
+  id: "poll-1",
+  schemaVersion: 1,
+  boardId: "b1",
+  question: "Which one?",
+  options: ["A", "B"],
+  anonymous: false,
+  mode: "single",
+  x: 20,
+  y: 30,
+  createdById: "u1",
+  createdAt: new Date(),
+};
+
 const pathEl: SvgExportElement = { kind: "path", data: pathData };
 const shapeEl: SvgExportElement = { kind: "shape", data: shapeData };
 const textEl: SvgExportElement = { kind: "text", data: textData };
@@ -150,6 +169,7 @@ const imageEl: SvgExportElement = { kind: "image", data: imageData };
 const audioEl: SvgExportElement = { kind: "audio", data: audioData };
 const mathEl: SvgExportElement = { kind: "math", data: mathData };
 const codeEl: SvgExportElement = { kind: "code", data: codeData };
+const pollEl: SvgExportElement = { kind: "poll", data: pollData };
 
 describe("toSvgDocument", () => {
   it("serializes a path element", () => {
@@ -160,12 +180,15 @@ describe("toSvgDocument", () => {
   });
 
   it("serializes every element kind that exists today, with real content per visual kind", () => {
-    // The union has grown past the brief's five kinds (audio notes and, as of
-    // Month 6, math AND code elements exist today; poll is scheduled later) —
-    // every kind that exists right now must appear here, or a board holding
-    // one would silently break export without any test catching it.
+    // The union has grown past the brief's five kinds — audio notes and, as of
+    // Month 6, math, code AND polls all exist today. Every kind that exists
+    // right now must appear here, or a board holding one would silently break
+    // export without any test catching it.
     expect(() =>
-      toSvgDocument([pathEl, shapeEl, textEl, noteEl, imageEl, audioEl, mathEl, codeEl], bounds)
+      toSvgDocument(
+        [pathEl, shapeEl, textEl, noteEl, imageEl, audioEl, mathEl, codeEl, pollEl],
+        bounds
+      )
     ).not.toThrow();
 
     // "Doesn't throw" alone would also pass for a serializer that always
@@ -186,6 +209,25 @@ describe("toSvgDocument", () => {
     // throw, but it also must not draw a phantom node either.
     const audioOnlyDoc = toSvgDocument([audioEl], bounds);
     expect(audioOnlyDoc).toMatch(/^<svg[^>]*><\/svg>$/);
+
+    // A poll draws nothing either, but for a different and more uncomfortable
+    // reason: it IS positioned canvas content. `svgExport.ts`'s `poll` case
+    // states the decision (no persisted size, live tallies this pure function
+    // cannot read) rather than letting the kind fall through `default`
+    // unnoticed, which is what used to happen.
+    const pollOnlyDoc = toSvgDocument([pollEl], bounds);
+    expect(pollOnlyDoc).toMatch(/^<svg[^>]*><\/svg>$/);
+  });
+
+  it("exports a board that includes a poll without throwing, drawing nothing for the poll itself", () => {
+    // The declared omission, pinned. If someone later builds a poll renderer,
+    // this test is the one that has to change — which is the point: the change
+    // becomes deliberate instead of being a silent difference in output.
+    const doc = toSvgDocument([pathEl, pollEl], bounds);
+    expect(doc).toContain("<path");
+    const drawableNodes =
+      doc.match(/<(path|rect|ellipse|line|polygon|circle|image|text)[\s/>]/g) ?? [];
+    expect(drawableNodes).toHaveLength(1);
   });
 
   it("exports a board that includes a voice note without throwing, drawing no badge for the note itself", () => {
@@ -626,8 +668,10 @@ describe("math elements export (Month 6)", () => {
 
 describe("code elements export (Month 6)", () => {
   // Unlike math, there is nothing cached to emit: the export re-tokenizes
-  // `code`/`language` with the SAME pure `lib/codeRender.ts` functions the
-  // live canvas uses, so the printed snippet is colored identically to the
+  // `code`/`language` with the SAME pure functions the live canvas uses —
+  // `tokenizeCode` from `lib/codeRender.ts` and `layoutCodeBox` from the
+  // dependency-free `lib/codeLayout.ts` — so the printed snippet is colored
+  // identically to the
   // one on screen. `nodeFor`'s default branch SKIPS any kind it hasn't been
   // taught, silently — without a `code` case, an exported board would have
   // no snippets in it and nothing would fail.

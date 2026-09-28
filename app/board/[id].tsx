@@ -994,7 +994,7 @@ export default function BoardScreen(
           elements.applyOpacity(alpha);
         }}
         recentColors={tools.recentColors}
-        plan={doc.boardWorkspace?.plan ?? "free"}
+        plan={doc.boardWorkspace?.plan}
         canManageWorkspace={workspaceService.canManageMembers(
           doc.boardWorkspace ? workspaceService.getWorkspaceRole(doc.boardWorkspace, user?.uid ?? "") : undefined
         )}

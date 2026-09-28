@@ -321,7 +321,22 @@ describe("gateShortcutCommands — the permission surface behind the shortcuts",
     expect(gated.selectAll).toBe(h.selectAll);
   });
 
-  it("drops paste/duplicate while a presentation locks content creation, keeping insertNote's gate separate", () => {
+  it("reads the two gates independently: paste/duplicate from canCreateContent, insertNote from canEdit", () => {
+    // KEPT DELIBERATELY, and renamed. This combination — `canEdit: true` with
+    // `canCreateContent: false` — is UNREACHABLE in the app, so the old name
+    // ("while a presentation locks content creation") described a state that
+    // cannot occur: production derives `canEdit: embedCanEdit`, which already
+    // ANDs `!presenterLocksContentCreation` (app/board/[id].tsx:302-304),
+    // against `canCreateContent: !collab.presenterLocksContentCreation`
+    // (:686), so `canEdit ⊆ canCreateContent` and a true/false pair in that
+    // order never arises.
+    //
+    // It is still worth having as a UNIT-level guard, because it is the only
+    // test that separates the two gates at all. Every reachable combination is
+    // also satisfied by a `gateShortcutCommands` that ANDed both booleans
+    // together and dropped one parameter — which would be a silent behaviour
+    // change the day a caller derives them differently. This is the input that
+    // tells those two implementations apart.
     const h = handlers();
     const gated = gateShortcutCommands(h, { canEdit: true, canCreateContent: false });
     expect(gated.paste).toBeUndefined();
