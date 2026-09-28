@@ -3,12 +3,11 @@ import { G, Rect, Text as SvgText, TSpan } from "react-native-svg";
 import {
   CODE_BACKGROUND_COLOR,
   CODE_BORDER_COLOR,
-  CODE_DEFAULT_FONT_SIZE,
   CODE_DEFAULT_FOREGROUND,
   codeTransform,
-  layoutCodeBox,
   tokenizeCode,
 } from "../../lib/codeRender";
+import { CODE_DEFAULT_FONT_SIZE, layoutCodeBox } from "../../lib/codeLayout";
 import { setClipboardText } from "../../lib/osClipboard";
 import type { CodeElement } from "../../types";
 

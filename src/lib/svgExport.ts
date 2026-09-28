@@ -1,5 +1,5 @@
 import { Point } from "./viewport";
-import { ArrowheadStyle, AudioElement, CodeElement, DrawPath, ImageElement, MathElement, ShapeElement, TextElement, TextNote } from "../types";
+import { ArrowheadStyle, AudioElement, BoardElementKind, CodeElement, DrawPath, ImageElement, MathElement, PollElement, ShapeElement, TextElement, TextNote } from "../types";
 import { renderParamsFor, calligraphyWidthRange } from "./penStyles";
 import { calligraphyPathD } from "./calligraphy";
 import { trianglePoints, arrowheadPoints, arrowheadSize } from "./shapes";
@@ -9,9 +9,9 @@ import {
   CODE_BORDER_COLOR,
   CODE_DEFAULT_FOREGROUND,
   codeTransform,
-  layoutCodeBox,
   tokenizeCode,
 } from "./codeRender";
+import { layoutCodeBox } from "./codeLayout";
 import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyNotes";
 
 /**
@@ -50,14 +50,15 @@ import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyN
  *
  * ELEMENT KINDS: `SvgExportElement`'s `kind` tag covers every element kind
  * that exists on the board today (path/shape/text/note/image/audio/math/
- * code). `math` (Month 6) is the cheapest of them all: an equation is stored
+ * code/poll). `math` (Month 6) is the cheapest of them all: an equation is stored
  * as flat SVG path data already, so exporting one is emitting the `<path>` it
  * literally is. That is the entire reason LaTeX is rendered to path data in a
  * Cloud Function rather than displayed in a WebView — a WebView would have
  * left this module with nothing exportable at all. `code` (Month 6) reuses
  * the SAME tokenize-then-lay-out pure functions the live canvas does
- * (`lib/codeRender.ts`), so a printed snippet is colored identically to the
- * one on screen with no separate export-only highlighting path to drift.
+ * (`lib/codeRender.ts` for tokens, `lib/codeLayout.ts` for metrics), so a
+ * printed snippet is colored identically to the one on screen with no
+ * separate export-only highlighting path to drift.
  * NOTE for whoever adds the next kind: the `default` branch below SKIPS
  * anything it hasn't been taught, silently, which is right for a non-visual
  * kind and wrong for a visual one. Math and code would have exported as
@@ -72,6 +73,22 @@ import { STICKY_COLORS, sanitizeStickyColor, stickySizeMetrics } from "./stickyN
  * skipped, never thrown on, so future non-visual kinds (and any element kind
  * this module hasn't been taught about yet) degrade the same way instead of
  * making an otherwise-exportable board fail to export at all.
+ *
+ * `poll` is the one kind here that is genuinely VISUAL and still exports
+ * nothing, so it is worth being explicit about rather than leaving as an
+ * inference. A poll card is an RN overlay (`PollCard.tsx`) whose rendered size
+ * is decided by its own text layout at runtime; `PollElement` persists an
+ * (x, y) and no width/height at all, so this module has nothing to draw a box
+ * from, and the card's live result bars are read from a `votes` subcollection
+ * this pure, synchronous function cannot fetch. Drawing one would mean
+ * inventing a second poll renderer and a second tally path — new feature work,
+ * deliberately out of scope. What changed in the correction pass is only that
+ * the omission is DECLARED: `poll` is a member of `BoardElementKind`, so the
+ * assertion below forces a case here, and that case says "not drawn, and why"
+ * instead of the kind falling through `default` unnoticed. Note also that
+ * `toSvgExportElements` produces no poll entries at all today, because
+ * `BoardElementSets` has no polls field — so the case below is reachable only
+ * for a caller that builds the array itself.
  *
  * IMAGE PORTABILITY — the one real design decision here. An `ImageElement`'s
  * `url` is a Firebase Storage download URL: a bearer-token link, readable by
@@ -100,7 +117,22 @@ export type SvgExportElement =
   | { kind: "image"; data: ImageElement }
   | { kind: "audio"; data: AudioElement }
   | { kind: "math"; data: MathElement }
-  | { kind: "code"; data: CodeElement };
+  | { kind: "code"; data: CodeElement }
+  | { kind: "poll"; data: PollElement };
+
+/** Compile-time roll-call against `BoardElementKind` (src/types), and the only
+ *  thing standing between "someone added an element kind" and an export that
+ *  silently omits it. `nodeFor`'s `default` branch SKIPS a kind it was never
+ *  taught — correct for a non-visual kind, invisible data loss for a visual
+ *  one, and nothing at runtime would fail either way. This alias resolves only
+ *  while every member of that union has a case above; a new kind there makes
+ *  `tsc` reject this file until it gets one. Type-only, so it costs nothing at
+ *  runtime and cannot be "cleaned up" as an unused binding. */
+type AssertCovered<Covered extends Cases, Cases> = Covered;
+export type SvgExportCoversEveryBoardKind = AssertCovered<
+  BoardElementKind,
+  SvgExportElement["kind"]
+>;
 
 /** The board's per-kind element arrays — exactly `useBoardElements`'s own
  *  top-level (uncalled) `paths`/`shapes`/`texts`/`notes`/`images`/
@@ -131,6 +163,11 @@ export interface BoardElementSets {
  * A caller building `SvgExportElement[]` by hand (as this module's own tests
  * do) doesn't need this; it exists for a caller exporting the WHOLE board
  * from live element state (`recapExport.ts#exportBoardPdf`'s UI callers).
+ *
+ * `BoardElementSets` has no `polls` field, so this produces no `poll` entries
+ * — which is consistent rather than an oversight: `nodeFor` draws no node for
+ * one either (see its `poll` case for why). Adding a polls field here without
+ * also giving polls a renderer would change nothing about the output.
  */
 export function toSvgExportElements(elements: BoardElementSets): SvgExportElement[] {
   return [
@@ -500,8 +537,9 @@ function mathNode(m: MathElement): string {
 }
 
 /** A code element (Month 6) — the SAME tokenize-then-lay-out pure functions
- *  the live canvas uses (`lib/codeRender.ts`), so an exported snippet is
- *  colored identically to the one on screen. `escapeXmlText` runs on every
+ *  the live canvas uses (`lib/codeRender.ts` for tokens, `lib/codeLayout.ts`
+ *  for metrics), so an exported snippet is colored identically to the one on
+ *  screen. `escapeXmlText` runs on every
  *  token's content (unlike `mathNode`'s single opaque path datum, this is
  *  real user text and could contain `<`/`&`); `layoutCodeBox` here supplies
  *  line metrics ONLY (padding/lineHeight), not the box — `width`/`height`
@@ -556,16 +594,28 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
       // A voice-note badge is a canvas affordance, not drawable board
       // content — see this module's header. Deliberately no node.
       return "";
+    case "poll":
+      // DELIBERATELY NOT EXPORTED, and this case exists to say so out loud.
+      // A poll IS positioned canvas content, unlike `audio` above — so this is
+      // a real, declared omission rather than a kind that has nothing to draw.
+      // `PollElement` persists (x, y) and no size; the card's dimensions come
+      // from RN text layout at runtime and its result bars from a `votes`
+      // subcollection this pure, synchronous function cannot read. See this
+      // module's header. Until a poll renderer exists, an exported board shows
+      // no polls — but it now says that here instead of dropping them through
+      // `default`.
+      return "";
     default: {
       // Exhaustiveness guard for this file's own union. At runtime this also
-      // catches any element kind this module hasn't been taught about yet
-      // (a future poll kind reaching here before its own case is added) —
-      // skipped the same way `audio` is, never thrown on, so one
+      // catches any element kind this module hasn't been taught about yet —
+      // skipped the same way `audio` and `poll` are, never thrown on, so one
       // unrecognized element never makes an otherwise-exportable board fail
       // to export at all. That leniency is a TRAP for a visual kind: `math`
       // and `code` (Month 6) would have exported as nothing at all,
-      // silently, if their cases above had been left out. Add the case when
-      // the kind draws.
+      // silently, if their cases above had been left out, and polls DID
+      // export as nothing for exactly that reason until `"poll"` was added to
+      // `BoardElementKind` and the assertion above started demanding a case.
+      // Add the case when the kind draws.
       const _exhaustive: never = el;
       void _exhaustive;
       return "";
@@ -576,8 +626,8 @@ function nodeFor(el: SvgExportElement, opts: SvgExportOptions | undefined): stri
 /**
  * Serializes `elements` into a standalone SVG document string, viewBox'd to
  * `bounds`. Never throws: an element kind this module doesn't draw (today,
- * only `audio` — see this module's header) contributes nothing rather than
- * failing the whole export, and every reader here tolerates a partially
+ * `audio` and `poll` — see this module's header) contributes nothing rather
+ * than failing the whole export, and every reader here tolerates a partially
  * written or older-shape element the same way the rest of the board does
  * (`data?.field ?? default`). A zero (or negative) `bounds.width`/`height`
  * is clamped up to `MIN_EXPORT_DIMENSION` rather than passed through, so the

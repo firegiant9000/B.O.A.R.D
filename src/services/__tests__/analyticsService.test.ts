@@ -189,18 +189,21 @@ describe("with a configured PostHog key", () => {
     expect(capture).toHaveBeenCalledWith("signup", undefined);
   });
 
-  // REPLACES "does not yet include an install event for the not-yet-built
-  // browser extension", whose premise stopped being true: web/extension/
-  // {manifest.json,background.js,sidepanel.js,shared.js,content.js} all ship
-  // in this repo, and ROADMAP.md:685 requires an install event per
-  // integration surface. The name is `extension_installed`; the old test's
-  // `browser_extension_installed` was never the name, so it still throws —
-  // asserted below so this reads as a rename of a real event rather than a
-  // guess at one.
-  it("includes an install event for the browser extension, which does now ship in this repo", () => {
-    expect(() => track("extension_installed")).not.toThrow();
-    expect(capture).toHaveBeenCalledWith("extension_installed", undefined);
-  });
+  // The taxonomy carries NO install event. Both names it used to reserve —
+  // `extension_installed` and `meet_addon_installed` — had no emitter behind
+  // them, and a name in that list is what `track()` accepts and what a
+  // dashboard is read against, so a reserved name is indistinguishable from
+  // an instrumented one. They are out until the code that sends them exists;
+  // ROADMAP.md records "an install event per integration surface" as unmet
+  // beside the line that asks for it. This pins the removal so a later
+  // "tidy-up" cannot quietly restore a name with nothing behind it.
+  it.each(["extension_installed", "meet_addon_installed"] as const)(
+    "rejects the removed install event %s, which no longer has a place in the taxonomy",
+    (event) => {
+      expect(() => track(event as never)).toThrow();
+      expect(capture).not.toHaveBeenCalled();
+    }
+  );
 
   it("still rejects an install event that is not in the list, however plausible the name", () => {
     expect(() => track("browser_extension_installed" as never)).toThrow();
@@ -215,8 +218,6 @@ describe("with a configured PostHog key", () => {
     "ai_summary_generated",
     "upgrade_viewed",
     "upgrade_completed",
-    "meet_addon_installed",
-    "extension_installed",
   ] as const)("accepts the documented event %s without throwing", (event) => {
     expect(() => track(event)).not.toThrow();
   });

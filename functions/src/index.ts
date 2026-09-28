@@ -183,11 +183,34 @@ export {
   onCommentWritten,
 } from "./triggers/embeddings";
 
+// The SEVENTH indexed source, and the first that is not under `boards/`:
+// session SUMMARIES, completing ROADMAP.md's "board content + session history +
+// comments" scope. Its own file and its own binding because a Firestore trigger
+// binds a path pattern and `sessions/{sessionId}` is top-level — there is no
+// value of `<collection>` in `boards/{boardId}/<collection>/{elementId}` that
+// reaches it. Everything else is reused: it calls the same
+// `handleElementWrite`, so it gets the same hash-skip, the same rate-limit and
+// quota gates and the same write/delete race guard.
+//
+// SUMMARIES ONLY — never transcripts, never `canvasSnapshot`. That is a
+// standing privacy decision, not an unfinished edge; see that file's header.
+// Both on-disk summary shapes index (`string | SessionSummary`), and a session
+// with no summary writes nothing at all.
+//
+// The embedding lands under the session's BOARD
+// (`boards/{boardId}/embeddings/{sessionId}`), so board-scoped retrieval finds
+// it — which is also why board Q&A applies a session READERSHIP check at
+// retrieval time. Board membership does not imply session readership; see
+// askBoard.ts's header.
+export { onSessionWritten } from "./triggers/sessionEmbeddings";
+
 // Month 6 — board Q&A retrieval + chat, the READ half of the embeddings the
 // triggers below maintain. Runs `findNearest` over the asking board's own
-// `embeddings` subcollection, verifies each candidate's element still exists
-// before it can become context or a citation, and answers from the survivors
-// with gpt-4o-mini. The `embeddings` collection stays denied to clients by
+// `embeddings` subcollection, verifies each candidate's source still exists AND
+// that the asking user may read it before it can become context or a citation,
+// and answers from the survivors with gpt-4o-mini. That second half matters for
+// exactly one indexed kind — a session summary, whose read rule board
+// membership does not imply. The `embeddings` collection stays denied to clients by
 // firestore.rules' default deny — a vector never leaves the function; what
 // goes back is an answer plus the element ids behind it. Has its OWN rate
 // bucket (tighter than the shared one, under its own key) and its OWN plan row
@@ -209,6 +232,12 @@ export {
   onImageDeleted,
   onCommentDeleted,
 } from "./triggers/embeddings";
+
+// The session source's own paired delete binding — every indexed source has
+// one, for the same reason. A deleted session's surviving embedding is a
+// retrieval hit that costs a read on every question and can never be used, the
+// readership check having no document left to satisfy it.
+export { onSessionDeleted } from "./triggers/sessionEmbeddings";
 
 // Month 6 — math elements. LaTeX → flat SVG path data via MathJax's SVG
 // output, run IN-PROCESS (this is the one callable here with no provider

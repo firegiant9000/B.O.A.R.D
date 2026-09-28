@@ -7,15 +7,29 @@
  * platform (`posthog-js` on web, `posthog-react-native` on native), so its
  * construction is split beside this file — see posthogClient.ts /
  * posthogClient.native.ts — but the taxonomy, the PII scrub, and the
- * hashed-identifier rule below live once, here. Every emitter in the app
- * imports `track`/`identifyWorkspace` from this module, and nothing anywhere
- * imports posthog-js / posthog-react-native directly. As of ROADMAP.md:685's
- * funnel instrumentation those emitters span app screens (app/(tabs)/index,
- * app/(tabs)/schedule, app/session/create, app/session/[id]), components
- * (WorkspaceSwitcher, StartSessionModal, UpsellModal), a hook
- * (useBoardDocument) and four services (authService, templateService,
- * sessionAnalytics, planObservation), plus one `identifyWorkspace` call in
- * app/_layout.tsx.
+ * hashed-identifier rule below live once, here. Those two sibling modules are
+ * the ONLY places that import `posthog-js` / `posthog-react-native`; nothing
+ * else in the app does, which is what makes this file the seam rather than a
+ * convention.
+ *
+ * Every product event reaches the vendor through `track`/`identifyWorkspace`
+ * here, but not every emit site imports them from this module directly — one
+ * layer sits in between, on purpose. As of ROADMAP.md:685's funnel
+ * instrumentation the emit sites are:
+ *
+ *  - DIRECT importers of this module: app screens (app/(tabs)/index,
+ *    app/session/create), components (WorkspaceSwitcher, StartSessionModal,
+ *    UpsellModal) and three services (authService, templateService,
+ *    planObservation), plus one `identifyWorkspace` call in app/_layout.tsx.
+ *  - VIA `sessionAnalytics`: app/(tabs)/schedule, app/session/[id] and the
+ *    `useBoardDocument` hook import `trackSessionCompleted` /
+ *    `trackSessionScheduled` from src/services/sessionAnalytics.ts, which is
+ *    itself a direct importer of `track` here. That indirection is deliberate
+ *    and has its own rationale — see that module's header on why five
+ *    hand-written property bags around a `Session` would be five chances to
+ *    leak a user-authored title. Reading the list above as "these three do not
+ *    go through this seam" would be wrong; so would flattening it to "every
+ *    emitter imports from this module".
  *
  * WHERE EMITTERS MAY LIVE. The funnel is instrumented at the point of USER
  * INTENT — the screen or component where a person pressed the button — and
@@ -78,24 +92,27 @@ const CORE_EVENTS = [
   "upgrade_completed",
 ] as const;
 
-/** One `"<surface>_installed"` event per integration surface that actually
- *  ships in this repo today — not one per surface that is merely planned.
- *  ROADMAP.md:685 requires "an install event per integration surface", and
- *  both surfaces below exist in this repo.
+/** NO INSTALL EVENTS, DELIBERATELY. ROADMAP.md:685 asks for "an install event
+ *  per integration surface"; this taxonomy does not meet that, and the gap is
+ *  recorded as unmet beside that line in ROADMAP.md rather than papered over
+ *  here.
  *
- *  ⚠ NEITHER OF THESE HAS AN EMITTER. Both entries are taxonomy ahead of
- *  instrumentation, and saying so here is the point — a name in this list is
- *  not evidence that anything sends it. The reason is the same for both, and
- *  it is structural rather than an oversight:
+ *  `meet_addon_installed` and `extension_installed` used to sit in this list
+ *  with no emitter behind either. They have been removed. A name in this array
+ *  is what `track()` will accept and what the funnel is read against, so a
+ *  reserved name is indistinguishable from an instrumented one to anybody
+ *  reading a dashboard — and reserving it buys nothing that adding it in the
+ *  same change as its emitter would not.
  *
- *  `web/extension/` and `web/meet-addon/` are separate surfaces with no build
- *  step of their own — hand-written plain JS in the extension, inline script
- *  in the add-on's panel.html. Neither can import this module, or anything
- *  else under `src/`; that is why `web/extension/shared.js` exists at all as a
+ *  Why there is no emitter to add yet, which is structural rather than an
+ *  oversight: `web/extension/` and `web/meet-addon/` have no build step of
+ *  their own — hand-written plain JS in the extension, inline script in the
+ *  add-on's panel.html. Neither can import this module, or anything else under
+ *  `src/`; that is why `web/extension/shared.js` exists at all as a
  *  hand-maintained twin of `src/lib/extension/`, kept honest by
  *  `src/lib/extension/__tests__/sharedMirror.test.ts`. The genuine install
- *  signal — the extension's `chrome.runtime.onInstalled` in background.js —
- *  is therefore only reachable from code that cannot call `track()`.
+ *  signal — the extension's `chrome.runtime.onInstalled` in background.js — is
+ *  only reachable from code that cannot call `track()`.
  *
  *  The two ways to close that, and why neither is taken here:
  *   - Post to PostHog's HTTP capture endpoint directly from background.js.
@@ -103,8 +120,7 @@ const CORE_EVENTS = [
  *     in `manifest.json`, and a third-party network call from a surface whose
  *     README states it "sends tab title/URL/og:image to the side panel only —
  *     never to a third party". That is a privacy-posture change for a
- *     to-be-submitted Web Store listing, not an instrumentation detail, and
- *     it is not mine to make unilaterally.
+ *     to-be-submitted Web Store listing, not an instrumentation detail.
  *   - Have the app infer the extension from the embed page it iframes. That
  *     observes a PANEL OPEN, not an install: it would fire on every open, for
  *     every reopen, from an anonymous view-scope embed identity with no
@@ -112,16 +128,9 @@ const CORE_EVENTS = [
  *     (see src/services/planObservation.ts), under a name that claims
  *     otherwise.
  *
- *  So the names are reserved and the gap is stated. The runtime guard below
- *  still accepts them, which is what lets an emitter be added later without
- *  touching this file; until one is, read the absence of these events as "not
- *  instrumented", never as "nobody installed it". */
-const INSTALL_EVENTS = [
-  "meet_addon_installed", // web/meet-addon/ (Month 6 — Google Meet add-on shell)
-  "extension_installed", // web/extension/ (Month 6 — Chrome/Edge MV3 side panel)
-] as const;
-
-const ALL_EVENTS = [...CORE_EVENTS, ...INSTALL_EVENTS] as const;
+ *  When one of those ships, add the event name back in the same commit as the
+ *  code that sends it. */
+const ALL_EVENTS = CORE_EVENTS;
 const EVENT_SET: ReadonlySet<string> = new Set(ALL_EVENTS);
 
 export type AnalyticsEvent = (typeof ALL_EVENTS)[number];

@@ -959,16 +959,18 @@ export interface MathElement {
 // unmetered network round-trip the way `updateMathLatex` is.
 //
 // Bundled grammars are exactly the brief's nine — see
-// `lib/codeRender.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
+// `lib/codeLayout.ts`'s `CODE_LANGUAGES` — deliberately not "any TextMate
 // grammar Shiki ships," which would pull the full grammar set into the
-// client bundle for no board-content benefit.
+// client bundle for no board-content benefit. That list lives in the
+// dependency-free leaf, not beside the grammars in `lib/codeRender.ts`,
+// precisely so a caller can enumerate the languages without loading one.
 //
 // GEOMETRY. A full canvas primitive — move/resize/rotate/z-order/duplicate/
 // copy-paste all apply, the same as ShapeElement/ImageElement (unlike
 // MathElement, which deliberately opts out of rotation and z — see its own
 // type comment for why that doesn't apply here: a code block has no baked
 // path data to orbit around, it is ordinary positioned text). `width`/
-// `height` start as the box `lib/codeRender.ts`'s pure monospace line-layout
+// `height` start as the box `lib/codeLayout.ts`'s pure monospace line-layout
 // computes for `code` at `fontSize` (see `layoutCodeBox`); a resize then
 // scales them independently, exactly like TextElement, so the box and the
 // text can drift apart under a non-uniform drag the same way a resized text
@@ -1011,3 +1013,56 @@ export interface CodeElement {
   z?: number;
   createdAt: Date;
 }
+
+// ── the board's element-kind roll-call ──────────────────────────────────────
+//
+// Every POSITIONED kind of thing that can exist on a board, as one union —
+// anything that occupies a place on the canvas and therefore has to be answered
+// for when the board is deleted from or exported. Deliberately narrower than
+// "everything stored under a board": comments and reactions are outside it,
+// because both ANCHOR to an element rather than occupying a position of their
+// own, and neither has a delete route or a drawn node to forget. Polls are
+// inside it — a poll carries its own (x, y) the way a shape does (see
+// `PollElement`) — and were missing from it until Month 6's correction pass,
+// which is exactly how SVG export came to omit every poll silently.
+//
+// This union is HAND-MAINTAINED, and being precise about that matters, because
+// the checks below are easy to over-trust. Nothing derives it from the board's
+// real contents and nothing forces a new element kind to join it; the
+// dependency runs the other way, with `lib/svgExport.ts` asserting its own case
+// list against this one. So:
+//
+//   - ADDING A MEMBER HERE is what makes `tsc` refuse to build until the new
+//     kind has been thought about in both places below.
+//   - ADDING AN ELEMENT KIND WITHOUT TOUCHING THIS UNION trips nothing at all.
+//
+// Update this union first. It is the trigger, not the safety net.
+//
+//  1. `useBoardElements.ts` builds a `Record<BoardElementKind, …>` in THREE
+//     functions — `deleteSelected`, `copySelected` and `duplicateSelected`. A
+//     kind added here with no route in each of them fails to compile. Those
+//     checks exist because all three used to classify by hand — the delete path
+//     by subtraction ("whatever is left over is a stroke"), copy and duplicate
+//     by a loop per kind — with nothing enforcing that a new kind was handled.
+//     Sticky notes were missed in all three, independently. Do not reintroduce
+//     a leftover rule or a bare loop sequence.
+//  2. `lib/svgExport.ts`'s `SvgExportElement` must gain a matching case, tied
+//     to this union by a type-level assertion in that file. Its serializer
+//     SKIPS an unknown kind silently, which is right for a non-visual kind and
+//     invisible data loss for a visual one — so the assertion is what turns
+//     "someone forgot" into a build failure instead of an empty export.
+//
+// A kind that genuinely needs no handling in one of those is still declared
+// there explicitly, with the reason (see `audio`, anchored to another element
+// and cascaded rather than selected or drawn; and `poll`, which has its own
+// delete affordance and is deliberately not drawn into an export).
+export type BoardElementKind =
+  | "path"
+  | "shape"
+  | "text"
+  | "note"
+  | "image"
+  | "audio"
+  | "math"
+  | "code"
+  | "poll";

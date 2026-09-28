@@ -20,13 +20,29 @@ import { getFirestore } from "firebase-admin/firestore";
 // email-equality query" while refusing an unfiltered dump. Either `list` stays
 // open to everyone, or the lookup moves here. It moved here.
 //
-// What this function does NOT claim: it is not an anti-enumeration gate. A
-// signed-in caller can still probe one address at a time and learn whether it
+// What this function does NOT claim: it is not an anti-enumeration gate. An
+// ACCOUNT HOLDER can still probe one address at a time and learn whether it
 // has an account, exactly as the invite form has always let them. What it
 // removes is the BULK read — the whole address book in one query — and it caps
 // the disclosure per probe at the three fields below. Rate-limiting or
 // restricting probes to a caller's own workspaces would be a separate change;
 // do not describe this one as closing that.
+//
+// That parity argument holds ONLY for account holders, which is why the
+// handler below refuses embed identities outright. An embed identity has no
+// invite form, no friend search and no account — it has never had the
+// per-probe capability this function would otherwise hand it, so "exactly as
+// the invite form has always let them" is simply false of that caller. It is
+// also the exact population the `/users` `allow list: if false` tightening
+// was written to take this capability away from (see firestore.rules'
+// `/users` comment), so admitting it here would hand back through a callable
+// what the rule had just closed — unbounded, unlogged, one address at a time.
+// None of the three call sites is reachable from an embed session, verified
+// rather than assumed: `app/board/[id].tsx` renders `BoardHeader` (and with
+// it `BoardUserBar`'s friend request and the share/invite affordance) only
+// under `!embedMode`, and the workspace invite lives in `WorkspaceSwitcher`
+// on the tab routes an embed session never reaches. So the refusal costs no
+// feature; it removes a capability nothing legitimate was using.
 //
 // Normalization lives here, in one place, and that fixes a live inconsistency
 // rather than merely tidying one: `boardService.addMemberByEmail` and
@@ -72,10 +88,30 @@ export interface LookupUserByEmailDeps {
 
 /** The one normalization point for directory lookups — and it normalizes the
  *  QUERY only. The stored side is `user.email` written verbatim from Firebase
- *  Auth (src/services/authService.ts#ensureUserProvisioned), so this fixes the
- *  three call sites disagreeing with each other, not a stored record whose
- *  case differs from Auth's. That was already true of the two call sites that
- *  lowercased before querying; nothing regresses by making the third agree. */
+ *  Auth (src/services/authService.ts#ensureUserProvisioned), so what this
+ *  fixes is the three call sites disagreeing with EACH OTHER: `Bob@X.Z` used
+ *  to find Bob through an invite and nobody through friend search.
+ *
+ *  QUALIFIED DELIBERATELY. Whether a lowercased query always matches the
+ *  stored value depends on whether Firebase Auth itself canonicalises
+ *  `user.email` to lowercase, and that is NOT documented upstream — the Admin
+ *  SDK reference describes `UserRecord.email` only as "the user's primary
+ *  email, if set", and the Auth guides say nothing about case handling.
+ *  Unverified means unverified: do not restate this as "nothing regresses".
+ *
+ *  What follows if Auth does NOT canonicalise: a record stored as `Bob@X.Z`
+ *  becomes unfindable here, because the query is lowercased and Firestore's
+ *  `==` is case-sensitive. That outcome is not NEW for invite-by-email —
+ *  `boardService`/`workspaceService` already lowercased before querying and
+ *  already had it — but it IS new for friend search, which previously passed
+ *  the raw string through and so could still match such a record by exact
+ *  spelling. Making the third call site agree therefore trades one
+ *  inconsistency for one narrower, uniform failure mode, knowingly.
+ *
+ *  Closing it properly means normalising the STORED side too — writing
+ *  `user.email?.toLowerCase()` in `ensureUserProvisioned` plus a backfill for
+ *  existing documents. That is a separate change with a migration attached;
+ *  do not describe this function as having done it. */
 export function normalizeLookupEmail(raw: string): string {
   return raw.toLowerCase().trim();
 }
@@ -88,6 +124,18 @@ export async function handleLookupUserByEmail(
   // not be able to turn this into an open oracle over every registered address.
   if (!req.auth?.uid) {
     throw new HttpsError("unauthenticated", "Sign in to look up a user.");
+  }
+  // An embed identity satisfies the check above — `exchangeEmbedToken` mints a
+  // genuine custom token for the bearer of a PUBLIC read-only embed link, and
+  // BOTH of its claim branches set `embed: true` — so `req.auth` alone is not
+  // "an account holder". Refused here rather than gated in rules, because this
+  // handler runs on the Admin SDK and rules never see it. See the module
+  // header for why this costs no feature.
+  if (req.auth.token?.embed === true) {
+    throw new HttpsError(
+      "permission-denied",
+      "This link cannot look up people by email address."
+    );
   }
 
   const { email } = req.data ?? ({} as LookupUserByEmailRequest);

@@ -31,6 +31,7 @@ import SessionLobby from "../../src/components/session/SessionLobby";
 import SessionLive from "../../src/components/session/SessionLive";
 import SessionRecap from "../../src/components/session/SessionRecap";
 import UpsellModal from "../../src/components/UpsellModal";
+import { useUpsellCadence } from "../../src/hooks/useUpsellCadence";
 
 type Profile = { uid: string; displayName: string; email: string };
 
@@ -55,7 +56,12 @@ export default function SessionDetailScreen() {
   // fresh (see handleGenerateSummary) rather than assumed: the workspace's
   // real plan is what tells the modal whether this can even be a plan-cap
   // denial or must be the (plan-independent) AI rate throttle.
-  const [upsellVisible, setUpsellVisible] = useState(false);
+  //
+  // Visibility comes from `useUpsellCadence` rather than a bare boolean, so a
+  // user's first encounter with this gate gets the restrained notice
+  // (ROADMAP.md:608, item 14). The plan stays local: the hook decides how hard
+  // to push, never which workspace the denial came from.
+  const upsell = useUpsellCadence(user?.uid);
   const [upsellPlan, setUpsellPlan] = useState<Plan | undefined>();
   const [exporting, setExporting] = useState(false);
 
@@ -205,7 +211,7 @@ export default function SessionDetailScreen() {
         const workspaceId = session.workspaceId || board?.workspaceId;
         const ws = workspaceId ? await getWorkspace(workspaceId).catch(() => null) : null;
         setUpsellPlan(ws?.plan);
-        setUpsellVisible(true);
+        upsell.show("aiSummary");
       } else {
         showAlert("Summary Failed", error?.message ?? "Failed to generate summary.");
       }
@@ -283,13 +289,16 @@ export default function SessionDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <UpsellModal
-        visible={upsellVisible}
-        resource="aiSummary"
-        plan={upsellPlan}
-        workspaceId={session.workspaceId || board?.workspaceId}
-        onDismiss={() => setUpsellVisible(false)}
-      />
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={upsellPlan}
+          workspaceId={session.workspaceId || board?.workspaceId}
+          onDismiss={upsell.dismiss}
+        />
+      )}
 
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>

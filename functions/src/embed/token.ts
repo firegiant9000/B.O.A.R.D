@@ -232,7 +232,12 @@ export function verifyEmbedToken(
  *  match `ISSUER_PATTERN` — an empty entry, a wildcard, anything containing the
  *  namespace separator — is DROPPED rather than trusted. An unset or empty value
  *  yields an empty allowlist, which denies every identity-bearing token: the embed
- *  read path keeps working, the write path fails closed until a host is listed. */
+ *  read path keeps working, the write path fails closed until a host is listed.
+ *
+ *  Listing a host is NECESSARY but NOT SUFFICIENT for an edit-scoped embed. The
+ *  unrevocable-session acknowledgement below is a second, independent gate that
+ *  both the mint and the exchange apply on the edit arm. Do not read an
+ *  allowlist hit as "edit embeds are enabled on this deploy". */
 export function parseIssuerAllowlist(raw: string | undefined | null): string[] {
   if (!raw) return [];
   return raw
@@ -255,3 +260,54 @@ export function normalizeIssuer(iss: string): string {
 export function isAllowedIssuer(iss: string, allowed: readonly string[]): boolean {
   return allowed.includes(normalizeIssuer(iss));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The unrevocable-edit-session acknowledgement (Month 6).
+//
+// WHAT IT FENCES. Everything the TTL comment above says still holds: an
+// exchanged embed session outlives the token it came from, survives re-minting,
+// and survives rotating EMBED_JWT_SECRET. Nothing in this codebase revokes one.
+// Revocation was deliberately deferred — it needs `revokeRefreshTokens` plus an
+// `auth_time` bound in the rules' isEmbedEditor plus a re-exchanging host
+// client, and none of that is built.
+//
+// WHY IT IS A SECOND PARAM AND NOT PART OF THE ALLOWLIST. Before this, the only
+// thing standing between that deferral and a live unrevocable write identity was
+// EMBED_ALLOWED_ISSUERS being empty — one deploy-time string, plausibly set by
+// whoever wires up Meet or the extension, who has no reason to have read any of
+// the warnings. That made the fence documentation. A separate param, named after
+// the risk rather than after the plumbing, cannot be crossed while doing
+// something else: setting it is its own decision and reads as one in a diff.
+//
+// A FIXED SENTENCE, NOT A BOOLEAN. `true`/`1`/`yes` are exactly the values that
+// get copied between environments unread, which would put us back where we
+// started. The required value says what is being accepted, so it cannot be set
+// without the setter having seen the word "unrevocable".
+
+/** The one value `EMBED_EDIT_UNREVOCABLE_ACK` may hold to enable edit-scoped
+ *  embeds. Compared case-insensitively and after trimming — an operator who
+ *  pasted it with a trailing space or newline meant to set it. */
+export const EMBED_EDIT_UNREVOCABLE_ACK_VALUE = "i-accept-unrevocable-edit-embed-sessions";
+
+/** Whether the deploy has explicitly acknowledged that edit-scoped embed
+ *  sessions cannot be revoked before expiry. Anything other than the exact
+ *  sentence above — unset, empty, `true`, a typo, a half-remembered variant —
+ *  is NOT an acknowledgement. Fails closed by construction: there is no value
+ *  that accidentally satisfies this. */
+export function isEditUnrevocableAcknowledged(raw: string | undefined | null): boolean {
+  return typeof raw === "string" && raw.trim().toLowerCase() === EMBED_EDIT_UNREVOCABLE_ACK_VALUE;
+}
+
+/** The refusal an operator sees when an edit-scoped embed is attempted without
+ *  the acknowledgement. It names the REASON (these sessions cannot be revoked)
+ *  before the remedy, on purpose: someone who hits this and only learns which
+ *  string to paste has learned nothing, and will paste it. */
+export const EMBED_EDIT_UNREVOCABLE_REFUSAL =
+  "Editable embeds are disabled on this deployment. An edit-scoped embed session " +
+  "cannot be revoked before its token expires — signing in with the exchanged " +
+  "custom token creates an Auth session that outlives the embed token, survives " +
+  "re-minting, and survives rotating the signing secret, and this codebase has no " +
+  "revocation path. Enabling them accepts that a leaked editable link is durable " +
+  "board write access. To accept it, set the deploy-time parameter " +
+  `EMBED_EDIT_UNREVOCABLE_ACK=${EMBED_EDIT_UNREVOCABLE_ACK_VALUE}. ` +
+  "Read-only embeds are unaffected and need nothing set.";

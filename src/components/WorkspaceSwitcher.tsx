@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Modal,
   View,
@@ -19,6 +19,9 @@ import {
 } from "../services/workspaceService";
 import CreateWorkspaceModal from "./CreateWorkspaceModal";
 import InviteMemberModal from "./InviteMemberModal";
+import UpsellModal from "./UpsellModal";
+import { useUpsellCadence } from "../hooks/useUpsellCadence";
+import type { Plan } from "../types";
 
 /**
  * Phase 3 workspace switcher. Sits in the Boards header as the title. The active
@@ -37,6 +40,62 @@ export default function WorkspaceSwitcher() {
   const [open, setOpen] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
   const [inviteVisible, setInviteVisible] = useState(false);
+
+  // The workspace cap's upsell. Routed through `useUpsellCadence` — not a bare
+  // `useState` — because the cadence is the whole point of the change: this was
+  // the only one of the five enforced gates whose denial never reached
+  // `UpsellModal`, so it was also the only one that gave a user's first
+  // encounter the full sell (ROADMAP.md:608, item 14 requires restraint there).
+  // Every screen that can surface a plan denial now calls this hook; nothing
+  // about it is board-specific, and it takes the uid rather than reading auth
+  // itself.
+  const upsell = useUpsellCadence(user?.uid);
+
+  // THE WORKSPACE CAP IS RESOLVED OVER OWNED WORKSPACES, NOT THE ACTIVE ONE.
+  //
+  // This modal used to be handed `activeWorkspace`'s plan and id, and both were
+  // the wrong workspace. The server decides this cap from the workspaces the
+  // caller OWNS — `countOwnedWorkspaces` then `resolveOwnerPlan`, in
+  // functions/src/callable/createWorkspace.ts — while `useWorkspace().
+  // workspaces` is every workspace the user is a MEMBER of (see
+  // `workspaceService.getUserWorkspaces`, and `quotaService.ts`'s own note on
+  // the distinction). Those differ in practice, and both failures were live:
+  //
+  //  - A user who owns one free workspace while a colleague's Pro workspace is
+  //    active is denied by the server, then asked `isPlanCapped("pro",
+  //    "workspace")` — false — and shown the TRANSIENT-THROTTLE copy ("You're
+  //    sending requests a little fast") for a permanent cap, with no upgrade
+  //    path at all.
+  //  - If the active workspace is one they do not own, `workspaceId` points
+  //    checkout at a workspace they have no authority to upgrade.
+  //
+  // Derived here the same way the server derives it, rather than omitted (the
+  // other defensible option: "free" is correct for every denial that can
+  // actually occur, since a denial implies the owned plan is free). Deriving is
+  // chosen because it keeps the client and the server agreeing BY
+  // CONSTRUCTION — if `workspaces` ever becomes finite on a paid plan, the
+  // hardcoded "free" would start lying and this will not.
+  //
+  // Not shared with `resolveOwnerPlan` itself: that lives in the functions
+  // package, which the app does not import. It is mirrored, like
+  // `lib/planLimits.ts` mirrors `functions/src/billing/limits.ts`, with the
+  // same pro-before-edu ordering so a future finite `workspaces` number
+  // resolves deterministically instead of by array order.
+  const ownedWorkspaces = useMemo(
+    () => (user ? workspaces.filter((w) => w.ownerId === user.uid) : []),
+    [workspaces, user]
+  );
+  const ownedPlan: Plan = useMemo(() => {
+    const plans = ownedWorkspaces.map((w) => w.plan);
+    if (plans.includes("pro")) return "pro";
+    if (plans.includes("edu")) return "edu";
+    return "free";
+  }, [ownedWorkspaces]);
+  // Oldest-first (`getUserWorkspaces` sorts that way, personal workspace
+  // leading), so this is deterministic. Any owned workspace is a valid checkout
+  // target for this gate: a workspace-cap denial can only happen when every
+  // workspace the user owns is free, because pro/edu are UNLIMITED on this row.
+  const ownedWorkspaceId = ownedWorkspaces[0]?.id;
 
   const canInvite =
     !!user &&
@@ -165,7 +224,26 @@ export default function WorkspaceSwitcher() {
         onClose={() => setCreateVisible(false)}
         onCreate={handleCreate}
         onCreated={handleCreated}
+        onQuotaDenied={() => {
+          // Close the composer before showing the upsell, the same ordering
+          // `app/(tabs)/index.tsx` uses for the board cap: two stacked RN
+          // `<Modal>`s would leave the user dismissing the sell only to find
+          // the form they were just denied on still open behind it.
+          setCreateVisible(false);
+          upsell.show("workspace");
+        }}
       />
+
+      {upsell.resource && (
+        <UpsellModal
+          visible
+          resource={upsell.resource}
+          variant={upsell.variant}
+          plan={ownedPlan}
+          workspaceId={ownedWorkspaceId}
+          onDismiss={upsell.dismiss}
+        />
+      )}
 
       {activeWorkspace && (
         <InviteMemberModal

@@ -4,7 +4,7 @@ jest.mock("../../config/firebase", () => ({ db: {}, auth: { currentUser: null },
 import * as fs from "firebase/firestore";
 import { makeQuerySnap, ts } from "../../test-utils/firestoreMock";
 import * as codeService from "../codeService";
-import { CODE_DEFAULT_FONT_SIZE, CODE_DEFAULT_LANGUAGE, layoutCodeBox } from "../../lib/codeRender";
+import { CODE_DEFAULT_FONT_SIZE, CODE_DEFAULT_LANGUAGE, layoutCodeBox } from "../../lib/codeLayout";
 
 const addDoc = fs.addDoc as jest.Mock;
 const updateDoc = fs.updateDoc as jest.Mock;

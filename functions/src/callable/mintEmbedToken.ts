@@ -6,11 +6,17 @@ import {
   isAllowedIssuer,
   normalizeIssuer,
   parseIssuerAllowlist,
+  isEditUnrevocableAcknowledged,
+  EMBED_EDIT_UNREVOCABLE_REFUSAL,
   MAX_EMBED_SUBJECT_LENGTH,
   EMBED_EDIT_TOKEN_TTL_SECONDS,
   type EmbedScope,
 } from "../embed/token";
-import { EMBED_JWT_SECRET, EMBED_ALLOWED_ISSUERS } from "../config";
+import {
+  EMBED_JWT_SECRET,
+  EMBED_ALLOWED_ISSUERS,
+  EMBED_EDIT_UNREVOCABLE_ACK,
+} from "../config";
 
 // Mint a signed embed token for a board (Month 4 — read-only; Month 5 — editable).
 // Authed; only a board member may mint a link, because minting is "share this
@@ -22,6 +28,14 @@ import { EMBED_JWT_SECRET, EMBED_ALLOWED_ISSUERS } from "../config";
 //            identity per board, exactly as Month 4.
 //   'edit' — board OWNER/ADMIN only, and the request must name the host asserting
 //            the user (`iss`, allowlisted) and that host's id for them (`sub`).
+//
+// ⚠️ TWO DEPLOY-TIME PARAMS GATE 'edit', NOT ONE. `EMBED_ALLOWED_ISSUERS` says
+// which hosts we accept assertions from; `EMBED_EDIT_UNREVOCABLE_ACK` says the
+// operator has accepted that the resulting session cannot be revoked before it
+// expires. Both must be set. The second exists because setting the first alone
+// used to be enough, which made an unrevocable write identity one unread
+// deploy-time string away — see config.ts's comment on that param, and the
+// `failed-precondition` refusal on the edit arm below.
 //
 // ⚠️ Why 'edit' is admin-only. Board membership is not board write access: a
 // workspace viewer, or a member demoted to 'viewer' by a per-board role override,
@@ -74,6 +88,11 @@ export interface MintEmbedTokenDeps {
   secret: string;
   /** Hosts whose `iss` we accept, already parsed (see config.EMBED_ALLOWED_ISSUERS). */
   allowedIssuers: readonly string[];
+  /** Whether this deploy has explicitly accepted that an edit-scoped embed
+   *  session cannot be revoked before expiry (config.EMBED_EDIT_UNREVOCABLE_ACK,
+   *  read through `isEditUnrevocableAcknowledged`). A SECOND gate on the edit
+   *  arm, independent of `allowedIssuers` — see the header. */
+  editUnrevocableAcknowledged: boolean;
   resolveAccess: (boardId: string, uid: string) => Promise<BoardAccess | null>;
   /** Whether `uid` is still in the workspace's `members` map. Called ONLY on the
    *  edit arm, so the read-only mint path costs the same one board read it always
@@ -103,6 +122,17 @@ export async function handleMintEmbedToken(
 
   // Validate the request shape before spending a Firestore read on it.
   if (scope === "edit") {
+    // FIRST, before anything about this particular request: is edit scope
+    // enabled on this deploy at all? A deploy-level precondition does not
+    // depend on the request being well-formed, and reporting it first is what
+    // makes an operator wiring up a host integration learn WHY editable embeds
+    // are off rather than chasing a subject/issuer error that is not the real
+    // obstacle. `failed-precondition`, not `permission-denied`: the caller is a
+    // board admin who is entitled to do this — the deployment is not
+    // configured to allow it.
+    if (!deps.editUnrevocableAcknowledged) {
+      throw new HttpsError("failed-precondition", EMBED_EDIT_UNREVOCABLE_REFUSAL);
+    }
     if (typeof sub !== "string" || sub === "" || sub.length > MAX_EMBED_SUBJECT_LENGTH) {
       throw new HttpsError(
         "invalid-argument",
@@ -181,6 +211,9 @@ export const mintEmbedToken_fn = onCall(
       {
         secret: EMBED_JWT_SECRET.value(),
         allowedIssuers: parseIssuerAllowlist(EMBED_ALLOWED_ISSUERS.value()),
+        editUnrevocableAcknowledged: isEditUnrevocableAcknowledged(
+          EMBED_EDIT_UNREVOCABLE_ACK.value()
+        ),
         resolveAccess: (boardId, uid) => resolveBoardAccess(getFirestore(), boardId, uid),
         isInWorkspace: async (workspaceId, uid) => {
           const snap = await getFirestore().doc(`workspaces/${workspaceId}`).get();

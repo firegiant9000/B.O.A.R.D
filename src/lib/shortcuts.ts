@@ -192,9 +192,24 @@ export interface ShortcutCommandGates {
   canEdit: boolean;
   /**
    * False while an active presenter has locked the audience out of creating
-   * content. Narrower than `canEdit`: an editor keeps selection, navigation
-   * and their own undo history through a presentation, they just can't add
-   * anything new.
+   * content. An editor keeps selection, navigation and their own undo history
+   * through a presentation; they just can't add anything new.
+   *
+   * As a set relation this is BROADER than `canEdit`, not narrower — the
+   * opposite of what this comment used to say. Production passes
+   * `canEdit: embedCanEdit`, which already ANDs `!presenterLocksContentCreation`
+   * (app/board/[id].tsx:302-304), and `canCreateContent:
+   * !collab.presenterLocksContentCreation` (:686). So `canEdit ⊆
+   * canCreateContent`: whenever `canEdit` is true the lock is off and this is
+   * true too, and `{canEdit: true, canCreateContent: false}` is unreachable in
+   * the app.
+   *
+   * The two are still separate parameters here on purpose. This function is a
+   * pure gate over a command table and does not know how its caller derived
+   * either boolean; keeping them independent is what lets `paste`/`duplicate`
+   * read one and `insertNote` read the other without this module encoding the
+   * screen's particular formula. See the shortcuts test's own note on the
+   * unreachable combination for what that buys at unit level.
    */
   canCreateContent: boolean;
 }

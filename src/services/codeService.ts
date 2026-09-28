@@ -13,12 +13,16 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { CODE_ENABLED } from "../lib/featureFlags";
+// `lib/codeLayout`, not `lib/codeRender`: this service persists a snippet and
+// the box it occupies, and never tokenizes one. Importing the renderer would
+// have pulled `shiki/core` and nine grammars into every module that touches
+// code persistence, for nothing.
 import {
   CODE_DEFAULT_FONT_SIZE,
   CODE_DEFAULT_LANGUAGE,
   isCodeLanguage,
   layoutCodeBox,
-} from "../lib/codeRender";
+} from "../lib/codeLayout";
 import type { Bounds } from "../lib/viewport";
 import type { CodeElement, CodeLanguage } from "../types";
 
@@ -131,7 +135,7 @@ export interface CreateCodeInput {
 }
 
 /**
- * Lay out `code` (pure, synchronous — `lib/codeRender.ts`) and persist it as
+ * Lay out `code` (pure, synchronous — `lib/codeLayout.ts`) and persist it as
  * a new code element. Returns the new document's id.
  *
  * UNLIKE `mathService.createMathElement`, there is no render call to await

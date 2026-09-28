@@ -159,6 +159,32 @@ import type { SessionSummary } from "../types";
  *    double-creating the sample board/session. Sequential re-entry ("signing
  *    in twice") is fully handled by the marker check; true concurrency is
  *    not.
+ *  - A FAILED SEED PERMANENTLY BURNS THE WELCOME-SESSION GRANT. The rollback
+ *    below deletes the session it created, but `welcomeSessionGrantUsed` was
+ *    set by `createSession`'s transaction before that, and nothing clears it.
+ *    Combined with the previous gap — seeding is gated on `isNewAccount`, true
+ *    once per uid, so there is no retry — a workspace whose seed failed after
+ *    the session write ends with the grant spent and no demo session, and its
+ *    owner silently gets 3 monthly sessions instead of the 4 the grant was
+ *    meant to give them.
+ *
+ *    DISCLOSED RATHER THAN FIXED, and not for lack of trying: this module
+ *    cannot clear that field. firestore.rules pins `welcomeSessionGrantUsed`
+ *    in the `workspaces/{id}` update rule's `hasAny([...])` list, so every
+ *    client write to it is denied — deliberately, because a client that could
+ *    clear it could re-claim the grant every month, which is a strictly worse
+ *    leak than this one. A real fix needs the refund on the SERVER side, in
+ *    the same callable that spends it (a `releaseWelcomeSessionGrant`, or
+ *    folding the whole seed into one transaction), which is a Cloud Function
+ *    change rather than a client one.
+ *
+ *    Note also which half of the module invariant this breaks. "Either fully
+ *    seeded AND marked, or fully rolled back and unmarked" is TRUE of
+ *    `sampleSeededAt`, which is the marker that sentence is about and which
+ *    the rollback does leave unset. It is NOT true of the grant, which is a
+ *    different marker with a different writer. The bound is the same one
+ *    `createSession`'s header already accepts, in the other direction: at
+ *    most one session, once, per workspace.
  */
 
 const SAMPLE_TEMPLATE_ID = "cornell-notes";
@@ -320,6 +346,12 @@ export async function seedSampleWorkspace(
     // order, so a half-drawn board or a session with no summary never
     // becomes this new user's first impression. Leaving `sampleSeededAt`
     // unset lets a future call retry from a clean slate.
+    //
+    // What this does NOT roll back, and cannot: `welcomeSessionGrantUsed` on
+    // the workspace, which `createSession`'s transaction already set. It is
+    // pinned by firestore.rules against every client write, so no code here
+    // can clear it — see the module header's "known gaps" for why that pin is
+    // right and what a real refund would take.
     if (sessionId) await safeDeleteSession(sessionId);
     if (boardId) await safeDeleteBoard(boardId);
   }
