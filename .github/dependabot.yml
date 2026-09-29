@@ -1,34 +1,26 @@
-# Dependabot: one pull request a month covering every ecosystem in this repo.
+# Dependabot — frozen repository.
 #
-# - All minor and patch updates land together in a single "monthly-dependencies" PR.
-# - Major version bumps of libraries are ignored here; take those deliberately
-#   in their own branch. GitHub Actions majors are included (they rarely break).
-# - Security updates are separate: Dependabot opens those as soon as an
-#   advisory affects a dependency, regardless of this schedule.
-# https://docs.github.com/code-security/dependabot/working-with-dependabot/configuring-multi-ecosystem-updates
+# B.O.A.R.D is a finished showcase (see README and ROADMAP.md), so routine
+# version-update PRs are switched off: `open-pull-requests-limit: 0` disables
+# version updates for each ecosystem. Security updates are unaffected by this
+# limit; Dependabot still opens those when an advisory hits a dependency,
+# provided "Dependabot security updates" is enabled in the repository settings.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#open-pull-requests-limit
 version: 2
-
-multi-ecosystem-groups:
-  monthly-dependencies:
-    schedule:
-      interval: "monthly"
 
 updates:
   - package-ecosystem: "npm"
     directory: "/"
-    patterns: ["*"]
-    multi-ecosystem-group: "monthly-dependencies"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 0
   - package-ecosystem: "npm"
     directory: "/functions"
-    patterns: ["*"]
-    multi-ecosystem-group: "monthly-dependencies"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 0
   - package-ecosystem: "github-actions"
     directory: "/"
-    patterns: ["*"]
-    multi-ecosystem-group: "monthly-dependencies"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 0
