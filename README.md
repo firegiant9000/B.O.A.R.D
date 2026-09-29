@@ -11,10 +11,13 @@ and a metered AI gateway.
 ![Two users drawing on the same board, a shape snapping to a rectangle, a sticky note being placed](docs/media/demo.gif)
 -->
 
-> **Status.** Feature-complete through the roadmap's Month 6 and merged to `main`.
-> **Not deployed:** the Cloud Functions have never been deployed, every AI flag
-> defaults off, the Stripe integration has no account behind it, and there are no
-> users. The [unmet gates](#unmet-gates) are listed below, not omitted.
+> **Status: portfolio project, feature-complete showcase, frozen.** It is not under
+> product development. Everything through the roadmap's Month 6 is merged to
+> `main`.
+> **Not deployed.** The Cloud Functions have never been deployed. Every AI flag
+> defaults off. The Stripe integration is test-mode code with no account behind
+> it. There are no users. The [unmet gates](#unmet-gates) are listed below, not
+> omitted, and they will stay unmet: no deployment is planned.
 
 ## At a glance
 
@@ -30,9 +33,12 @@ Measured at commit `c91f2ba` with the commands in
 | Callable functions / Firestore triggers | 16 / 3 |
 | Client service modules | 40 |
 | `firestore.rules` | 1,473 lines |
-| Built | March – September 2026, solo |
+| Built | March – May 2026 as a two-person course project, then solo to September 2026 (see [My contributions](#my-contributions)) |
 
-## The hard parts
+## Engineering Highlights
+
+These are the parts worth reading. The whiteboard features themselves are
+ordinary.
 
 **A client-side check is not a gate.** The first free-tier cap was `checkQuota()` in
 the app, in front of a direct Firestore write. A patched client skips it, and the
@@ -56,6 +62,15 @@ kept in their own Firestore document and cached in device storage — is still i
 tree as the default until the flags flip. Only session summaries have that fallback;
 the other five AI features have no client path at all. Removing the legacy path is a
 recorded open item, and saying so here is the point.
+
+**Stripe webhooks are idempotent and order-safe.** `functions/src/http/stripeWebhook.ts`
+verifies the signature against the raw request body. Every applied event is
+recorded by `event.id`, so a redelivery is acknowledged and skipped. An event is
+dropped only when the stored `lastEventCreated` is strictly newer, which stops a
+late `subscription.updated` from overwriting a newer plan. A tie still applies,
+and a missing timestamp never drops an event. The plan field those events write
+is not client-writable in `firestore.rules`. All of this runs in unit tests only;
+no Stripe account has ever sent one of these events.
 
 **Tenant isolation is a CI job, not a convention.** Boards resolve access through
 their workspace, not through their own member list. The rules suite's fixture
@@ -180,12 +195,34 @@ The coverage floor deliberately covers `src/services/**` only. That is where the
 data access lives, and holding the whole tree to one number would have meant either
 a meaningless threshold or tests written to satisfy it.
 
+## My contributions
+
+B.O.A.R.D started as a two-person CMPS 357 project at the University of
+Louisiana at Lafayette (March–May 2026).
+
+- **Course period, shared.** Scott ([@Scottw985](https://github.com/Scottw985))
+  wrote the sharing and collaboration work: real-time board sync, the share and
+  join modals, member list and presence, board admin, the friend system, and
+  refinements to sessions. Arlo Kharod wrote the Expo scaffold, auth, board CRUD,
+  the drawing canvas and toolbar, the scheduled-session model and screens, the
+  first AI session summary, and the first security rules.
+- **After the course, solo (June–September 2026).** Arlo wrote all six roadmap
+  months, including everything in
+  [Engineering Highlights](#engineering-highlights): the callable-and-rules quota
+  spine, the workspace tenancy model and its migration, the rules test suite and
+  its drift check, the AI gateway with metering and rate limiting, the Stripe
+  checkout and webhook handling, and the CI jobs. Scott authored 3 of the 205
+non-merge commits on `main`, each a large batch of course features.
+
+Commit identities `Arlo Kharod`, `firegiant9000`, `ArloK223` and `ArloK` are all
+Arlo.
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — toolchains, request path, enforcement spine,
   tenancy, the AI gateway, feature flags.
-- [ROADMAP.md](ROADMAP.md) — the six-month plan, with per-month status and the
-  corrections made along the way.
+- [ROADMAP.md](ROADMAP.md) — the archived six-month plan. The freeze notice at the
+  top records which forward-looking items were cancelled.
 - [docs/](docs/README.md) — month-by-month phase plans, runbooks, and reference for
   builds, auth, deep linking and keyboard shortcuts.
 
