@@ -3,9 +3,29 @@
 **Author:** Arlo Kharod
 **Drafted:** 2026-05-12
 **Team size assumption:** 1 primary developer (you), occasional second contributor
-**Status:** Working draft — revisit at end of each phase
+**Status:** ARCHIVED — historical plan. The project was frozen on 2026-09-29 (see below).
 
 ---
+
+> **Freeze notice (2026-09-29).** B.O.A.R.D is a finished portfolio showcase and is
+> no longer under product development. Months 1–6 were built and merged to `main`,
+> with the undeployed state and unmet gates listed in the
+> [README](README.md#unmet-gates). Everything below that was still forward-looking
+> on 2026-09-29 is closed as follows. This plan is kept as written, as a record of
+> what was planned and why.
+>
+> | Item | Where | Disposition |
+> |---|---|---|
+> | CRDT (Yjs) canvas state, WebSocket sync server, "WebSocket primary" | §A.5, §F.8, issue #76 | **CANCELLED.** Firestore `onSnapshot` stays the sync model. |
+> | Ably/Liveblocks cursor fallback, Skia renderer, other realtime or renderer rewrites | Month 4, §F.1, §F.8, issue #75 | **CANCELLED** |
+> | New AI features (Tier 3, §F.3: tutoring, voice commands, transcription, translation, smart layout, auto-tagging) | §B.5, §F.3 | **CANCELLED.** The six existing AI features stay in the tree behind flags that are off by default. |
+> | Launch, SEO/blog, ProductHunt/HN/Reddit, education pilot, pricing experiments | Month 6, §E.6, issues #63 and #64 | **CANCELLED.** No commercialization is planned. |
+> | Removing the legacy client-key AI path; deploying Functions; wiring a Stripe account | README "Unmet gates" | **DEFERRED indefinitely.** These would only matter for a real deployment, and none is planned. |
+> | Further canvas, collaboration, mobile, education, enterprise, accessibility and trust-and-safety backlog | Appendices A, C–F, issues #73–#88 | **CANCELLED** |
+> | "Immediate Next Actions", success metrics, budget | §5, §7, §9 | **SUPERSEDED** by this notice |
+>
+> Future engineering time goes to other projects. Security fixes to existing code are
+> the only changes expected here.
 
 > **Line-number citations.** Comments in `src/`, `functions/`, `firestore.rules`,
 > `storage.rules`, the test suites and the month documents cite this file as
